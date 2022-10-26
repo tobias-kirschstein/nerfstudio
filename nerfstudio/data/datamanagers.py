@@ -248,6 +248,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
     """Number of images to sample during eval iteration."""
     eval_image_indices: Optional[Tuple[int, ...]] = (0,)
     """Specifies the image indices to use during eval; if None, uses all."""
+    train_image_indices: Optional[Tuple[int, ...]] = (0,)  # Which train images should be logged to wandb
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
     Record3D."""
@@ -311,6 +312,13 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             self.train_camera_optimizer,
         )
 
+        self.train_dataloader = RandIndicesEvalDataloader(
+            input_dataset=self.train_dataset,
+            image_indices=self.config.train_image_indices,
+            device=self.device,
+            num_workers=self.world_size * 4,
+        )
+
     def setup_eval(self):
         """Sets up the data loader for evaluation"""
         assert self.eval_dataset is not None
@@ -351,6 +359,13 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         ray_indices = batch["indices"]
         ray_bundle = self.train_ray_generator(ray_indices)
         return ray_bundle, batch
+
+    def next_train_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
+        for camera_ray_bundle, batch in self.train_dataloader:
+            assert camera_ray_bundle.camera_indices is not None
+            image_idx = int(camera_ray_bundle.camera_indices[0, 0, 0])
+            return image_idx, camera_ray_bundle, batch
+        raise ValueError("No more train images")
 
     def next_eval(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the eval dataloader."""

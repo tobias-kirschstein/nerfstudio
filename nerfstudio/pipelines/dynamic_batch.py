@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from typing import Type
 
 import torch
-
 from nerfstudio.data.datamanagers import VanillaDataManager
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
 
@@ -34,6 +33,7 @@ class DynamicBatchPipelineConfig(VanillaPipelineConfig):
     """The target number of samples to use for an entire batch of rays."""
     max_num_samples_per_ray: int = 1024  # 1 << 10
     """The maximum number of samples to be placed along a ray."""
+    max_num_rays_per_batch: int = 2 ** 16  # Maximum number of rays per batch, Changed
 
 
 class DynamicBatchPipeline(VanillaPipeline):
@@ -46,12 +46,12 @@ class DynamicBatchPipeline(VanillaPipeline):
     dynamic_num_rays_per_batch: int
 
     def __init__(
-        self,
-        config: DynamicBatchPipelineConfig,
-        device: str,
-        test_mode: bool = False,
-        world_size: int = 1,
-        local_rank: int = 0,
+            self,
+            config: DynamicBatchPipelineConfig,
+            device: str,
+            test_mode: bool = False,
+            world_size: int = 1,
+            local_rank: int = 0,
     ):
         super().__init__(config, device, test_mode, world_size, local_rank)
         assert isinstance(
@@ -69,9 +69,11 @@ class DynamicBatchPipeline(VanillaPipeline):
     def _update_dynamic_num_rays_per_batch(self, num_samples_per_batch: int):
         """Updates the dynamic number of rays per batch variable,
         based on the total number of samples in the last batch of rays."""
-        self.dynamic_num_rays_per_batch = int(
+        dynamic_num_rays_per_batch = int(
             self.dynamic_num_rays_per_batch * (self.config.target_num_samples / num_samples_per_batch)
         )
+        # print(f"num_samples_per_batch: {num_samples_per_batch}, dynamic_num_rays_per_batch: {dynamic_num_rays_per_batch}")
+        self.dynamic_num_rays_per_batch = min(dynamic_num_rays_per_batch, self.config.max_num_rays_per_batch)  # Changed
 
     def get_train_loss_dict(self, step: int):
         model_outputs, loss_dict, metrics_dict = super().get_train_loss_dict(step)

@@ -286,6 +286,19 @@ class VanillaPipeline(Pipeline):
         return model_outputs, loss_dict, metrics_dict
 
     @profiler.time_function
+    def get_train_image_metrics_and_images(self, step: int):
+        self.eval()
+        image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
+        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+        assert "image_idx" not in metrics_dict
+        metrics_dict["image_idx"] = image_idx
+        assert "num_rays" not in metrics_dict
+        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        self.train()
+        return metrics_dict, images_dict
+
+    @profiler.time_function
     def get_eval_image_metrics_and_images(self, step: int):
         """This function gets your evaluation loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function

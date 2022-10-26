@@ -1,21 +1,7 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Instant-NGP field implementations using tiny-cuda-nn, torch, ....
+Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
-
 
 from typing import Optional
 
@@ -64,17 +50,19 @@ class TCNNInstantNGPField(Field):
     """
 
     def __init__(
-        self,
-        aabb,
-        num_layers: int = 2,
-        hidden_dim: int = 64,
-        geo_feat_dim: int = 15,
-        num_layers_color: int = 3,
-        hidden_dim_color: int = 64,
-        use_appearance_embedding: bool = False,
-        num_images: Optional[int] = None,
-        appearance_embedding_dim: int = 32,
-        contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
+            self,
+            aabb,
+            num_layers: int = 2,
+            hidden_dim: int = 64,
+            geo_feat_dim: int = 15,
+            num_layers_color: int = 3,
+            hidden_dim_color: int = 64,
+            use_appearance_embedding: bool = False,
+            num_images: Optional[int] = None,
+            appearance_embedding_dim: int = 32,
+            contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
+            n_hashgrid_levels: int = 16,
+            log2_hashmap_size: int = 19
     ) -> None:
         super().__init__()
 
@@ -104,9 +92,9 @@ class TCNNInstantNGPField(Field):
             n_output_dims=1 + self.geo_feat_dim,
             encoding_config={
                 "otype": "HashGrid",
-                "n_levels": 16,
+                "n_levels": n_hashgrid_levels,
                 "n_features_per_level": 2,
-                "log2_hashmap_size": 19,
+                "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": 16,
                 "per_level_scale": per_level_scale,
             },

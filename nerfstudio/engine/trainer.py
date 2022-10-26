@@ -21,9 +21,10 @@ import dataclasses
 import functools
 import os
 import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
+from famudy.nerfstudio.vanilla_pipeline import VanillaPipeline, FamudyVanillaPipeline
 from rich.console import Console
 from torch.cuda.amp.grad_scaler import GradScaler
 
@@ -34,13 +35,11 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackLocation,
 )
 from nerfstudio.engine.optimizers import Optimizers, setup_optimizers
-from nerfstudio.pipelines.base_pipeline import VanillaPipeline
 from nerfstudio.utils import profiler, writer
 from nerfstudio.utils.decorators import (
     check_eval_enabled,
     check_main_thread,
-    check_viewer_enabled,
-)
+    check_viewer_enabled, )
 from nerfstudio.utils.misc import step_check
 from nerfstudio.utils.writer import EventName, TimeWriter
 from nerfstudio.viewer.server import viewer_utils
@@ -108,7 +107,8 @@ class Trainer:
         Args:
             test_mode: Whether to setup for testing. Defaults to False.
         """
-        self.pipeline = self.config.pipeline.setup(
+
+        self.pipeline: FamudyVanillaPipeline = self.config.pipeline.setup(
             device=self.device, test_mode=test_mode, world_size=self.world_size, local_rank=self.local_rank
         )
         self.optimizers = setup_optimizers(self.config, self.pipeline.get_param_groups())
@@ -149,9 +149,11 @@ class Trainer:
                     for callback in self.callbacks:
                         callback.run_callback_at_location(step, location=TrainingCallbackLocation.AFTER_TRAIN_ITERATION)
 
+                # Changed: Added train_duration
+                train_duration = max(train_t.duration, 0.01)  # Ensure train_t.duration is never 0
                 writer.put_time(
                     name=EventName.TRAIN_RAYS_PER_SEC,
-                    duration=self.config.pipeline.datamanager.train_num_rays_per_batch / train_t.duration,
+                    duration=self.config.pipeline.datamanager.train_num_rays_per_batch / train_duration,
                     step=step,
                     avg_over_steps=True,
                 )
@@ -245,7 +247,7 @@ class Trainer:
             if load_step is None:
                 print("Loading latest checkpoint from load_dir")
                 # NOTE: this is specific to the checkpoint name format
-                load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(load_dir))[-1]
+                load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(load_dir))[-1]
             load_path = load_dir / f"step-{load_step:09d}.ckpt"
             assert load_path.exists(), f"Checkpoint {load_path} does not exist"
             loaded_state = torch.load(load_path, map_location="cpu")
@@ -337,6 +339,12 @@ class Trainer:
             writer.put_dict(name="Eval Images Metrics", scalar_dict=metrics_dict, step=step)
             group = "Eval Images"
             for image_name, image in images_dict.items():
+                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+
+            # Log one train image as well
+            _, train_images_dict = self.pipeline.get_train_image_metrics_and_images(step=step)
+            group = "Train Images"
+            for image_name, image in train_images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
 
         # all eval images
