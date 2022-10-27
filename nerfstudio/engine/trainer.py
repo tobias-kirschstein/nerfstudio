@@ -24,7 +24,6 @@ import time
 from typing import Any, Dict, List, Tuple
 
 import torch
-from famudy.nerfstudio.vanilla_pipeline import VanillaPipeline, FamudyVanillaPipeline
 from rich.console import Console
 from torch.cuda.amp.grad_scaler import GradScaler
 
@@ -108,7 +107,7 @@ class Trainer:
             test_mode: Whether to setup for testing. Defaults to False.
         """
 
-        self.pipeline: FamudyVanillaPipeline = self.config.pipeline.setup(
+        self.pipeline: VanillaPipeline = self.config.pipeline.setup(
             device=self.device, test_mode=test_mode, world_size=self.world_size, local_rank=self.local_rank
         )
         self.optimizers = setup_optimizers(self.config, self.pipeline.get_param_groups())

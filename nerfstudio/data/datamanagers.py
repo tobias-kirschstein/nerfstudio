@@ -358,6 +358,12 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         batch = self.train_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
         ray_bundle = self.train_ray_generator(ray_indices)
+
+        # Add additional data to batch
+        for key, value in image_batch.items():
+            if key not in {'image', 'image_idx'}:
+                batch[key] = value
+
         return ray_bundle, batch
 
     def next_train_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
@@ -374,6 +380,12 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         batch = self.eval_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
         ray_bundle = self.eval_ray_generator(ray_indices)
+
+        # Add additional data to batch
+        for key, value in image_batch.items():
+            if key not in {'image', 'image_idx'}:
+                batch[key] = value
+
         return ray_bundle, batch
 
     def next_eval_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
