@@ -335,10 +335,16 @@ class Trainer:
                 step=step,
                 avg_over_steps=True,
             )
-            writer.put_dict(name="Eval Images Metrics", scalar_dict=metrics_dict, step=step)
-            group = "Eval Images"
+            if self.config.trainer.log_eval_images_individually:
+                image_metrics_name = f"Eval Images Metrics (image {metrics_dict['image_idx']})"
+                image_group_name = f"Eval Images (image {metrics_dict['image_idx']})"
+            else:
+                image_metrics_name = "Eval Images Metrics"
+                image_group_name = "Eval Images"
+
+            writer.put_dict(name=image_metrics_name, scalar_dict=metrics_dict, step=step)
             for image_name, image in images_dict.items():
-                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+                writer.put_image(name=image_group_name + "/" + image_name, image=image, step=step)
 
             # Log one train image as well
             _, train_images_dict = self.pipeline.get_train_image_metrics_and_images(step=step)

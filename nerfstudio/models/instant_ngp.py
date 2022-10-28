@@ -231,6 +231,13 @@ class NGPModel(Model):
             "num_samples_per_ray": packed_info[:, 1],
         }
 
+        # TODO: should these just always be returned?
+        if self.training:
+            outputs["ray_samples"] = ray_samples
+            outputs["ray_indices"] = ray_indices
+            outputs["weights"] = weights
+            outputs["n_rays"] = num_rays
+
         if self.config.lambda_dist_loss > 0 and self.training:
             # Needed for dist loss
             outputs["ray_samples"] = ray_samples
