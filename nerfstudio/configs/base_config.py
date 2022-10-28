@@ -154,6 +154,8 @@ class TrainerConfig(PrintableConfig):
     """Optionally specify model step to load from; if none, will find most recent model in load_dir."""
     load_config: Optional[Path] = None
 
+    log_eval_images_individually: bool = False
+
 
 # Viewer related configs
 @dataclass
