@@ -30,17 +30,18 @@ from nerfstudio.pipelines.base_pipeline import Pipeline
 from nerfstudio.utils import install_checks
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import ItersPerSecColumn
+from nerfstudio.utils.colormaps import apply_depth_colormap
 
 CONSOLE = Console(width=120)
 
 
 def _render_trajectory_video(
-    pipeline: Pipeline,
-    cameras: Cameras,
-    output_filename: Path,
-    rendered_output_name: str,
-    rendered_resolution_scaling_factor: float = 1.0,
-    seconds: float = 5.0,
+        pipeline: Pipeline,
+        cameras: Cameras,
+        output_filename: Path,
+        rendered_output_name: str,
+        rendered_resolution_scaling_factor: float = 1.0,
+        seconds: float = 5.0,
     output_format: Literal["images", "video"] = "video",
 ) -> None:
     """Helper function to create a video of the spiral trajectory.
@@ -88,6 +89,10 @@ def _render_trajectory_video(
         fps = len(images) / seconds
         # make the folder if it doesn't exist
         output_filename.parent.mkdir(parents=True, exist_ok=True)
+
+        if rendered_output_name == 'depth':
+            images = [apply_depth_colormap(torch.from_numpy(image)).numpy() for image in images]
+
         with CONSOLE.status("[yellow]Saving video", spinner="bouncingBall"):
             media.write_video(output_filename, images, fps=fps)
     CONSOLE.rule("[green] :tada: :tada: :tada: Success :tada: :tada: :tada:")
@@ -145,6 +150,16 @@ class RenderTrajectory:
             camera_path = get_path_from_json(camera_path)
         else:
             assert_never(self.traj)
+
+        # n_frames = 5
+        # camera_path = Cameras(camera_path.camera_to_worlds[:n_frames],
+        #                       camera_path.fx[:n_frames],
+        #                       camera_path.fy[:n_frames],
+        #                       camera_path.cx[:n_frames],
+        #                       camera_path.cy[:n_frames],
+        #                       width=camera_path.image_width[:n_frames],
+        #                       height=camera_path.image_height[:n_frames],
+        #                       camera_type=camera_path.camera_type[:n_frames])
 
         _render_trajectory_video(
             pipeline,
