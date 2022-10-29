@@ -561,6 +561,7 @@ class ViewerState:
             image_height: resolution of the current view
             image_width: resolution of the current view
         """
+        render_time = max(0.0001, render_time)  # Ensure render_time is never 0
         writer.put_time(
             name=EventName.VIS_RAYS_PER_SEC, duration=num_rays / render_time, step=self.step, avg_over_steps=True
         )
