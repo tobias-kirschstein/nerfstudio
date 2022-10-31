@@ -114,13 +114,16 @@ class RenderTrajectory:
     eval_num_rays_per_chunk: Optional[int] = None
     # Whether to only render points that are seen by at least 1 train view
     view_frustum_culling: bool = True
+    # Which checkpoint to load
+    checkpoint_step: Optional[int] = None
 
     def main(self) -> None:
         """Main function."""
         _, pipeline, _ = eval_setup(
             self.load_config,
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
-            view_frustum_culling=self.view_frustum_culling
+            view_frustum_culling=self.view_frustum_culling,
+            checkpoint_step=self.checkpoint_step
         )
 
         install_checks.check_ffmpeg_installed()
