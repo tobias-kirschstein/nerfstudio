@@ -65,11 +65,13 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
 
 def eval_setup(config_path: Path,
                eval_num_rays_per_chunk: Optional[int] = None,
-               view_frustum_culling: Optional[bool] = None) -> Tuple[cfg.Config, Pipeline, Path]:
+               view_frustum_culling: Optional[bool] = None,
+               checkpoint_step: Optional[int] = None) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
         config_path: Path to config YAML file.
+        checkpoint_step: Which checkpoint to load. Default is the latest
 
     Returns:
         Loaded config, pipeline module, and corresponding checkpoint.
@@ -87,6 +89,7 @@ def eval_setup(config_path: Path,
     # load checkpoints from wherever they were saved
     # TODO: expose the ability to choose an arbitrary checkpoint
     config.trainer.load_dir = config.get_checkpoint_dir()
+    config.trainer.load_step = checkpoint_step
     config.pipeline.datamanager.eval_image_indices = None
 
     # setup pipeline (which includes the DataManager)
