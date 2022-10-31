@@ -63,7 +63,9 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
     return load_path
 
 
-def eval_setup(config_path: Path, eval_num_rays_per_chunk: Optional[int] = None) -> Tuple[cfg.Config, Pipeline, Path]:
+def eval_setup(config_path: Path,
+               eval_num_rays_per_chunk: Optional[int] = None,
+               view_frustum_culling: Optional[bool] = None) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
@@ -78,6 +80,9 @@ def eval_setup(config_path: Path, eval_num_rays_per_chunk: Optional[int] = None)
 
     if eval_num_rays_per_chunk:
         config.pipeline.model.eval_num_rays_per_chunk = eval_num_rays_per_chunk
+
+    if view_frustum_culling is not None:
+        config.pipeline.datamanager.dataparser.view_frustum_culling = view_frustum_culling
 
     # load checkpoints from wherever they were saved
     # TODO: expose the ability to choose an arbitrary checkpoint

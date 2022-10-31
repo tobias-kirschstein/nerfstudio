@@ -19,6 +19,7 @@ Collection of sampling strategies
 from abc import abstractmethod
 from typing import Callable, List, Optional, Tuple
 
+import numpy as np
 import nerfacc
 import torch
 from nerfacc import OccupancyGrid
@@ -26,6 +27,7 @@ from torch import nn
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
+from nerfstudio.cameras.frustum import Frustum
 
 
 class Sampler(nn.Module):
@@ -385,12 +387,14 @@ class VolumetricSampler(Sampler):
         occupancy_grid: Optional[OccupancyGrid] = None,
         density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
         scene_aabb: Optional[TensorType[2, 3]] = None,
+        camera_frustums: Optional[List[Frustum]] = None
     ) -> None:
 
         super().__init__()
         self.scene_aabb = scene_aabb
         self.density_fn = density_fn
         self.occupancy_grid = occupancy_grid
+        self.camera_frustums = camera_frustums
         if self.scene_aabb is not None:
             self.scene_aabb = self.scene_aabb.to("cuda").flatten()
         print(self.scene_aabb)
@@ -481,6 +485,49 @@ class VolumetricSampler(Sampler):
         dirs = rays_d[ray_indices]
         if camera_indices is not None:
             camera_indices = camera_indices[ray_indices]
+
+        if self.camera_frustums is not None and not self.training:
+            # View Frustum Culling during inference:
+            # Only keep ray samples that are seen by at least one train view
+            # This is enabled automatically as soon as the dataparser provides the output for the corresponding
+            # camera frustums that are needed for the visibility tests
+
+            n_rays = packed_info.shape[0]
+            points = origins + starts * dirs
+            # TODO: This is a Python loop, could be sped up more if done in PyTorch as well
+            visibility_masks = [camera_frustum.contains_points(points) for camera_frustum in
+                                self.camera_frustums]
+            visibility_mask = torch.stack(visibility_masks).any(dim=0)
+
+            if visibility_mask.sum() == 0:
+                # Create a single fake sample that starts at 1 and ends at 1
+                # However, need to ensure that still all rays are listed in packed_info
+                # (otherwise the num_rays_per_sample will be off as suddenly rays are missing just because they
+                #   don't have samples)
+                # Hence, we keep all rays but set their samples cound to zero. Except for the last ray which contains
+                # the fake sample to facilitate downstream processing
+                packed_info[:, :] = 0
+                packed_info[-1, 1] = 1
+                starts = torch.ones((1, 1), dtype=starts.dtype, device=rays_o.device)
+                ends = torch.ones((1, 1), dtype=ends.dtype, device=rays_o.device)
+
+                ray_indices = nerfacc.unpack_info(packed_info)
+                origins = rays_o[ray_indices]
+                dirs = rays_d[ray_indices]
+                if camera_indices is not None:
+                    camera_indices = camera_indices[ray_indices]
+
+            else:
+                origins = origins[visibility_mask]
+                dirs = dirs[visibility_mask]
+                starts = starts[visibility_mask]
+                ends = ends[visibility_mask]
+                camera_indices = camera_indices[visibility_mask]
+                ray_indices = ray_indices[visibility_mask]
+
+                samples_per_ray = ray_indices.bincount(minlength=n_rays)
+                cumsum = torch.concat([torch.zeros(1, device=packed_info.device), samples_per_ray.cumsum(0)[:-1]])
+                packed_info = torch.stack([cumsum, samples_per_ray], dim=1).type(packed_info.dtype)
 
         zeros = torch.zeros_like(origins[:, :1])
         ray_samples = RaySamples(

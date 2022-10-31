@@ -26,6 +26,7 @@ from torchtyping import TensorType
 
 import nerfstudio.configs.base_config as cfg
 from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.cameras.frustum import Frustum
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
 
@@ -70,6 +71,7 @@ class DataparserOutputs:
     ... "kwargs": dictionary of data to pass into "func"}
     }
     """
+    camera_frustums: Optional[List[Frustum]] = None  # Frustums of cameras used for ignorigin unobserved space during eval
 
     def as_dict(self) -> dict:
         """Returns the dataclass as a dictionary."""

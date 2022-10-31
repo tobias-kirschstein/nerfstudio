@@ -112,12 +112,15 @@ class RenderTrajectory:
     seconds: float = 5.0
     # Specifies number of rays per chunk during eval.
     eval_num_rays_per_chunk: Optional[int] = None
+    # Whether to only render points that are seen by at least 1 train view
+    view_frustum_culling: bool = True
 
     def main(self) -> None:
         """Main function."""
         _, pipeline, _ = eval_setup(
             self.load_config,
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
+            view_frustum_culling=self.view_frustum_culling
         )
 
         install_checks.check_ffmpeg_installed()

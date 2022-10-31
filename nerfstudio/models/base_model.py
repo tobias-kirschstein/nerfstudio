@@ -28,6 +28,7 @@ from torch import nn
 from torch.nn import Parameter
 
 from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.cameras.frustum import Frustum
 from nerfstudio.configs.base_config import InstantiateConfig
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
@@ -69,12 +70,14 @@ class Model(nn.Module):
         config: ModelConfig,
         scene_box: SceneBox,
         num_train_data: int,
+        camera_frustums: Optional[List[Frustum]] = None,
         **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
         self.scene_box = scene_box
         self.num_train_data = num_train_data
+        self.camera_frustums = camera_frustums
         self.kwargs = kwargs
         self.collider = None
         self.populate_modules()  # populate the modules
@@ -180,7 +183,12 @@ class Model(nn.Module):
             if not torch.is_tensor(outputs_list[0]):
                 # TODO: handle lists of tensors as well
                 continue
-            outputs[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
+
+            concat_output = torch.cat(outputs_list)
+            assert concat_output.numel() % (image_width * image_height) == 0, \
+                f"aggregated model output for channel {output_name} has {concat_output.numel()} elements " \
+                f"which cannot be reshaped into [{image_height}, {image_width}, -1]"
+            outputs[output_name] = concat_output.view(image_height, image_width, -1)  # type: ignore
         return outputs
 
     @abstractmethod

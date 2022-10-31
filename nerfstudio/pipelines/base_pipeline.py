@@ -222,6 +222,7 @@ class VanillaPipeline(Pipeline):
             num_train_data=len(self.datamanager.train_dataset),
             semantics=self.datamanager.train_dataset.dataparser_outputs.semantics,
             device=device,
+            camera_frustums=self.datamanager.train_dataset.dataparser_outputs.camera_frustums
         )
         self.model.to(device)
 

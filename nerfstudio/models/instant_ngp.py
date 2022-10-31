@@ -130,6 +130,7 @@ class NGPModel(Model):
             scene_aabb=vol_sampler_aabb,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
+            camera_frustums=self.camera_frustums
         )
 
         # renderers
