@@ -126,15 +126,29 @@ class NGPModel(Model):
 
         # Sampler
         vol_sampler_aabb = self.scene_box.aabb if self.config.contraction_type == ContractionType.AABB else None
-        self.sampler = VolumetricSampler(
+        self.sampler_train = VolumetricSampler(
             scene_aabb=vol_sampler_aabb,
+            occupancy_grid=self.occupancy_grid,
+            density_fn=self.field.density_fn,
+            # camera_frustums=self.camera_frustums
+        )
+
+        vol_sampler_aabb_eval = None
+        if self.config.contraction_type == ContractionType.AABB and self.config.eval_scene_box_scale is not None:
+            aabb_scale = self.config.eval_scene_box_scale
+            vol_sampler_aabb_eval = torch.tensor(
+                [[-aabb_scale, -aabb_scale, -aabb_scale], [aabb_scale, aabb_scale, aabb_scale]], dtype=torch.float32
+            )
+        self.sampler_eval = VolumetricSampler(
+            scene_aabb=vol_sampler_aabb_eval,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
             camera_frustums=self.camera_frustums
         )
+        self.sampler = self.sampler_train
 
         # renderers
-        background_color = "random" if self.config.randomize_background else colors.WHITE
+        background_color = "random" if self.config.randomize_background else colors.BLACK
         self.renderer_rgb_train = RGBRenderer(background_color=background_color)
         self.renderer_rgb_eval = RGBRenderer(background_color=colors.BLACK)
         self.renderer_rgb = self.renderer_rgb_train
@@ -152,14 +166,17 @@ class NGPModel(Model):
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
         self.renderer_rgb = self.renderer_rgb_eval
+        self.sampler = self.sampler_eval
 
         return super().eval()
 
     def train(self: T, mode: bool = True) -> T:
         if mode:
             self.renderer_rgb = self.renderer_rgb_train
+            self.sampler = self.sampler_train
         else:
             self.renderer_rgb = self.renderer_rgb_eval
+            self.sampler = self.sampler_eval
 
         return super().train(mode)
 
@@ -275,7 +292,8 @@ class NGPModel(Model):
             weights = outputs["weights"]
 
             max_samples = 10000
-            indices = sorted(random.sample(range(len(weights)), min(max_samples, len(weights))))  # Sorting is important!
+            indices = sorted(
+                random.sample(range(len(weights)), min(max_samples, len(weights))))  # Sorting is important!
             ray_indices_small = ray_indices[indices]
             weights_small = weights[indices]
             ends_rays = ray_samples.frustums.ends[indices]

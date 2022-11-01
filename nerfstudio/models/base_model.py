@@ -51,6 +51,7 @@ class ModelConfig(InstantiateConfig):
     """parameters to instantiate density field with"""
     eval_num_rays_per_chunk: int = 4096
     """specifies number of rays per chunk during eval"""
+    eval_scene_box_scale: Optional[float] = None  # scene box that should be used for inference rendering. Should be smaller than train scene box
 
 
 class Model(nn.Module):
