@@ -483,10 +483,14 @@ class VolumetricSampler(Sampler):
         ray_indices = nerfacc.unpack_info(packed_info)
         origins = rays_o[ray_indices]
         dirs = rays_d[ray_indices]
-        if camera_indices is not None:
-            camera_indices = camera_indices[ray_indices]
 
-        if self.camera_frustums is not None and not self.training:
+        # Need to keep original camera_indices as well, as view frustum culling code requires it in an edge case
+        if camera_indices is not None:
+            valid_camera_indices = camera_indices[ray_indices]
+        else:
+            valid_camera_indices = None
+
+        if self.camera_frustums is not None and not self.training and num_samples > 0:
             # View Frustum Culling during inference:
             # Only keep ray samples that are seen by at least one train view
             # This is enabled automatically as soon as the dataparser provides the output for the corresponding
@@ -512,17 +516,18 @@ class VolumetricSampler(Sampler):
                 ends = torch.ones((1, 1), dtype=ends.dtype, device=rays_o.device)
 
                 ray_indices = nerfacc.unpack_info(packed_info)
+
                 origins = rays_o[ray_indices]
                 dirs = rays_d[ray_indices]
                 if camera_indices is not None:
-                    camera_indices = camera_indices[ray_indices]
+                    valid_camera_indices = camera_indices[ray_indices]
 
             else:
                 origins = origins[visibility_mask]
                 dirs = dirs[visibility_mask]
                 starts = starts[visibility_mask]
                 ends = ends[visibility_mask]
-                camera_indices = camera_indices[visibility_mask]
+                valid_camera_indices = valid_camera_indices[visibility_mask]
                 ray_indices = ray_indices[visibility_mask]
 
                 samples_per_ray = ray_indices.bincount(minlength=n_rays)
@@ -538,7 +543,7 @@ class VolumetricSampler(Sampler):
                 ends=ends,
                 pixel_area=zeros,
             ),
-            camera_indices=camera_indices,
+            camera_indices=valid_camera_indices,
         )
         return ray_samples, packed_info, ray_indices
 
