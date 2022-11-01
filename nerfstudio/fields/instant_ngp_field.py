@@ -3,19 +3,18 @@ Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
 
-from typing import Optional
+from typing import Optional, List
 
 import torch
 from nerfacc import ContractionType, contract
-from torch.nn.parameter import Parameter
-from torchtyping import TensorType
-
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
+from torch.nn.parameter import Parameter
+from torchtyping import TensorType
 
 try:
     import tinycudann as tcnn
@@ -187,3 +186,14 @@ class TCNNInstantNGPField(Field):
 
         opacity = density * step_size
         return opacity
+
+    def get_head_parameters(self) -> List[Parameter]:
+        return list(self.mlp_head.parameters())
+
+    def get_base_parameters(self) -> List[Parameter]:
+        parameters = []
+        for name, params in self.named_parameters():
+            if not name.startswith('mlp_head'):
+                parameters.append(params)
+
+        return parameters

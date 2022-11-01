@@ -203,7 +203,9 @@ class NGPModel(Model):
         param_groups = {}
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field.parameters())
+        # param_groups["fields"] = list(self.field.parameters())
+        param_groups["field_head"] = self.field.get_head_parameters()
+        param_groups["field_base"] = self.field.get_base_parameters()
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
