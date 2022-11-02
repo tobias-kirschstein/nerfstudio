@@ -506,8 +506,9 @@ class NGPModel(Model):
     def _apply_background_network(self,
                                   outputs: Dict[str, torch.Tensor],
                                   batch: Dict[str, torch.Tensor]):
-        if "background_images" in batch:
+        if "background_images" in batch and self.training:
             background_images = batch["background_images"]  # [B, H, W, 3]
+            # TODO: KeyError: local_indices
             local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
             background_pixels = background_images[
                 local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
