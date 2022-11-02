@@ -521,7 +521,13 @@ class NGPModel(Model):
             if "background_adjustments" in outputs:
                 # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
                 # TODO: subtract -0.5 from background_pixels to make the effort for the bg network symmetric?
-                background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
+                # background_pixels = torch.sigmoid(background_pixels - 0.5 + 10 * outputs["background_adjustments"] - 5)
+
+                ba = outputs["background_adjustments"].mean(dim=1)
+                alpha = (4 * ba.pow(2) - 4 * ba + 1)  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
+                alpha = alpha.unsqueeze(-1)  # [R, 1]
+                background_pixels = ((1 - alpha) * background_pixels + alpha * outputs["background_adjustments"])
+
 
             outputs["rgb_without_bg"] = outputs["rgb"]
             outputs["rgb"] = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
