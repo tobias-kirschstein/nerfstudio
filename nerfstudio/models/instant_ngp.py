@@ -500,21 +500,27 @@ class NGPModel(Model):
             "depth": combined_depth,
             "alive_ray_mask": combined_alive_ray_mask,
         }
+        if "rgb_without_bg" in outputs:
+            images_dict["img_without_bg"] = outputs["rgb_without_bg"]
 
         return metrics_dict, images_dict
 
     def _apply_background_network(self,
                                   outputs: Dict[str, torch.Tensor],
                                   batch: Dict[str, torch.Tensor]):
-        if "background_images" in batch and self.training:
-            background_images = batch["background_images"]  # [B, H, W, 3]
-            # TODO: KeyError: local_indices
-            local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
-            background_pixels = background_images[
-                local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+        if "background_images" in batch:
+            background_images = batch["background_images"]  # [B, H, W, 3] or [H, W, 3] (eval)
+
+            if self.training or "local_indices" in batch:
+                local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
+                background_pixels = background_images[
+                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+            else:
+                background_pixels = torch.tensor(background_images).to(self.device)  # [H, W, 3]
 
             if "background_adjustments" in outputs:
                 # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
+                # TODO: subtract -0.5 from background_pixels to make the effort for the bg network symmetric?
                 background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
 
             outputs["rgb_without_bg"] = outputs["rgb"]
