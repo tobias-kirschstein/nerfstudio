@@ -339,25 +339,33 @@ class NGPModel(Model):
         loss_dict = dict()
         self.train_step += 1
 
-        if "background_images" in batch:
-            background_images = batch["background_images"]  # [B, H, W, 3]
-            local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
-            background_pixels = background_images[
-                local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+        self._apply_background_network(outputs, batch)
 
-            if "background_adjustments" in outputs:
-                # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
-                background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
+        if self.config.use_background_network and "background_adjustments" in outputs:
+            background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
+            background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+            loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
 
-                background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
-                background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
-                loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
-
-            rgb_pred = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
-            # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
-        else:
-            # No background modeling
-            rgb_pred = outputs["rgb"]
+        # if "background_images" in batch:
+        #     background_images = batch["background_images"]  # [B, H, W, 3]
+        #     local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
+        #     background_pixels = background_images[
+        #         local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+        #
+        #     if "background_adjustments" in outputs:
+        #         # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
+        #         background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
+        #
+        #         background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
+        #         background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+        #         loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
+        #
+        #     rgb_pred = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
+        #     # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
+        # else:
+        #     # No background modeling
+        #     rgb_pred = outputs["rgb"]
+        rgb_pred = outputs["rgb"]
 
         image = batch["image"].to(self.device)
         mask = outputs["alive_ray_mask"]
@@ -447,7 +455,9 @@ class NGPModel(Model):
 
         if self.config.lambda_sparse_prior > 0 and self.training:
             weights = outputs["weights"]
-            sparsity_loss = self.config.lambda_sparse_prior * (1 + 2 * weights.pow(2)).log().sum()
+            accumulation_per_ray = outputs["accumulation"]
+            sparsity_loss = self.config.lambda_sparse_prior * accumulation_per_ray.mean()
+            # sparsity_loss = self.config.lambda_sparse_prior * (1 + 2 * weights.pow(2)).log().sum()
             loss_dict["sparsity_loss"] = sparsity_loss
 
         return loss_dict
@@ -455,6 +465,8 @@ class NGPModel(Model):
     def get_image_metrics_and_images(
             self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+
+        self._apply_background_network(outputs, batch)
 
         image = batch["image"].to(self.device)
         rgb = outputs["rgb"]
@@ -490,3 +502,20 @@ class NGPModel(Model):
         }
 
         return metrics_dict, images_dict
+
+    def _apply_background_network(self,
+                                  outputs: Dict[str, torch.Tensor],
+                                  batch: Dict[str, torch.Tensor]):
+        if "background_images" in batch:
+            background_images = batch["background_images"]  # [B, H, W, 3]
+            local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
+            background_pixels = background_images[
+                local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+
+            if "background_adjustments" in outputs:
+                # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
+                background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
+
+            outputs["rgb_without_bg"] = outputs["rgb"]
+            outputs["rgb"] = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
+            # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
