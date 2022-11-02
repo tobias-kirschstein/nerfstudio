@@ -18,6 +18,7 @@ from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torch_efficient_distloss import flatten_eff_distloss
+import tinycudann as tcnn
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.engine.callbacks import (
@@ -81,6 +82,10 @@ class InstantNGPModelConfig(ModelConfig):
 
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
+    lambda_beta_loss: float = 0
+
+    use_background_network: bool = False
+    lambda_background_adjustment_regularization: float = 1
 
 
 class NGPModel(Model):
@@ -115,6 +120,36 @@ class NGPModel(Model):
             log2_hashmap_size=self.config.log2_hashmap_size
         )
 
+        if self.config.use_background_network:
+            self.mlp_background = tcnn.NetworkWithInputEncoding(
+                n_input_dims=6,
+                n_output_dims=3,
+                encoding_config={
+                    "otype": "Composite",
+                    "nested": [
+                        {
+                            "n_dims_to_encode": 3,
+                            "otype": "Frequency",
+                            "n_frequencies": 12
+                        },
+                        {
+                            "n_dims_to_encode": 3,
+                            "otype": "SphericalHarmonics",
+                            "degree": 6
+                        }
+                    ]
+
+                },
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "Sigmoid",
+                    "n_neurons": self.config.hidden_dim_color,
+                    "n_hidden_layers": 6,
+                },
+            )
+            self.softplus_bg = torch.nn.Softplus()
+
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
         # Occupancy Grid
@@ -148,7 +183,13 @@ class NGPModel(Model):
         self.sampler = self.sampler_train
 
         # renderers
-        background_color = "random" if self.config.randomize_background else colors.BLACK
+        if self.config.use_background_network:
+            background_color = None
+        elif self.config.randomize_background:
+            background_color = 'random'
+        else:
+            background_color = colors.BLACK
+
         self.renderer_rgb_train = RGBRenderer(background_color=background_color)
         self.renderer_rgb_eval = RGBRenderer(background_color=colors.BLACK)
         self.renderer_rgb = self.renderer_rgb_train
@@ -162,6 +203,8 @@ class NGPModel(Model):
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
+
+        self.train_step = 0
 
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
@@ -204,7 +247,10 @@ class NGPModel(Model):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         # param_groups["fields"] = list(self.field.parameters())
-        param_groups["field_head"] = self.field.get_head_parameters()
+        field_head_params = self.field.get_head_parameters()
+        if self.config.use_background_network:
+            field_head_params.extend(self.mlp_background.parameters())
+        param_groups["field_head"] = field_head_params
         param_groups["field_base"] = self.field.get_base_parameters()
         return param_groups
 
@@ -248,8 +294,21 @@ class NGPModel(Model):
             "accumulation": accumulation,
             "depth": depth,
             "alive_ray_mask": alive_ray_mask,  # the rays we kept from sampler
-            "num_samples_per_ray": packed_info[:, 1],
+            "num_samples_per_ray": packed_info[:, 1]
         }
+
+        if self.config.use_background_network:
+            # background network
+
+            idx_last_sample_per_ray = (packed_info[:, 0] + packed_info[:, 1] - 1).long()
+            t_fars = ray_samples.frustums.ends[idx_last_sample_per_ray]
+
+            background_adjustments = self.mlp_background(
+                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions,
+                              ray_bundle.directions],
+                             dim=1))  # [R, 3]
+
+            outputs["background_adjustments"] = background_adjustments
 
         # TODO: should these just always be returned?
         if self.training:
@@ -277,15 +336,44 @@ class NGPModel(Model):
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
+        loss_dict = dict()
+        self.train_step += 1
+
+        if "background_images" in batch:
+            background_images = batch["background_images"]  # [B, H, W, 3]
+            local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
+            background_pixels = background_images[
+                local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+
+            if "background_adjustments" in outputs:
+                # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
+                background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
+
+                background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
+                background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
+
+            rgb_pred = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
+            # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
+        else:
+            # No background modeling
+            rgb_pred = outputs["rgb"]
+
         image = batch["image"].to(self.device)
         mask = outputs["alive_ray_mask"]
-        rgb_loss = self.rgb_loss(image[mask], outputs["rgb"][mask])
+        rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
 
-        loss_dict = {
-            "rgb_loss": rgb_loss
-        }
+        loss_dict["rgb_loss"] = rgb_loss
 
         # print(f"RGB Loss: {rgb_loss.item():0.4f}")
+
+        if self.config.lambda_beta_loss > 0 and self.training:
+            # TODO: Make this scheduling more sophisticated, but in principle seems to work
+            lambda_beta_loss = self.config.lambda_beta_loss
+
+            accumulation_per_ray = outputs["accumulation"]  # [R]
+            beta_loss = ((0.1 + accumulation_per_ray).log() + (1.1 - accumulation_per_ray).log() + 2.20727).mean()
+            loss_dict["beta_loss"] = lambda_beta_loss * beta_loss
 
         if self.config.lambda_dist_loss > 0 and self.training:
             # distloss

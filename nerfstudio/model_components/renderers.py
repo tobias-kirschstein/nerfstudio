@@ -46,7 +46,7 @@ class RGBRenderer(nn.Module):
         background_color: Background color as RGB. Uses random colors if None.
     """
 
-    def __init__(self, background_color: Union[Literal["random", "last_sample"], TensorType[3]] = "random") -> None:
+    def __init__(self, background_color: Union[Literal["random", "last_sample"], TensorType[3], None] = "random") -> None:
         super().__init__()
         self.background_color = background_color
 
@@ -86,8 +86,9 @@ class RGBRenderer(nn.Module):
         if background_color == "random":
             background_color = torch.rand_like(comp_rgb).to(rgb.device)
 
-        assert isinstance(background_color, torch.Tensor)
-        comp_rgb = comp_rgb + background_color.to(weights.device) * (1.0 - accumulated_weight)
+        if background_color is not None:
+            assert isinstance(background_color, torch.Tensor)
+            comp_rgb = comp_rgb + background_color.to(weights.device) * (1.0 - accumulated_weight)
 
         return comp_rgb
 
