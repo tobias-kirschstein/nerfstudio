@@ -329,11 +329,11 @@ class NGPModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        self._apply_background_network(outputs, batch)
+        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
 
         image = batch["image"].to(self.device)
         metrics_dict = {}
-        metrics_dict["psnr"] = self.psnr(outputs["rgb"], image)
+        metrics_dict["psnr"] = self.psnr(rgb, image)
         metrics_dict["num_samples_per_batch"] = outputs["num_samples_per_ray"].sum()
         return metrics_dict
 
@@ -341,7 +341,9 @@ class NGPModel(Model):
         loss_dict = dict()
         self.train_step += 1
 
-        self._apply_background_network(outputs, batch)
+        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+        outputs["rgb"] = rgb
+        outputs["rgb_without_bg"] = rgb_without_bg
 
         if self.config.use_background_network and "background_adjustments" in outputs:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
@@ -468,7 +470,9 @@ class NGPModel(Model):
             self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
-        self._apply_background_network(outputs, batch)
+        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+        outputs["rgb"] = rgb
+        outputs["rgb_without_bg"] = rgb_without_bg
 
         image = batch["image"].to(self.device)
         rgb = outputs["rgb"]
@@ -510,7 +514,7 @@ class NGPModel(Model):
     def _apply_background_network(self,
                                   outputs: Dict[str, torch.Tensor],
                                   batch: Dict[str, torch.Tensor]):
-        if "background_images" in batch and not "rgb_without_bg" in batch:
+        if "background_images" in batch and not "rgb_without_bg" in outputs:
             background_images = batch["background_images"]  # [B, H, W, 3] or [H, W, 3] (eval)
 
             if self.training or "local_indices" in batch:
@@ -530,7 +534,10 @@ class NGPModel(Model):
                 alpha = alpha.unsqueeze(-1)  # [R, 1]
                 background_pixels = ((1 - alpha) * background_pixels + alpha * outputs["background_adjustments"])
 
+            rgb_without_bg = outputs["rgb"]
+            rgb = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
+        else:
+            rgb = outputs["rgb"]
+            rgb_without_bg = outputs["rgb_without_bg"]
 
-            outputs["rgb_without_bg"] = outputs["rgb"]
-            outputs["rgb"] = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
-            # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
+        return rgb, rgb_without_bg
