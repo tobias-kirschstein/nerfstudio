@@ -329,6 +329,8 @@ class NGPModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
+        self._apply_background_network(outputs, batch)
+
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(outputs["rgb"], image)
@@ -508,7 +510,7 @@ class NGPModel(Model):
     def _apply_background_network(self,
                                   outputs: Dict[str, torch.Tensor],
                                   batch: Dict[str, torch.Tensor]):
-        if "background_images" in batch:
+        if "background_images" in batch and not "rgb_without_bg" in batch:
             background_images = batch["background_images"]  # [B, H, W, 3] or [H, W, 3] (eval)
 
             if self.training or "local_indices" in batch:
