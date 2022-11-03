@@ -279,23 +279,25 @@ class VanillaPipeline(Pipeline):
             step: current iteration step
         """
         self.eval()
-        ray_bundle, batch = self.datamanager.next_eval(step)
-        model_outputs = self.model(ray_bundle)
-        metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
-        loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
+        with torch.no_grad():
+            ray_bundle, batch = self.datamanager.next_eval(step)
+            model_outputs = self.model(ray_bundle)
+            metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
+            loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
         return model_outputs, loss_dict, metrics_dict
 
     @profiler.time_function
     def get_train_image_metrics_and_images(self, step: int):
         self.eval()
-        image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-        assert "image_idx" not in metrics_dict
-        metrics_dict["image_idx"] = image_idx
-        assert "num_rays" not in metrics_dict
-        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        with torch.no_grad():
+            image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
+            outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+            metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+            assert "image_idx" not in metrics_dict
+            metrics_dict["image_idx"] = image_idx
+            assert "num_rays" not in metrics_dict
+            metrics_dict["num_rays"] = len(camera_ray_bundle)
         self.train()
         return metrics_dict, images_dict
 
@@ -308,13 +310,14 @@ class VanillaPipeline(Pipeline):
             step: current iteration step
         """
         self.eval()
-        image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-        assert "image_idx" not in metrics_dict
-        metrics_dict["image_idx"] = image_idx
-        assert "num_rays" not in metrics_dict
-        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        with torch.no_grad():
+            image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
+            outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+            metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+            assert "image_idx" not in metrics_dict
+            metrics_dict["image_idx"] = image_idx
+            assert "num_rays" not in metrics_dict
+            metrics_dict["num_rays"] = len(camera_ray_bundle)
         self.train()
         return metrics_dict, images_dict
 
@@ -326,36 +329,37 @@ class VanillaPipeline(Pipeline):
             metrics_dict: dictionary of metrics
         """
         self.eval()
-        metrics_dict_list = []
-        num_images = len(self.datamanager.fixed_indices_eval_dataloader)
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-            MofNCompleteColumn(),
-            transient=True,
-        ) as progress:
-            task = progress.add_task("[green]Evaluating all eval images...", total=num_images)
-            for camera_ray_bundle, batch in self.datamanager.fixed_indices_eval_dataloader:
-                # time this the following line
-                inner_start = time()
-                height, width = camera_ray_bundle.shape
-                num_rays = height * width
-                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
-                assert "num_rays_per_sec" not in metrics_dict
-                metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
-                fps_str = f"fps_at_{height}x{width}"
-                assert fps_str not in metrics_dict
-                metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
-                metrics_dict_list.append(metrics_dict)
-                progress.advance(task)
-        # average the metrics list
-        metrics_dict = {}
-        for key in metrics_dict_list[0].keys():
-            metrics_dict[key] = float(
-                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
-            )
+        with torch.no_grad():
+            metrics_dict_list = []
+            num_images = len(self.datamanager.fixed_indices_eval_dataloader)
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TimeElapsedColumn(),
+                MofNCompleteColumn(),
+                transient=True,
+            ) as progress:
+                task = progress.add_task("[green]Evaluating all eval images...", total=num_images)
+                for camera_ray_bundle, batch in self.datamanager.fixed_indices_eval_dataloader:
+                    # time this the following line
+                    inner_start = time()
+                    height, width = camera_ray_bundle.shape
+                    num_rays = height * width
+                    outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                    metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
+                    assert "num_rays_per_sec" not in metrics_dict
+                    metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
+                    fps_str = f"fps_at_{height}x{width}"
+                    assert fps_str not in metrics_dict
+                    metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
+                    metrics_dict_list.append(metrics_dict)
+                    progress.advance(task)
+            # average the metrics list
+            metrics_dict = {}
+            for key in metrics_dict_list[0].keys():
+                metrics_dict[key] = float(
+                    torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
+                )
         self.train()
         return metrics_dict
 

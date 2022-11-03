@@ -376,7 +376,7 @@ class NGPModel(Model):
         rgb_pred = outputs["rgb"]
 
         image = batch["image"].to(self.device)
-        # TODO: Put mask back
+        # We removed the masking here to allow gradients to update the background network in transparent regions
         # mask = outputs["alive_ray_mask"]
         # rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
         rgb_loss = self.rgb_loss(image, rgb_pred)
