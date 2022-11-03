@@ -124,17 +124,18 @@ class RenderTrajectory:
     # Whether to only render points that are seen by at least 1 train view
     view_frustum_culling: bool = True
     # Which checkpoint to load
-    no_eval_scene_box: bool = False  # Whether to not restrict the scene box during rendering
+    eval_scene_box_scale: Optional[float] = None  # Whether to not restrict the scene box during rendering
     checkpoint_step: Optional[int] = None
 
     def main(self) -> None:
         """Main function."""
+
         _, pipeline, _ = eval_setup(
             self.load_config,
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
             view_frustum_culling=self.view_frustum_culling,
             checkpoint_step=self.checkpoint_step,
-            no_eval_scene_box=self.no_eval_scene_box
+            eval_scene_box_scale=self.eval_scene_box_scale
         )
 
         install_checks.check_ffmpeg_installed()

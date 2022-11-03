@@ -87,6 +87,8 @@ class InstantNGPModelConfig(ModelConfig):
     use_background_network: bool = False
     lambda_background_adjustment_regularization: float = 1
 
+    use_spherical_harmonics: bool = True
+
 
 class NGPModel(Model):
     """Instant NGP model
@@ -117,7 +119,8 @@ class NGPModel(Model):
             hidden_dim_color=self.config.hidden_dim_color,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
             n_hashgrid_levels=self.config.n_hashgrid_levels,
-            log2_hashmap_size=self.config.log2_hashmap_size
+            log2_hashmap_size=self.config.log2_hashmap_size,
+            use_spherical_harmonics=self.config.use_spherical_harmonics,
         )
 
         if self.config.use_background_network:
@@ -343,7 +346,8 @@ class NGPModel(Model):
 
         rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
         outputs["rgb"] = rgb
-        outputs["rgb_without_bg"] = rgb_without_bg
+        if rgb_without_bg is not None:
+            outputs["rgb_without_bg"] = rgb_without_bg
 
         if self.config.use_background_network and "background_adjustments" in outputs:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
@@ -372,8 +376,10 @@ class NGPModel(Model):
         rgb_pred = outputs["rgb"]
 
         image = batch["image"].to(self.device)
-        mask = outputs["alive_ray_mask"]
-        rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
+        # TODO: Put mask back
+        # mask = outputs["alive_ray_mask"]
+        # rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
+        rgb_loss = self.rgb_loss(image, rgb_pred)
 
         loss_dict["rgb_loss"] = rgb_loss
 
@@ -472,7 +478,8 @@ class NGPModel(Model):
 
         rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
         outputs["rgb"] = rgb
-        outputs["rgb_without_bg"] = rgb_without_bg
+        if rgb_without_bg is not None:
+            outputs["rgb_without_bg"] = rgb_without_bg
 
         image = batch["image"].to(self.device)
         rgb = outputs["rgb"]
@@ -495,9 +502,13 @@ class NGPModel(Model):
         psnr = self.psnr(image, rgb)
         ssim = self.ssim(image, rgb)
         lpips = self.lpips(image, rgb)
+        mse = self.rgb_loss(image, rgb)
 
         # all of these metrics will be logged as scalars
-        metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim), "lpips": float(lpips)}  # type: ignore
+        metrics_dict = {"psnr": float(psnr.item()),
+                        "ssim": float(ssim),
+                        "lpips": float(lpips),
+                        "mse": float(mse)}  # type: ignore
         # TODO(ethan): return an image dictionary
 
         images_dict = {
@@ -538,6 +549,9 @@ class NGPModel(Model):
             rgb = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
         else:
             rgb = outputs["rgb"]
-            rgb_without_bg = outputs["rgb_without_bg"]
+            if "rgb_without_bg" in outputs:
+                rgb_without_bg = outputs["rgb_without_bg"]
+            else:
+                rgb_without_bg = None
 
         return rgb, rgb_without_bg

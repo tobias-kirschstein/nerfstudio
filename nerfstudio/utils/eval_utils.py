@@ -52,7 +52,7 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
                 justify="center",
             )
             sys.exit(1)
-        load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(config.load_dir))[-1]
+        load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(config.load_dir))[-1]
     else:
         load_step = config.load_step
     load_path = config.load_dir / f"step-{load_step:09d}.ckpt"
@@ -67,12 +67,16 @@ def eval_setup(config_path: Path,
                eval_num_rays_per_chunk: Optional[int] = None,
                view_frustum_culling: Optional[bool] = None,
                checkpoint_step: Optional[int] = None,
-               no_eval_scene_box: bool = False) -> Tuple[cfg.Config, Pipeline, Path]:
+               eval_scene_box_scale: Optional[float] = None) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
         config_path: Path to config YAML file.
         checkpoint_step: Which checkpoint to load. Default is the latest
+        eval_scene_box_scale:
+            None: keep it the way it is defined in config.yaml
+            -1: remove eval_scene_box (i.e., it will be the same as the regular scene box)
+            any number: size of the eval scene box (should be smaller than regular scene box)
 
     Returns:
         Loaded config, pipeline module, and corresponding checkpoint.
@@ -87,8 +91,11 @@ def eval_setup(config_path: Path,
     if view_frustum_culling is not None:
         config.pipeline.datamanager.dataparser.view_frustum_culling = view_frustum_culling
 
-    if no_eval_scene_box:
-        config.pipeline.model.eval_scene_box_scale = None
+    if eval_scene_box_scale is not None:
+        if eval_scene_box_scale < 0:
+            config.pipeline.model.eval_scene_box_scale = None
+        else:
+            config.pipeline.model.eval_scene_box_scale = eval_scene_box_scale
 
     # load checkpoints from wherever they were saved
     # TODO: expose the ability to choose an arbitrary checkpoint

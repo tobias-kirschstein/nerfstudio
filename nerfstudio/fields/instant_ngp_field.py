@@ -61,7 +61,8 @@ class TCNNInstantNGPField(Field):
             appearance_embedding_dim: int = 32,
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
-            log2_hashmap_size: int = 19
+            log2_hashmap_size: int = 19,
+            use_spherical_harmonics: bool = True
     ) -> None:
         super().__init__()
 
@@ -78,13 +79,21 @@ class TCNNInstantNGPField(Field):
         # TODO: set this properly based on the aabb
         per_level_scale = 1.4472692012786865
 
-        self.direction_encoding = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": 4,
-            },
-        )
+        if use_spherical_harmonics:
+            self.direction_encoding = tcnn.Encoding(
+                n_input_dims=3,
+                encoding_config={
+                    "otype": "SphericalHarmonics",
+                    "degree": 4,
+                }
+            )
+        else:
+            self.direction_encoding = tcnn.Encoding(
+                n_input_dims=3,
+                encoding_config={
+                    "otype": "Identity"
+                },
+            )
 
         self.mlp_base = tcnn.NetworkWithInputEncoding(
             n_input_dims=3,
