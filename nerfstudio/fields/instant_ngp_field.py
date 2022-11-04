@@ -14,9 +14,9 @@ from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
 from torch import nn
+from torch.nn import init
 from torch.nn.parameter import Parameter
 from torchtyping import TensorType
-
 
 try:
     import tinycudann as tcnn
@@ -100,16 +100,15 @@ class TCNNInstantNGPField(Field):
                 },
             )
 
-
         hash_grid_encoding_config = {
-                "n_dims_to_encode": 3,
-                "otype": "HashGrid",
-                "n_levels": n_hashgrid_levels,
-                "n_features_per_level": 2,
-                "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": 16,
-                "per_level_scale": per_level_scale,
-            }
+            "n_dims_to_encode": 3,
+            "otype": "HashGrid",
+            "n_levels": n_hashgrid_levels,
+            "n_features_per_level": 2,
+            "log2_hashmap_size": log2_hashmap_size,
+            "base_resolution": 16,
+            "per_level_scale": per_level_scale,
+        }
         if latent_dim_time > 0:
             # Input is [xyz, emb(t)] concatenated
             base_network_encoding_config = {
@@ -123,6 +122,7 @@ class TCNNInstantNGPField(Field):
             }
 
             self.time_embedding = nn.Embedding(self.n_timesteps, latent_dim_time)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01)
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
