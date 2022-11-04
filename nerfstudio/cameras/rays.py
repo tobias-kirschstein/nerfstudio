@@ -99,6 +99,7 @@ class RaySamples(TensorDataclass):
     """Function to convert bins to euclidean distance."""
     metadata: Optional[Dict[str, TensorType["bs":..., "latent_dims"]]] = None
     """addtional information relevant to generating ray samples"""
+    timesteps: Optional[TensorType["bs":..., 1]] = None  # timestep per sample
 
     def get_weights(self, densities: TensorType[..., "num_samples", 1]) -> TensorType[..., "num_samples", 1]:
         """Return weights based on predicted densities
@@ -143,6 +144,7 @@ class RayBundle(TensorDataclass):
     """Rays Distance along ray to stop sampling"""
     metadata: Optional[Dict[str, TensorType["num_rays", "latent_dims"]]] = None
     """Additional metadata or data needed for interpolation, will mimic shape of rays"""
+    timesteps: Optional[TensorType[..., 1]] = None  # timestep per ray
 
     def set_camera_indices(self, camera_index: int) -> None:
         """Sets all of the the camera indices to a specific camera index.
@@ -207,6 +209,7 @@ class RayBundle(TensorDataclass):
 
         shaped_raybundle_fields = self[..., None]
 
+        # TODO: Add timesteps here?
         frustums = Frustums(
             origins=shaped_raybundle_fields.origins,  # [..., 1, 3]
             directions=shaped_raybundle_fields.directions,  # [..., 1, 3]

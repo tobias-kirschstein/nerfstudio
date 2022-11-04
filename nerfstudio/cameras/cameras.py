@@ -69,18 +69,18 @@ class Cameras:
     """
 
     def __init__(
-        self,
-        camera_to_worlds: TensorType["num_cameras", 3, 4],
-        fx: Union[TensorType["num_cameras"], float],
-        fy: Union[TensorType["num_cameras"], float],
-        cx: Union[TensorType["num_cameras"], float],
-        cy: Union[TensorType["num_cameras"], float],
-        width: Optional[Union[TensorType["num_cameras"], int]] = None,
-        height: Optional[Union[TensorType["num_cameras"], int]] = None,
-        distortion_params: Optional[TensorType["num_cameras", 6]] = None,
-        camera_type: Optional[
-            Union[TensorType["num_cameras"], int, List[CameraType], CameraType]
-        ] = CameraType.PERSPECTIVE,
+            self,
+            camera_to_worlds: TensorType["num_cameras", 3, 4],
+            fx: Union[TensorType["num_cameras"], float],
+            fy: Union[TensorType["num_cameras"], float],
+            cx: Union[TensorType["num_cameras"], float],
+            cy: Union[TensorType["num_cameras"], float],
+            width: Optional[Union[TensorType["num_cameras"], int]] = None,
+            height: Optional[Union[TensorType["num_cameras"], int]] = None,
+            distortion_params: Optional[TensorType["num_cameras", 6]] = None,
+            camera_type: Optional[
+                Union[TensorType["num_cameras"], int, List[CameraType], CameraType]
+            ] = CameraType.PERSPECTIVE,
     ):
         self._num_cameras = camera_to_worlds.shape[0]
         self.camera_to_worlds = camera_to_worlds  # This comes first since it determines @property self.device
@@ -122,7 +122,7 @@ class Cameras:
         self.camera_type = self._init_get_camera_type(camera_type)
 
     def _init_get_camera_type(
-        self, camera_type: Union[TensorType["num_cameras"], int, List[CameraType], CameraType]
+            self, camera_type: Union[TensorType["num_cameras"], int, List[CameraType], CameraType]
     ) -> TensorType["num_cameras"]:
         """
         Parses the __init__() argument camera_type
@@ -157,7 +157,7 @@ class Cameras:
         return camera_type
 
     def _init_get_height_width(
-        self, h_w: Union[TensorType["num_cameras"], int, None], c_x_y: TensorType["num_cameras"]
+            self, h_w: Union[TensorType["num_cameras"], int, None], c_x_y: TensorType["num_cameras"]
     ) -> TensorType["num_cameras"]:
         """
         Parses the __init__() argument for height or width
@@ -245,11 +245,12 @@ class Cameras:
         return image_coords
 
     def generate_rays(
-        self,
-        camera_indices: Union[TensorType["num_rays":...], int],
-        coords: Optional[TensorType["num_rays":..., 2]] = None,
-        camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
-        distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
+            self,
+            camera_indices: Union[TensorType["num_rays":...], int],
+            coords: Optional[TensorType["num_rays":..., 2]] = None,
+            camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
+            distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
+            timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None
     ) -> RayBundle:
         """Generates rays for the given camera indices.
 
@@ -300,7 +301,7 @@ class Cameras:
                 [coord_stack[..., 0], coord_stack[..., 1], -torch.ones_like(coord_stack[..., 1])], dim=-1
             )
         elif self.camera_type[0] == CameraType.FISHEYE.value:
-            theta = torch.sqrt(torch.sum(coord_stack**2, dim=-1))
+            theta = torch.sqrt(torch.sum(coord_stack ** 2, dim=-1))
             theta = torch.clip(theta, 0.0, math.pi)
 
             sin_theta = torch.sin(theta)
@@ -337,18 +338,25 @@ class Cameras:
         else:
             ray_bundle_camera_indices = camera_indices.view(pixel_area.shape)
 
+        if timesteps is not None:
+            if isinstance(timesteps, torch.Tensor):
+                timesteps = timesteps.to(self.device).unsqueeze(-1)
+            else:
+                timesteps = torch.Tensor([timesteps]).broadcast_to(pixel_area.shape).int().to(self.device)
+
         return RayBundle(
             origins=origins,
             directions=directions,
             pixel_area=pixel_area,
             camera_indices=ray_bundle_camera_indices,
+            timesteps=timesteps
         )
 
     def to_json(
-        self,
-        camera_idx: int,
-        image: Optional[TensorType["height", "width", 2]] = None,
-        max_size: Optional[int] = None,
+            self,
+            camera_idx: int,
+            image: Optional[TensorType["height", "width", 2]] = None,
+            max_size: Optional[int] = None,
     ) -> Dict:
         """Convert a camera to a json dictionary.
 

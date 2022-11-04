@@ -88,6 +88,8 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_background_adjustment_regularization: float = 1
 
     use_spherical_harmonics: bool = True
+    latent_dim_time: int = 0
+    n_timesteps: int = 1  # Number of timesteps for time embedding
 
 
 class NGPModel(Model):
@@ -121,6 +123,8 @@ class NGPModel(Model):
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,
             use_spherical_harmonics=self.config.use_spherical_harmonics,
+            latent_dim_time=self.config.latent_dim_time,
+            n_timesteps=self.config.n_timesteps
         )
 
         if self.config.use_background_network:
@@ -352,6 +356,10 @@ class NGPModel(Model):
         if self.config.use_background_network and "background_adjustments" in outputs:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+
+            if background_adjustment_displacement.isnan().any():
+                print("WARNING! BACKGRUOND ADJUSTMENT REGULARIZATION IS NAN!")
+
             loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
 
         # if "background_images" in batch:
@@ -547,6 +555,7 @@ class NGPModel(Model):
 
             rgb_without_bg = outputs["rgb"]
             rgb = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
+            # rgb = outputs["rgb"]
         else:
             rgb = outputs["rgb"]
             if "rgb_without_bg" in outputs:

@@ -364,6 +364,8 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             if key not in {'image', 'image_idx'}:
                 batch[key] = value
 
+        self.train_image_dataloader.clear_image_batch(image_batch)
+
         return ray_bundle, batch
 
     def next_train_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
@@ -385,6 +387,8 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         for key, value in image_batch.items():
             if key not in {'image', 'image_idx'}:
                 batch[key] = value
+
+        self.eval_image_dataloader.clear_image_batch(image_batch)
 
         return ray_bundle, batch
 

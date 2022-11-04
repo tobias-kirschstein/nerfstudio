@@ -43,12 +43,12 @@ class CacheDataloader(DataLoader):
     """
 
     def __init__(
-        self,
-        dataset: Dataset,
-        num_images_to_sample_from: int = -1,
-        num_times_to_repeat_images: int = 0,
-        device: Union[torch.device, str] = "cpu",
-        **kwargs,
+            self,
+            dataset: Dataset,
+            num_images_to_sample_from: int = -1,
+            num_times_to_repeat_images: int = 0,
+            device: Union[torch.device, str] = "cpu",
+            **kwargs,
     ):
         self.dataset = dataset
         self.num_times_to_repeat_images = num_times_to_repeat_images
@@ -82,12 +82,17 @@ class CacheDataloader(DataLoader):
         collated_batch = get_dict_to_torch(collated_batch, device=self.device, exclude=["image"])
         return collated_batch
 
+    def clear_image_batch(self, image_batch: Dict):
+        if not self.cache_all_images:
+            for key in list(image_batch.keys()):
+                del image_batch[key]
+
     def __iter__(self):
         while True:
             if self.cache_all_images:
                 collated_batch = self.cached_collated_batch
             elif self.first_time or (
-                self.num_times_to_repeat_images != -1 and self.num_repeated >= self.num_times_to_repeat_images
+                    self.num_times_to_repeat_images != -1 and self.num_repeated >= self.num_times_to_repeat_images
             ):
                 # trigger a reset
                 self.num_repeated = 0
@@ -110,10 +115,10 @@ class EvalDataloader(DataLoader):
     """
 
     def __init__(
-        self,
-        input_dataset: InputDataset,
-        device: Union[torch.device, str] = "cpu",
-        **kwargs,
+            self,
+            input_dataset: InputDataset,
+            device: Union[torch.device, str] = "cpu",
+            **kwargs,
     ):
         self.input_dataset = input_dataset
         self.cameras = input_dataset.dataparser_outputs.cameras.to(device)
@@ -141,15 +146,15 @@ class EvalDataloader(DataLoader):
             distortion_params = self.cameras.distortion_params[image_idx]
 
         camera = Cameras(
-            fx=self.cameras.fx[image_idx : image_idx + 1],
-            fy=self.cameras.fy[image_idx : image_idx + 1],
-            cx=self.cameras.cx[image_idx : image_idx + 1],
-            cy=self.cameras.cy[image_idx : image_idx + 1],
-            height=self.cameras.image_height[image_idx : image_idx + 1],
-            width=self.cameras.image_width[image_idx : image_idx + 1],
-            camera_to_worlds=self.cameras.camera_to_worlds[image_idx : image_idx + 1],
+            fx=self.cameras.fx[image_idx: image_idx + 1],
+            fy=self.cameras.fy[image_idx: image_idx + 1],
+            cx=self.cameras.cx[image_idx: image_idx + 1],
+            cy=self.cameras.cy[image_idx: image_idx + 1],
+            height=self.cameras.image_height[image_idx: image_idx + 1],
+            width=self.cameras.image_width[image_idx: image_idx + 1],
+            camera_to_worlds=self.cameras.camera_to_worlds[image_idx: image_idx + 1],
             distortion_params=distortion_params,
-            camera_type=self.cameras.camera_type[image_idx : image_idx + 1],
+            camera_type=self.cameras.camera_type[image_idx: image_idx + 1],
         )
         return camera
 
@@ -159,7 +164,11 @@ class EvalDataloader(DataLoader):
         Args:
             image_idx: Camera image index
         """
-        ray_bundle = self.cameras.generate_rays(camera_indices=image_idx)
+
+        c = image_idx % self.cameras.size
+        t = int(image_idx / self.cameras.size)
+
+        ray_bundle = self.cameras.generate_rays(camera_indices=c, timesteps=t)
         batch = self.input_dataset[image_idx]
         batch = get_dict_to_torch(batch, device=self.device, exclude=["image"])
         return ray_bundle, batch
@@ -175,11 +184,11 @@ class FixedIndicesEvalDataloader(EvalDataloader):
     """
 
     def __init__(
-        self,
-        input_dataset: InputDataset,
-        image_indices: Optional[Tuple[int]] = None,
-        device: Union[torch.device, str] = "cpu",
-        **kwargs,
+            self,
+            input_dataset: InputDataset,
+            image_indices: Optional[Tuple[int]] = None,
+            device: Union[torch.device, str] = "cpu",
+            **kwargs,
     ):
         super().__init__(input_dataset, device, **kwargs)
         if image_indices is None:
@@ -210,10 +219,10 @@ class RandIndicesEvalDataloader(EvalDataloader):
     """
 
     def __init__(
-        self,
-        input_dataset: InputDataset,
-        device: Union[torch.device, str] = "cpu",
-        **kwargs,
+            self,
+            input_dataset: InputDataset,
+            device: Union[torch.device, str] = "cpu",
+            **kwargs,
     ):
         super().__init__(input_dataset, device, **kwargs)
         self.count = 0

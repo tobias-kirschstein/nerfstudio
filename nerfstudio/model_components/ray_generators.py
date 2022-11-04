@@ -49,11 +49,16 @@ class RayGenerator(nn.Module):
         x = ray_indices[:, 2]  # col indices
         coords = self.image_coords[y, x]
 
+        # Assume that an image_idx > n_cameras just means the same camera at a different timestep
+        timesteps = (c / self.cameras.size).int()
+        c = c % self.cameras.size
+
         camera_opt_to_camera = self.pose_optimizer(c)
 
         ray_bundle = self.cameras.generate_rays(
             camera_indices=c,
             coords=coords,
             camera_opt_to_camera=camera_opt_to_camera,
+            timesteps=timesteps
         )
         return ray_bundle

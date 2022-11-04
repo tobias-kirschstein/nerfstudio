@@ -418,6 +418,7 @@ class VolumetricSampler(Sampler):
             t_origins = origins[ray_indices]
             t_dirs = directions[ray_indices]
             positions = t_origins + t_dirs * (t_starts + t_ends) / 2.0
+
             return density_fn(positions)
 
         return sigma_fn
@@ -459,6 +460,12 @@ class VolumetricSampler(Sampler):
         else:
             camera_indices = None
 
+        if ray_bundle.timesteps is not None:
+            timesteps = ray_bundle.timesteps.contiguous()
+        else:
+            timesteps = None
+
+        # TODO: In here, we also sample the occupancy grid. There it might be beneficial to have the timesteps as well
         packed_info, starts, ends = nerfacc.ray_marching(
             rays_o=rays_o,
             rays_d=rays_d,
@@ -489,6 +496,11 @@ class VolumetricSampler(Sampler):
             valid_camera_indices = camera_indices[ray_indices]
         else:
             valid_camera_indices = None
+
+        if timesteps is not None:
+            valid_timesteps = timesteps[ray_indices]
+        else:
+            valid_timesteps = None
 
         if self.camera_frustums is not None and not self.training and num_samples > 0:
             # View Frustum Culling during inference:
@@ -522,12 +534,19 @@ class VolumetricSampler(Sampler):
                 if camera_indices is not None:
                     valid_camera_indices = camera_indices[ray_indices]
 
+                if timesteps is not None:
+                    valid_timesteps = timesteps[ray_indices]
+
             else:
                 origins = origins[visibility_mask]
                 dirs = dirs[visibility_mask]
                 starts = starts[visibility_mask]
                 ends = ends[visibility_mask]
                 valid_camera_indices = valid_camera_indices[visibility_mask]
+
+                if valid_timesteps is not None:
+                    valid_timesteps = valid_timesteps[visibility_mask]
+
                 ray_indices = ray_indices[visibility_mask]
 
                 samples_per_ray = ray_indices.bincount(minlength=n_rays)
@@ -544,6 +563,7 @@ class VolumetricSampler(Sampler):
                 pixel_area=zeros,
             ),
             camera_indices=valid_camera_indices,
+            timesteps=valid_timesteps.reshape(-1, 1)
         )
         return ray_samples, packed_info, ray_indices
 

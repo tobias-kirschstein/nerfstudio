@@ -13,8 +13,10 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
+from torch import nn
 from torch.nn.parameter import Parameter
 from torchtyping import TensorType
+
 
 try:
     import tinycudann as tcnn
@@ -62,13 +64,16 @@ class TCNNInstantNGPField(Field):
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
-            use_spherical_harmonics: bool = True
+            use_spherical_harmonics: bool = True,
+            latent_dim_time: int = 0,
+            n_timesteps: int = 1
     ) -> None:
         super().__init__()
 
         self.aabb = Parameter(aabb, requires_grad=False)
         self.geo_feat_dim = geo_feat_dim
         self.contraction_type = contraction_type
+        self.n_timesteps = n_timesteps
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -95,17 +100,37 @@ class TCNNInstantNGPField(Field):
                 },
             )
 
-        self.mlp_base = tcnn.NetworkWithInputEncoding(
-            n_input_dims=3,
-            n_output_dims=1 + self.geo_feat_dim,
-            encoding_config={
+
+        hash_grid_encoding_config = {
+                "n_dims_to_encode": 3,
                 "otype": "HashGrid",
                 "n_levels": n_hashgrid_levels,
                 "n_features_per_level": 2,
                 "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": 16,
                 "per_level_scale": per_level_scale,
-            },
+            }
+        if latent_dim_time > 0:
+            # Input is [xyz, emb(t)] concatenated
+            base_network_encoding_config = {
+                "otype": "Composite",
+                "nested": [
+                    hash_grid_encoding_config,
+                    {
+                        "otype": "Identity"  # Number of remaining input dimensions is automatically derived
+                    }
+                ]
+            }
+
+            self.time_embedding = nn.Embedding(self.n_timesteps, latent_dim_time)
+        else:
+            base_network_encoding_config = hash_grid_encoding_config
+            self.time_embedding = None
+
+        self.mlp_base = tcnn.NetworkWithInputEncoding(
+            n_input_dims=3 + latent_dim_time,
+            n_output_dims=1 + self.geo_feat_dim,
+            encoding_config=base_network_encoding_config,
             network_config={
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
@@ -135,7 +160,23 @@ class TCNNInstantNGPField(Field):
         positions_flat = positions.view(-1, 3)
         positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-        h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
+        base_inputs = [positions_flat]
+
+        if self.time_embedding is not None:
+            timesteps = ray_samples.timesteps
+            if timesteps is None:
+                # Assume ray_samples come from occupancy grid.
+                # We only have one grid to model the whole scene accross time.
+                # Hence, we say, only grid cells that are empty for all timesteps should be really empty.
+                # Thus, we sample random timesteps for these ray samples
+                timesteps = torch.randint(self.n_timesteps, (ray_samples.size,)).to(positions_flat.device)
+
+            timesteps = timesteps.squeeze(-1)
+            time_embeddings = self.time_embedding(timesteps)
+            base_inputs.append(time_embeddings)
+
+        base_inputs = torch.concat(base_inputs, dim=1)
+        h = self.mlp_base(base_inputs).view(*ray_samples.frustums.shape, -1)
         density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
 
         # Rectifying the density with an exponential is much more stable than a ReLU or

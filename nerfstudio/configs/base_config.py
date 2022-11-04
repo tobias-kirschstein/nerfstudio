@@ -180,6 +180,10 @@ class ViewerConfig(PrintableConfig):
     max_num_display_images: int = 512
     """Maximum number of training images to display in the viewer, to avoid lag. This does not change which images are
     actually used in training/evaluation. If -1, display all."""
+    n_cameras: Optional[int] = None  # If set, only the first n cameras will be shown (need in case timesteps are used)
+
+    n_timesteps: int = 1  # How many different timesteps the viewer should visualize
+    steps_per_timestep: int = 1  # For how many steps a single timestep should be shown
 
 
 from nerfstudio.engine.optimizers import OptimizerConfig

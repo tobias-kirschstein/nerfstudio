@@ -118,6 +118,9 @@ class Pipeline(nn.Module):
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
+        for key in list(batch.keys()):
+            del batch[key]
+
         return model_outputs, loss_dict, metrics_dict
 
     @profiler.time_function
@@ -261,6 +264,9 @@ class VanillaPipeline(Pipeline):
 
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
+        for key in list(batch.keys()):
+            del batch[key]
+
         return model_outputs, loss_dict, metrics_dict
 
     def forward(self):
@@ -284,6 +290,10 @@ class VanillaPipeline(Pipeline):
             model_outputs = self.model(ray_bundle)
             metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
             loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
+
+            for key in list(batch.keys()):
+                del batch[key]
+
         self.train()
         return model_outputs, loss_dict, metrics_dict
 
@@ -298,6 +308,10 @@ class VanillaPipeline(Pipeline):
             metrics_dict["image_idx"] = image_idx
             assert "num_rays" not in metrics_dict
             metrics_dict["num_rays"] = len(camera_ray_bundle)
+
+            for key in list(batch.keys()):
+                del batch[key]
+
         self.train()
         return metrics_dict, images_dict
 
@@ -318,6 +332,10 @@ class VanillaPipeline(Pipeline):
             metrics_dict["image_idx"] = image_idx
             assert "num_rays" not in metrics_dict
             metrics_dict["num_rays"] = len(camera_ray_bundle)
+
+            for key in list(batch.keys()):
+                del batch[key]
+
         self.train()
         return metrics_dict, images_dict
 
