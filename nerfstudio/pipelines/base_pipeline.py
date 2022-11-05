@@ -264,8 +264,10 @@ class VanillaPipeline(Pipeline):
 
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
-        for key in list(batch.keys()):
-            del batch[key]
+        self.datamanager.clear_train_batch(batch)
+
+        # for key in list(batch.keys()):
+        #     del batch[key]
 
         return model_outputs, loss_dict, metrics_dict
 
@@ -309,8 +311,13 @@ class VanillaPipeline(Pipeline):
             assert "num_rays" not in metrics_dict
             metrics_dict["num_rays"] = len(camera_ray_bundle)
 
-            for key in list(batch.keys()):
-                del batch[key]
+            # Put all eval images on CPU
+            for key in images_dict.keys():
+                images_dict[key] = images_dict[key].cpu()
+
+            # No clearing necessary here, as batch is just a single image that comes directly from the InputDataset
+            # These, we do not want to delete
+            # Also, batch is not even on CUDA here
 
         self.train()
         return metrics_dict, images_dict
@@ -335,6 +342,10 @@ class VanillaPipeline(Pipeline):
 
             for key in list(batch.keys()):
                 del batch[key]
+
+            # Put all eval images on CPU
+            for key in images_dict.keys():
+                images_dict[key] = images_dict[key].cpu()
 
         self.train()
         return metrics_dict, images_dict

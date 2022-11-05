@@ -44,7 +44,7 @@ from nerfstudio.data.utils.dataloaders import (
     FixedIndicesEvalDataloader,
     RandIndicesEvalDataloader,
 )
-from nerfstudio.data.utils.datasets import InputDataset
+from nerfstudio.data.utils.datasets import InputDataset, InMemoryInputDataset
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.model_components.ray_generators import RayGenerator
 from nerfstudio.utils.misc import IterableWrapper
@@ -252,6 +252,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
     Record3D."""
+    train_num_steps_to_cache_images: int = 0  # How many train iterations are done by sampling from the same set of images
 
 
 class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
@@ -286,7 +287,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         self.local_rank = local_rank
         self.sampler = None
 
-        self.train_dataset = InputDataset(config.dataparser.setup().get_dataparser_outputs(split="train"))
+        self.train_dataset = InMemoryInputDataset(config.dataparser.setup().get_dataparser_outputs(split="train"))
         self.eval_dataset = InputDataset(
             config.dataparser.setup().get_dataparser_outputs(split="val" if not test_mode else "test")
         )
@@ -301,6 +302,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             device=self.device,
             num_workers=self.world_size * 4,
             pin_memory=True,
+            num_times_to_repeat_images=self.config.train_num_steps_to_cache_images
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
         self.train_pixel_sampler = PixelSampler(self.config.train_num_rays_per_batch)
@@ -414,3 +416,6 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             assert len(camera_opt_params) == 0
 
         return param_groups
+
+    def clear_train_batch(self, image_batch):
+        self.train_image_dataloader.clear_image_batch(image_batch)

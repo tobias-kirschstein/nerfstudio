@@ -21,12 +21,9 @@ import dataclasses
 import functools
 import os
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
-from rich.console import Console
-from torch.cuda.amp.grad_scaler import GradScaler
-
 from nerfstudio.configs import base_config as cfg
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
@@ -34,6 +31,7 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackLocation,
 )
 from nerfstudio.engine.optimizers import Optimizers, setup_optimizers
+from nerfstudio.pipelines.base_pipeline import VanillaPipeline
 from nerfstudio.utils import profiler, writer
 from nerfstudio.utils.decorators import (
     check_eval_enabled,
@@ -42,6 +40,8 @@ from nerfstudio.utils.decorators import (
 from nerfstudio.utils.misc import step_check
 from nerfstudio.utils.writer import EventName, TimeWriter
 from nerfstudio.viewer.server import viewer_utils
+from rich.console import Console
+from torch.cuda.amp.grad_scaler import GradScaler
 
 CONSOLE = Console(width=120)
 
@@ -302,6 +302,16 @@ class Trainer:
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
+
+        # Log gradients
+        for n, p in self.pipeline.model.named_parameters():
+            if p.grad is not None and p.grad.numel() > 0:
+                grad = p.grad.detach().abs()
+                writer.put_scalar(f"{n} (max)", grad.max(), step)
+                writer.put_scalar(f"{n} (mean)", grad.mean(), step)
+
+        self.pipeline.model.named_parameters()
+
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
         self.grad_scaler.update()
         self.optimizers.scheduler_step_all(step)

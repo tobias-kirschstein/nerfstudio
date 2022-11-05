@@ -90,3 +90,25 @@ class InputDataset(Dataset):
     def __getitem__(self, image_idx):
         data = self.get_data(image_idx)
         return data
+
+
+class InMemoryInputDataset(InputDataset):
+    """
+    Can be used as a drop-in replacement for InputDataset.
+    Instead of loading the images everytime upon request, it caches them.
+    This will increase memory consumption over time until all images have been loaded once.
+    """
+
+    def __init__(self, dataparser_outputs: DataparserOutputs):
+        super(InMemoryInputDataset, self).__init__(dataparser_outputs)
+
+        self._cached_items = dict()
+
+    def __getitem__(self, image_idx):
+        if image_idx in self._cached_items:
+            item = self._cached_items[image_idx]
+        else:
+            item = super().__getitem__(image_idx)
+            self._cached_items[image_idx] = item
+
+        return item

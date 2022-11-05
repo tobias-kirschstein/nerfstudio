@@ -83,9 +83,14 @@ class CacheDataloader(DataLoader):
         return collated_batch
 
     def clear_image_batch(self, image_batch: Dict):
-        if not self.cache_all_images:
+        # Images can be cached in 2 scenarios:
+        #  1) All images are always cached -> never delete them
+        #  2) A set of images is cached for a certain number of train steps -> delete when cache period for these images is over
+        if not self.cache_all_images \
+                and (self.num_times_to_repeat_images <= 0 or self.num_repeated >= self.num_times_to_repeat_images):
             for key in list(image_batch.keys()):
                 del image_batch[key]
+        # TODO: At least move stuff back to CPU?
 
     def __iter__(self):
         while True:
@@ -233,7 +238,7 @@ class RandIndicesEvalDataloader(EvalDataloader):
 
     def __next__(self):
         if self.count < 1:
-            image_indices = range(self.cameras.size)
+            image_indices = range(len(self.input_dataset.dataparser_outputs.image_filenames))
             image_idx = random.choice(image_indices)
             ray_bundle, batch = self.get_data_from_image_idx(image_idx)
             self.count += 1
