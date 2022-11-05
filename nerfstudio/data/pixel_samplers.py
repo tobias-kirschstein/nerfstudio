@@ -20,6 +20,7 @@ import random
 from typing import Dict
 
 import torch
+from torchvision.transforms import Resize, InterpolationMode
 
 
 def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_image: bool = False):
@@ -41,6 +42,25 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
         nonzero_indices = torch.nonzero(batch["mask"][..., 0], as_tuple=False)
         chosen_indices = random.sample(range(len(nonzero_indices)), k=num_rays_per_batch)
         indices = nonzero_indices[chosen_indices]
+    elif "pixel_sample_probabilities" in batch:
+        pixel_sample_probabilities = batch["pixel_sample_probabilities"]  # [C, H, W]
+
+        downscale_factor = 4
+        resizer = Resize((image_height // downscale_factor, image_width // downscale_factor), interpolation=InterpolationMode.NEAREST)
+        pixel_sample_probabilities = resizer(pixel_sample_probabilities)
+
+        B, H, W = pixel_sample_probabilities.shape
+
+        y_offsets = torch.randint(downscale_factor, (H,))
+        x_offsets = torch.randint(downscale_factor, (W,))
+        grid_b, grid_y, grid_x = torch.meshgrid(torch.arange(B),
+                                                torch.arange(H) * downscale_factor + y_offsets,
+                                                torch.arange(W) * downscale_factor + x_offsets)
+        pixel_sample_indices = torch.multinomial(pixel_sample_probabilities.view(-1),
+                                                 num_rays_per_batch,
+                                                 replacement=True)
+        grid = torch.stack([grid_b, grid_y, grid_x], dim=-1)
+        indices = grid.view(-1, 3)[pixel_sample_indices]
     else:
         indices = torch.floor(
             torch.rand((num_rays_per_batch, 3), device=device)

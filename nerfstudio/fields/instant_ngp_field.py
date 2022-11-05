@@ -67,7 +67,9 @@ class TCNNInstantNGPField(Field):
             use_spherical_harmonics: bool = True,
             latent_dim_time: int = 0,
             n_timesteps: int = 1,
-            max_ray_samples_chunk_size: int = -1
+            max_ray_samples_chunk_size: int = -1,
+            use_deformation_field: bool = False,
+            num_layers_deformation_field: int = 3
     ) -> None:
         super().__init__()
 
@@ -111,26 +113,48 @@ class TCNNInstantNGPField(Field):
             "base_resolution": 16,
             "per_level_scale": per_level_scale,
         }
+
+        self.deformation_network = None
         if latent_dim_time > 0:
-            # Input is [xyz, emb(t)] concatenated
-            base_network_encoding_config = {
-                "otype": "Composite",
-                "nested": [
-                    hash_grid_encoding_config,
-                    {
-                        "otype": "Identity"  # Number of remaining input dimensions is automatically derived
-                    }
-                ]
-            }
+            if use_deformation_field:
+                # If a deformation field is used, the time embeddings are not fed into the base MLP but into
+                # the deformation network instead
+
+                self.deformation_network = tcnn.Network(
+                    n_input_dims=3 + latent_dim_time,
+                    n_output_dims=3,
+                    network_config={
+                        "otype": "FullyFusedMLP",
+                        "activation": "ReLU",
+                        "output_activation": "None",
+                        "n_neurons": hidden_dim,
+                        "n_hidden_layers": num_layers_deformation_field,
+                    },
+                )
+                base_network_encoding_config = hash_grid_encoding_config
+                n_base_inputs = 3
+            else:
+                # Input is [xyz, emb(t)] concatenated
+                base_network_encoding_config = {
+                    "otype": "Composite",
+                    "nested": [
+                        hash_grid_encoding_config,
+                        {
+                            "otype": "Identity"  # Number of remaining input dimensions is automatically derived
+                        }
+                    ]
+                }
+                n_base_inputs = 3 + latent_dim_time
 
             self.time_embedding = nn.Embedding(self.n_timesteps, latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01)
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
+            n_base_inputs = 3
 
         self.mlp_base = tcnn.NetworkWithInputEncoding(
-            n_input_dims=3 + latent_dim_time,
+            n_input_dims=n_base_inputs,
             n_output_dims=1 + self.geo_feat_dim,
             encoding_config=base_network_encoding_config,
             network_config={
@@ -174,8 +198,6 @@ class TCNNInstantNGPField(Field):
             positions_flat = positions.view(-1, 3)
             positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-            base_inputs = [positions_flat]
-
             if self.time_embedding is not None:
                 timesteps = ray_samples_chunk.timesteps
                 if timesteps is None:
@@ -187,7 +209,18 @@ class TCNNInstantNGPField(Field):
 
                 timesteps = timesteps.squeeze(-1)
                 time_embeddings = self.time_embedding(timesteps)
-                base_inputs.append(time_embeddings)
+                if self.deformation_network is not None:
+                    deformation_inputs = [positions_flat, time_embeddings]
+                    deformation_inputs = torch.concat(deformation_inputs, dim=1)
+                    deformation = self.deformation_network(deformation_inputs)
+                    # deformation = torch.zeros_like(deformation)
+                    positions_flat = positions_flat + deformation
+
+                    base_inputs = [positions_flat]
+                else:
+                    base_inputs = [positions_flat, time_embeddings]
+            else:
+                base_inputs = [positions_flat]
 
             base_inputs = torch.concat(base_inputs, dim=1)
             h = self.mlp_base(base_inputs).view(*ray_samples_chunk.frustums.shape, -1)

@@ -69,7 +69,7 @@ class CacheDataloader(DataLoader):
 
     def _get_batch_list(self):
         """Returns a list of batches from the dataset attribute."""
-        indices = random.sample(range(len(self.dataset)), k=self.num_images_to_sample_from)
+        indices = random.sample(range(len(self.dataset)), k=min(self.num_images_to_sample_from, len(self.dataset)))
         batch_list = []
         for idx in track(indices, description="Loading data batch"):
             batch_list.append(self.dataset.__getitem__(idx))

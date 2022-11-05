@@ -93,6 +93,9 @@ class InstantNGPModelConfig(ModelConfig):
     n_timesteps: int = 1  # Number of timesteps for time embedding
     max_ray_samples_chunk_size: int = -1
 
+    use_deformation_field: bool = False
+    n_layers_deformation_field: int = 3
+
 
 class NGPModel(Model):
     """Instant NGP model
@@ -127,7 +130,9 @@ class NGPModel(Model):
             use_spherical_harmonics=self.config.use_spherical_harmonics,
             latent_dim_time=self.config.latent_dim_time,
             n_timesteps=self.config.n_timesteps,
-            max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size
+            max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
+            use_deformation_field=self.config.use_deformation_field,
+            num_layers_deformation_field=self.config.n_layers_deformation_field,
         )
 
         if self.config.use_background_network:
@@ -256,10 +261,25 @@ class NGPModel(Model):
         param_groups = {}
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        parameters = list(self.field.get_head_parameters())
-        parameters.extend(self.field.get_base_parameters())
-        parameters.extend(self.mlp_background.parameters())
+
+        parameters = list(self.field.parameters())
+
+        if self.config.use_background_network:
+            parameters.extend(self.mlp_background.parameters())
+
         param_groups["fields"] = parameters
+
+        # parameters = list(self.field.get_head_parameters())
+        # parameters.extend(self.field.get_base_parameters())
+        # if self.config.use_background_network:
+        #     parameters.extend(self.mlp_background.parameters())
+        # if self.config.use_deformation_field:
+        #     parameters.extend(self.field.deformation_network.parameters())
+        # param_groups["fields"] = parameters
+
+
+
+
         # field_head_params = self.field.get_head_parameters()
         # if self.config.use_background_network:
         #     field_head_params.extend(self.mlp_background.parameters())
