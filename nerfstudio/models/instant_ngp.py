@@ -86,6 +86,7 @@ class InstantNGPModelConfig(ModelConfig):
 
     use_background_network: bool = False
     lambda_background_adjustment_regularization: float = 1
+    num_layers_background: int = 3
 
     use_spherical_harmonics: bool = True
     latent_dim_time: int = 0
@@ -152,7 +153,7 @@ class NGPModel(Model):
                     "activation": "ReLU",
                     "output_activation": "Sigmoid",
                     "n_neurons": self.config.hidden_dim_color,
-                    "n_hidden_layers": 6,
+                    "n_hidden_layers": self.config.num_layers_background,
                 },
             )
             self.softplus_bg = torch.nn.Softplus()
