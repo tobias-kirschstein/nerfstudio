@@ -253,7 +253,10 @@ class NGPModel(Model):
         param_groups = {}
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field.parameters())
+        parameters = list(self.field.get_head_parameters())
+        parameters.extend(self.field.get_base_parameters())
+        parameters.extend(self.mlp_background.parameters())
+        param_groups["fields"] = parameters
         # field_head_params = self.field.get_head_parameters()
         # if self.config.use_background_network:
         #     field_head_params.extend(self.mlp_background.parameters())
