@@ -2,7 +2,7 @@
 Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
-
+from math import ceil
 from typing import Optional, List
 
 import torch
@@ -66,7 +66,8 @@ class TCNNInstantNGPField(Field):
             log2_hashmap_size: int = 19,
             use_spherical_harmonics: bool = True,
             latent_dim_time: int = 0,
-            n_timesteps: int = 1
+            n_timesteps: int = 1,
+            max_ray_samples_chunk_size: int = -1
     ) -> None:
         super().__init__()
 
@@ -74,6 +75,7 @@ class TCNNInstantNGPField(Field):
         self.geo_feat_dim = geo_feat_dim
         self.contraction_type = contraction_type
         self.n_timesteps = n_timesteps
+        self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -156,33 +158,52 @@ class TCNNInstantNGPField(Field):
         )
 
     def get_density(self, ray_samples: RaySamples):
-        positions = ray_samples.frustums.get_positions()
-        positions_flat = positions.view(-1, 3)
-        positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-        base_inputs = [positions_flat]
+        densities = []
+        base_mlp_outs = []
 
-        if self.time_embedding is not None:
-            timesteps = ray_samples.timesteps
-            if timesteps is None:
-                # Assume ray_samples come from occupancy grid.
-                # We only have one grid to model the whole scene accross time.
-                # Hence, we say, only grid cells that are empty for all timesteps should be really empty.
-                # Thus, we sample random timesteps for these ray samples
-                timesteps = torch.randint(self.n_timesteps, (ray_samples.size,)).to(positions_flat.device)
+        # Nerfacc's occupancy grid update is quite costl, it queries get_density() with 128^3 which are
+        # much more samples than the regular rendering requires
+        # To avoid being GPU memory upper-bounded by nerfacc's occupancy grid size, we resort to sequential chunking
+        # This should not hurt performance too much as the occupancy grid is only updated periodically
+        max_chunk_size = ray_samples.size if self.max_ray_samples_chunk_size == -1 else self.max_ray_samples_chunk_size
+        for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
+            ray_samples_chunk = ray_samples[i_chunk * max_chunk_size : (i_chunk + 1) * max_chunk_size]
 
-            timesteps = timesteps.squeeze(-1)
-            time_embeddings = self.time_embedding(timesteps)
-            base_inputs.append(time_embeddings)
+            positions = ray_samples_chunk.frustums.get_positions()
+            positions_flat = positions.view(-1, 3)
+            positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-        base_inputs = torch.concat(base_inputs, dim=1)
-        h = self.mlp_base(base_inputs).view(*ray_samples.frustums.shape, -1)
-        density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+            base_inputs = [positions_flat]
 
-        # Rectifying the density with an exponential is much more stable than a ReLU or
-        # softplus, because it enables high post-activation (float32) density outputs
-        # from smaller internal (float16) parameters.
-        density = trunc_exp(density_before_activation.to(positions))
+            if self.time_embedding is not None:
+                timesteps = ray_samples_chunk.timesteps
+                if timesteps is None:
+                    # Assume ray_samples come from occupancy grid.
+                    # We only have one grid to model the whole scene accross time.
+                    # Hence, we say, only grid cells that are empty for all timesteps should be really empty.
+                    # Thus, we sample random timesteps for these ray samples
+                    timesteps = torch.randint(self.n_timesteps, (ray_samples_chunk.size,)).to(positions_flat.device)
+
+                timesteps = timesteps.squeeze(-1)
+                time_embeddings = self.time_embedding(timesteps)
+                base_inputs.append(time_embeddings)
+
+            base_inputs = torch.concat(base_inputs, dim=1)
+            h = self.mlp_base(base_inputs).view(*ray_samples_chunk.frustums.shape, -1)
+            density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+
+            # Rectifying the density with an exponential is much more stable than a ReLU or
+            # softplus, because it enables high post-activation (float32) density outputs
+            # from smaller internal (float16) parameters.
+            density = trunc_exp(density_before_activation.to(positions))
+
+            densities.append(density)
+            base_mlp_outs.append(base_mlp_out)
+
+        density = torch.concat(densities)
+        base_mlp_out = torch.concat(base_mlp_outs)
+
         return density, base_mlp_out
 
     def get_outputs(self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None):

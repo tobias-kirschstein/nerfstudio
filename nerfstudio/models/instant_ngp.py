@@ -91,6 +91,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_spherical_harmonics: bool = True
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
+    max_ray_samples_chunk_size: int = -1
 
 
 class NGPModel(Model):
@@ -125,7 +126,8 @@ class NGPModel(Model):
             log2_hashmap_size=self.config.log2_hashmap_size,
             use_spherical_harmonics=self.config.use_spherical_harmonics,
             latent_dim_time=self.config.latent_dim_time,
-            n_timesteps=self.config.n_timesteps
+            n_timesteps=self.config.n_timesteps,
+            max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size
         )
 
         if self.config.use_background_network:
