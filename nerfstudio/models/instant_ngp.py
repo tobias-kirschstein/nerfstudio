@@ -253,12 +253,12 @@ class NGPModel(Model):
         param_groups = {}
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        # param_groups["fields"] = list(self.field.parameters())
-        field_head_params = self.field.get_head_parameters()
-        if self.config.use_background_network:
-            field_head_params.extend(self.mlp_background.parameters())
-        param_groups["field_head"] = field_head_params
-        param_groups["field_base"] = self.field.get_base_parameters()
+        param_groups["fields"] = list(self.field.parameters())
+        # field_head_params = self.field.get_head_parameters()
+        # if self.config.use_background_network:
+        #     field_head_params.extend(self.mlp_background.parameters())
+        # param_groups["field_head"] = field_head_params
+        # param_groups["field_base"] = self.field.get_base_parameters()
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -362,25 +362,6 @@ class NGPModel(Model):
 
             loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
 
-        # if "background_images" in batch:
-        #     background_images = batch["background_images"]  # [B, H, W, 3]
-        #     local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
-        #     background_pixels = background_images[
-        #         local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
-        #
-        #     if "background_adjustments" in outputs:
-        #         # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
-        #         background_pixels = torch.sigmoid(background_pixels + 10 * outputs["background_adjustments"] - 5)
-        #
-        #         background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
-        #         background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
-        #         loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
-        #
-        #     rgb_pred = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
-        #     # rgb_pred = (1 - outputs["accumulation"]) * background_pixels
-        # else:
-        #     # No background modeling
-        #     rgb_pred = outputs["rgb"]
         rgb_pred = outputs["rgb"]
 
         image = batch["image"].to(self.device)
