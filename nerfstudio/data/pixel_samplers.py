@@ -46,16 +46,23 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
         pixel_sample_probabilities = batch["pixel_sample_probabilities"]  # [C, H, W]
 
         downscale_factor = 4
-        resizer = Resize((image_height // downscale_factor, image_width // downscale_factor), interpolation=InterpolationMode.NEAREST)
+        resizer = Resize((image_height // downscale_factor, image_width // downscale_factor),
+                         interpolation=InterpolationMode.NEAREST)
         pixel_sample_probabilities = resizer(pixel_sample_probabilities)
 
         B, H, W = pixel_sample_probabilities.shape
 
         y_offsets = torch.randint(downscale_factor, (H,))
         x_offsets = torch.randint(downscale_factor, (W,))
+
+        # ys = torch.arange(H) * downscale_factor + y_offsets
+        # xs = torch.arange(W) * downscale_factor + x_offsets
+        # pixel_sample_probabilities = pixel_sample_probabilities[:, ys, xs].reshape(B, H, W)
+
         grid_b, grid_y, grid_x = torch.meshgrid(torch.arange(B),
                                                 torch.arange(H) * downscale_factor + y_offsets,
                                                 torch.arange(W) * downscale_factor + x_offsets)
+
         pixel_sample_indices = torch.multinomial(pixel_sample_probabilities.view(-1),
                                                  num_rays_per_batch,
                                                  replacement=True)

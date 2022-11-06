@@ -18,9 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Type
 
 import numpy as np
-from torch.optim import Optimizer, lr_scheduler
-
 from nerfstudio.configs.base_config import InstantiateConfig
+from torch.optim import Optimizer, lr_scheduler
 
 
 @dataclass
@@ -36,6 +35,17 @@ class SchedulerConfig(InstantiateConfig):
     def setup(self, optimizer=None, lr_init=None, **kwargs) -> Any:
         """Returns the instantiated object using the config."""
         return self._target(optimizer, lr_init, self.lr_final, self.max_steps)
+
+
+@dataclass
+class StepLRSchedulerConfig(InstantiateConfig):
+    step_size: int
+    gamma: float = 1e-1
+    last_epoch: int = -1
+
+    def setup(self, optimizer=None, lr_init=None, **kwargs) -> Any:
+        """Returns the instantiated object using the config."""
+        return self._target(optimizer, self.step_size, gamma=self.gamma, last_epoch=self.last_epoch)
 
 
 class ExponentialDecaySchedule(lr_scheduler.LambdaLR):
@@ -66,7 +76,7 @@ class ExponentialDecaySchedule(lr_scheduler.LambdaLR):
             t = np.clip(step / max_steps, 0, 1)
             log_lerp = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
             multiplier = (
-                log_lerp / lr_init
+                    log_lerp / lr_init
             )  # divided by lr_init because the multiplier is with the initial learning rate
             return delay_rate * multiplier
 
@@ -77,13 +87,13 @@ class DelayerScheduler(lr_scheduler.LambdaLR):
     """Starts with a flat lr schedule until it reaches N epochs then applies a given scheduler"""
 
     def __init__(
-        self,
-        optimizer: Optimizer,
-        lr_init,  # pylint: disable=unused-argument
-        lr_final,  # pylint: disable=unused-argument
-        max_steps,  # pylint: disable=unused-argument
-        delay_epochs: int = 500,
-        after_scheduler: Optional[lr_scheduler.LambdaLR] = None,
+            self,
+            optimizer: Optimizer,
+            lr_init,  # pylint: disable=unused-argument
+            lr_final,  # pylint: disable=unused-argument
+            max_steps,  # pylint: disable=unused-argument
+            delay_epochs: int = 500,
+            after_scheduler: Optional[lr_scheduler.LambdaLR] = None,
     ) -> None:
         def func(step):
             if step > delay_epochs:
@@ -100,12 +110,12 @@ class DelayedExponentialScheduler(DelayerScheduler):
     """Delayer Scheduler with an Exponential Scheduler initialized afterwards."""
 
     def __init__(
-        self,
-        optimizer: Optimizer,
-        lr_init,
-        lr_final,
-        max_steps,
-        delay_epochs: int = 200,
+            self,
+            optimizer: Optimizer,
+            lr_init,
+            lr_final,
+            max_steps,
+            delay_epochs: int = 200,
     ):
         after_scheduler = ExponentialDecaySchedule(
             optimizer,

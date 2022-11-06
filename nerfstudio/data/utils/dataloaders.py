@@ -18,7 +18,7 @@ Code for sampling images from a dataset of images.
 
 import random
 from abc import abstractmethod
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 
 import torch
 from rich.progress import track
@@ -62,6 +62,9 @@ class CacheDataloader(DataLoader):
         self.cached_collated_batch = None
         if self.cache_all_images:
             self.cached_collated_batch = self._get_collated_batch()
+
+        self._indices_to_sample_from = None
+
         super().__init__(dataset=dataset, **kwargs)
 
     def __getitem__(self, idx):
@@ -69,7 +72,11 @@ class CacheDataloader(DataLoader):
 
     def _get_batch_list(self):
         """Returns a list of batches from the dataset attribute."""
-        indices = random.sample(range(len(self.dataset)), k=min(self.num_images_to_sample_from, len(self.dataset)))
+        if self._indices_to_sample_from is not None:
+            indices = random.sample(self._indices_to_sample_from, k=min(self.num_images_to_sample_from,
+                                                                        len(self._indices_to_sample_from)))
+        else:
+            indices = random.sample(range(len(self.dataset)), k=min(self.num_images_to_sample_from, len(self.dataset)))
         batch_list = []
         for idx in track(indices, description="Loading data batch"):
             batch_list.append(self.dataset.__getitem__(idx))
@@ -91,6 +98,9 @@ class CacheDataloader(DataLoader):
             for key in list(image_batch.keys()):
                 del image_batch[key]
         # TODO: At least move stuff back to CPU?
+
+    def sample_only(self, image_indices: Union[None, List[int]]):
+        self._indices_to_sample_from = image_indices
 
     def __iter__(self):
         while True:

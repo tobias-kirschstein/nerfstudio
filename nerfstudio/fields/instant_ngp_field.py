@@ -13,6 +13,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
+from nerfstudio.fields.warping import SE3Field
 from torch import nn
 from torch.nn import init
 from torch.nn.parameter import Parameter
@@ -129,17 +130,19 @@ class TCNNInstantNGPField(Field):
                 # If a deformation field is used, the time embeddings are not fed into the base MLP but into
                 # the deformation network instead
 
-                self.deformation_network = tcnn.Network(
-                    n_input_dims=3 + latent_dim_time,
-                    n_output_dims=3,
-                    network_config={
-                        "otype": "FullyFusedMLP",
-                        "activation": "ReLU",
-                        "output_activation": "None",
-                        "n_neurons": hidden_dim,
-                        "n_hidden_layers": num_layers_deformation_field,
-                    },
-                )
+                self.deformation_network = SE3Field(latent_dim_time, hidden_dim)
+
+                # self.deformation_network = tcnn.Network(
+                #     n_input_dims=3 + latent_dim_time,
+                #     n_output_dims=3,
+                #     network_config={
+                #         "otype": "FullyFusedMLP",
+                #         "activation": "ReLU",
+                #         "output_activation": "None",
+                #         "n_neurons": hidden_dim,
+                #         "n_hidden_layers": num_layers_deformation_field,
+                #     },
+                # )
                 base_network_encoding_config = hash_grid_encoding_config
                 n_base_inputs = 3
             else:
@@ -219,11 +222,22 @@ class TCNNInstantNGPField(Field):
                 timesteps = timesteps.squeeze(-1)
                 time_embeddings = self.time_embedding(timesteps)
                 if self.deformation_network is not None:
-                    deformation_inputs = [positions_flat, time_embeddings]
-                    deformation_inputs = torch.concat(deformation_inputs, dim=1)
-                    deformation = self.deformation_network(deformation_inputs)
-                    # deformation = torch.zeros_like(deformation)
-                    positions_flat = positions_flat + deformation
+                    idx_timesteps_deform = timesteps > 0 # Only deform points for other timesteps than canonical
+
+                    if idx_timesteps_deform.any():
+
+                        positions_to_deform = positions_flat[idx_timesteps_deform]
+
+                        deformed_points = self.deformation_network(positions_to_deform,
+                                                                   time_embeddings[idx_timesteps_deform])
+
+                        positions_flat[idx_timesteps_deform] = deformed_points
+
+                        # deformation_inputs = [positions_to_deform, time_embeddings[idx_timesteps_deform]]
+                        # deformation_inputs = torch.concat(deformation_inputs, dim=1)
+                        # deformation = self.deformation_network(deformation_inputs)
+                        # # deformation = torch.zeros_like(deformation)
+                        # positions_flat[idx_timesteps_deform] = positions_to_deform + deformation
 
                     base_inputs = [positions_flat]
                 else:
@@ -243,8 +257,18 @@ class TCNNInstantNGPField(Field):
             densities.append(density)
             base_mlp_outs.append(base_mlp_out)
 
-        density = torch.concat(densities)
-        base_mlp_out = torch.concat(base_mlp_outs)
+        if ray_samples.size == 0:
+            # Weird edge case
+            positions = ray_samples.frustums.get_positions()
+            positions_flat = positions.view(-1, 3)
+            positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
+
+            h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, 1 + self.geo_feat_dim)
+            density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
+            density = trunc_exp(density_before_activation.to(positions))
+        else:
+            density = torch.concat(densities)
+            base_mlp_out = torch.concat(base_mlp_outs)
 
         return density, base_mlp_out
 

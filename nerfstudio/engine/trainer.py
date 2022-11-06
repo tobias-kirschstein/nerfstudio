@@ -303,18 +303,18 @@ class Trainer:
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
 
+        self.pipeline.model.named_parameters()
+
+        self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
+        self.grad_scaler.update()
+        self.optimizers.scheduler_step_all(step)
+
         # Log gradients
         for n, p in self.pipeline.model.named_parameters():
             if p.grad is not None and p.grad.numel() > 0:
                 grad = p.grad.detach().abs()
                 writer.put_scalar(f"{n} (max)", grad.max(), step)
                 writer.put_scalar(f"{n} (mean)", grad.mean(), step)
-
-        self.pipeline.model.named_parameters()
-
-        self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
-        self.grad_scaler.update()
-        self.optimizers.scheduler_step_all(step)
 
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict

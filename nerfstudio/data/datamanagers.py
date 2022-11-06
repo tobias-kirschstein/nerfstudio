@@ -254,6 +254,8 @@ class VanillaDataManagerConfig(InstantiateConfig):
     Record3D."""
     train_num_steps_to_cache_images: int = 0  # How many train iterations are done by sampling from the same set of images
 
+    n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
+
 
 class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     """Basic stored data manager implementation.
@@ -356,6 +358,13 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
+        if step < self.config.n_steps_warmup:
+            # Only sample canonical space in the beginning
+            indices_first_timestep = list(range(self.config.dataparser.n_cameras))
+            self.train_image_dataloader.sample_only(indices_first_timestep)
+        else:
+            self.train_image_dataloader.sample_only(None)
+
         image_batch = next(self.iter_train_image_dataloader)
         batch = self.train_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
