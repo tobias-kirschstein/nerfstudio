@@ -69,7 +69,9 @@ class TCNNInstantNGPField(Field):
             n_timesteps: int = 1,
             max_ray_samples_chunk_size: int = -1,
             use_deformation_field: bool = False,
-            num_layers_deformation_field: int = 3
+            num_layers_deformation_field: int = 3,
+            no_hash_encoding: bool = False,
+            n_frequencies: int = 12
     ) -> None:
         super().__init__()
 
@@ -104,15 +106,22 @@ class TCNNInstantNGPField(Field):
                 },
             )
 
-        hash_grid_encoding_config = {
-            "n_dims_to_encode": 3,
-            "otype": "HashGrid",
-            "n_levels": n_hashgrid_levels,
-            "n_features_per_level": 2,
-            "log2_hashmap_size": log2_hashmap_size,
-            "base_resolution": 16,
-            "per_level_scale": per_level_scale,
-        }
+        if no_hash_encoding:
+            hash_grid_encoding_config = {
+                "n_dims_to_encode": 3,
+                "otype": "Frequency",
+                "n_frequencies": n_frequencies
+            }
+        else:
+            hash_grid_encoding_config = {
+                "n_dims_to_encode": 3,
+                "otype": "HashGrid",
+                "n_levels": n_hashgrid_levels,
+                "n_features_per_level": 2,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": 16,
+                "per_level_scale": per_level_scale,
+            }
 
         self.deformation_network = None
         if latent_dim_time > 0:

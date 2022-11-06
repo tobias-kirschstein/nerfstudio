@@ -96,6 +96,9 @@ class InstantNGPModelConfig(ModelConfig):
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 3
 
+    no_hash_encoding: bool = False
+    n_frequencies: int = 12
+
 
 class NGPModel(Model):
     """Instant NGP model
@@ -133,6 +136,8 @@ class NGPModel(Model):
             max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
             use_deformation_field=self.config.use_deformation_field,
             num_layers_deformation_field=self.config.n_layers_deformation_field,
+            no_hash_encoding=self.config.no_hash_encoding,
+            n_frequencies=self.config.n_frequencies
         )
 
         if self.config.use_background_network:
