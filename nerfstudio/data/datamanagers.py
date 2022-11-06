@@ -21,6 +21,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type, Union
 
+import numpy as np
 import torch
 import tyro
 from torch import nn
@@ -255,6 +256,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
     train_num_steps_to_cache_images: int = 0  # How many train iterations are done by sampling from the same set of images
 
     n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
+    n_timesteps_warmup: int = -1  # How many keyframes will be used during warmup
 
 
 class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
@@ -359,9 +361,17 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
         if step < self.config.n_steps_warmup:
-            # Only sample canonical space in the beginning
-            indices_first_timestep = list(range(self.config.dataparser.n_cameras))
-            self.train_image_dataloader.sample_only(indices_first_timestep)
+            # Only sample key frames in the beginning
+            # If n_steps_warmup == 1, only the first timestep will be used (canonical space)
+            n_cameras = self.config.dataparser.n_cameras
+            n_timesteps = self.config.dataparser.n_timesteps
+
+            key_frames = np.linspace(0, n_timesteps, num=self.config.n_timesteps_warmup).astype(int)
+            key_frame_image_indices = []
+            for key_frame in key_frames:
+                key_frame_image_indices.extend(range(key_frame * n_cameras, (key_frame + 1) * n_cameras))
+
+            self.train_image_dataloader.sample_only(key_frame_image_indices)
         else:
             self.train_image_dataloader.sample_only(None)
 
