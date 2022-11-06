@@ -474,7 +474,7 @@ class VolumetricSampler(Sampler):
             scene_aabb=self.scene_aabb,
             grid=self.occupancy_grid,
             sigma_fn=self.get_sigma_fn(rays_o, rays_d),
-            early_stop_eps=easly_stop_eps,
+            early_stop_eps=early_stop_eps,
             render_step_size=render_step_size,
             near_plane=near_plane,
             far_plane=far_plane,
