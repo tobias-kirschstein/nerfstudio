@@ -366,7 +366,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             n_cameras = self.config.dataparser.n_cameras
             n_timesteps = self.config.dataparser.n_timesteps
 
-            key_frames = np.linspace(0, n_timesteps, num=self.config.n_timesteps_warmup).astype(int)
+            key_frames = np.linspace(0, n_timesteps - 1, num=self.config.n_timesteps_warmup).astype(int)
             key_frame_image_indices = []
             for key_frame in key_frames:
                 key_frame_image_indices.extend(range(key_frame * n_cameras, (key_frame + 1) * n_cameras))

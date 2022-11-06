@@ -99,6 +99,9 @@ class InstantNGPModelConfig(ModelConfig):
     no_hash_encoding: bool = False
     n_frequencies: int = 12
 
+    early_stop_eps: float = 1e-4
+    alpha_thre: float = 1e-2
+
 
 class NGPModel(Model):
     """Instant NGP model
@@ -282,9 +285,6 @@ class NGPModel(Model):
         #     parameters.extend(self.field.deformation_network.parameters())
         # param_groups["fields"] = parameters
 
-
-
-
         # field_head_params = self.field.get_head_parameters()
         # if self.config.use_background_network:
         #     field_head_params.extend(self.mlp_background.parameters())
@@ -303,6 +303,8 @@ class NGPModel(Model):
                 far_plane=self.config.far_plane,
                 render_step_size=self.config.render_step_size,
                 cone_angle=self.config.cone_angle,
+                early_stop_eps=self.config.early_stop_eps,
+                alpha_thre=self.config.alpha_thre
             )
 
         field_outputs = self.field(ray_samples)

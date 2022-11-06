@@ -38,8 +38,8 @@ class Sampler(nn.Module):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
+            self,
+            num_samples: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.num_samples = num_samples
@@ -65,12 +65,12 @@ class SpacedSampler(Sampler):
     """
 
     def __init__(
-        self,
-        spacing_fn: Callable,
-        spacing_fn_inv: Callable,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            spacing_fn: Callable,
+            spacing_fn_inv: Callable,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(num_samples=num_samples)
         self.train_stratified = train_stratified
@@ -79,9 +79,9 @@ class SpacedSampler(Sampler):
         self.spacing_fn_inv = spacing_fn_inv
 
     def generate_ray_samples(
-        self,
-        ray_bundle: Optional[RayBundle] = None,
-        num_samples: Optional[int] = None,
+            self,
+            ray_bundle: Optional[RayBundle] = None,
+            num_samples: Optional[int] = None,
     ) -> RaySamples:
         """Generates position samples accoring to spacing function.
 
@@ -138,10 +138,10 @@ class UniformSampler(SpacedSampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(
             num_samples=num_samples,
@@ -162,10 +162,10 @@ class LinearDisparitySampler(SpacedSampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(
             num_samples=num_samples,
@@ -185,15 +185,15 @@ class SqrtSampler(SpacedSampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(
             num_samples=num_samples,
             spacing_fn=torch.sqrt,
-            spacing_fn_inv=lambda x: x**2,
+            spacing_fn_inv=lambda x: x ** 2,
             train_stratified=train_stratified,
             single_jitter=single_jitter,
         )
@@ -208,10 +208,10 @@ class LogSampler(SpacedSampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(
             num_samples=num_samples,
@@ -234,10 +234,10 @@ class UniformLinDispPiecewiseSampler(SpacedSampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified=True,
-        single_jitter=False,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified=True,
+            single_jitter=False,
     ) -> None:
         super().__init__(
             num_samples=num_samples,
@@ -260,12 +260,12 @@ class PDFSampler(Sampler):
     """
 
     def __init__(
-        self,
-        num_samples: Optional[int] = None,
-        train_stratified: bool = True,
-        single_jitter: bool = False,
-        include_original: bool = True,
-        histogram_padding: float = 0.01,
+            self,
+            num_samples: Optional[int] = None,
+            train_stratified: bool = True,
+            single_jitter: bool = False,
+            include_original: bool = True,
+            histogram_padding: float = 0.01,
     ) -> None:
         super().__init__(num_samples=num_samples)
         self.train_stratified = train_stratified
@@ -274,12 +274,12 @@ class PDFSampler(Sampler):
         self.single_jitter = single_jitter
 
     def generate_ray_samples(
-        self,
-        ray_bundle: Optional[RayBundle] = None,
-        ray_samples: Optional[RaySamples] = None,
-        weights: TensorType[..., "num_samples", 1] = None,
-        num_samples: Optional[int] = None,
-        eps: float = 1e-5,
+            self,
+            ray_bundle: Optional[RayBundle] = None,
+            ray_samples: Optional[RaySamples] = None,
+            weights: TensorType[..., "num_samples", 1] = None,
+            num_samples: Optional[int] = None,
+            eps: float = 1e-5,
     ) -> RaySamples:
         """Generates position samples given a distribution.
 
@@ -330,7 +330,7 @@ class PDFSampler(Sampler):
         u = u.contiguous()
 
         assert (
-            ray_samples.spacing_starts is not None and ray_samples.spacing_ends is not None
+                ray_samples.spacing_starts is not None and ray_samples.spacing_ends is not None
         ), "ray_sample spacing_starts and spacing_ends must be provided"
         assert ray_samples.spacing_to_euclidean_fn is not None, "ray_samples.spacing_to_euclidean_fn must be provided"
         existing_bins = torch.cat(
@@ -383,11 +383,11 @@ class VolumetricSampler(Sampler):
     """
 
     def __init__(
-        self,
-        occupancy_grid: Optional[OccupancyGrid] = None,
-        density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
-        scene_aabb: Optional[TensorType[2, 3]] = None,
-        camera_frustums: Optional[List[Frustum]] = None
+            self,
+            occupancy_grid: Optional[OccupancyGrid] = None,
+            density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
+            scene_aabb: Optional[TensorType[2, 3]] = None,
+            camera_frustums: Optional[List[Frustum]] = None
     ) -> None:
 
         super().__init__()
@@ -430,12 +430,14 @@ class VolumetricSampler(Sampler):
 
     # pylint: disable=arguments-differ
     def forward(
-        self,
-        ray_bundle: RayBundle,
-        render_step_size: float,
-        near_plane: float = 0.0,
-        far_plane: Optional[float] = None,
-        cone_angle: float = 0.0,
+            self,
+            ray_bundle: RayBundle,
+            render_step_size: float,
+            near_plane: float = 0.0,
+            far_plane: Optional[float] = None,
+            cone_angle: float = 0.0,
+            early_stop_eps: float = 1e-4,
+            alpha_thre: float = 1e-2
     ) -> Tuple[RaySamples, TensorType["total_samples", 3], TensorType["total_samples", 2]]:
         """Generate ray samples in a bounding box.
 
@@ -472,12 +474,13 @@ class VolumetricSampler(Sampler):
             scene_aabb=self.scene_aabb,
             grid=self.occupancy_grid,
             sigma_fn=self.get_sigma_fn(rays_o, rays_d),
+            early_stop_eps=easly_stop_eps,
             render_step_size=render_step_size,
             near_plane=near_plane,
             far_plane=far_plane,
             stratified=self.training,
             cone_angle=cone_angle,
-            alpha_thre=1e-2,
+            alpha_thre=alpha_thre,
         )
         num_samples = starts.shape[0]
         if num_samples == 0:
@@ -572,12 +575,12 @@ class ProposalNetworkSampler(Sampler):
     """Sampler that uses a proposal network to generate samples."""
 
     def __init__(
-        self,
-        num_proposal_samples_per_ray: Tuple[int] = (64,),
-        num_nerf_samples_per_ray: int = 32,
-        num_proposal_network_iterations: int = 2,
-        single_jitter: bool = False,
-        update_sched: Callable = lambda x: 1,
+            self,
+            num_proposal_samples_per_ray: Tuple[int] = (64,),
+            num_nerf_samples_per_ray: int = 32,
+            num_proposal_network_iterations: int = 2,
+            single_jitter: bool = False,
+            update_sched: Callable = lambda x: 1,
     ) -> None:
         super().__init__()
         self.num_proposal_samples_per_ray = num_proposal_samples_per_ray
@@ -605,9 +608,9 @@ class ProposalNetworkSampler(Sampler):
         self._steps_since_update += 1
 
     def generate_ray_samples(
-        self,
-        ray_bundle: Optional[RayBundle] = None,
-        density_fns: Optional[List[Callable]] = None,
+            self,
+            ray_bundle: Optional[RayBundle] = None,
+            density_fns: Optional[List[Callable]] = None,
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
