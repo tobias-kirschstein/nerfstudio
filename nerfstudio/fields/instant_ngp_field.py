@@ -170,7 +170,7 @@ class TCNNInstantNGPField(Field):
             n_output_dims=1 + self.geo_feat_dim,
             encoding_config=base_network_encoding_config,
             network_config={
-                "otype": "FullyFusedMLP",
+                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
                 "output_activation": "None",
                 "n_neurons": hidden_dim,
