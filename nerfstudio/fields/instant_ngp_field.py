@@ -2,7 +2,7 @@
 Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
-from math import ceil
+from math import ceil, sqrt
 from typing import Optional, List
 
 import torch
@@ -159,7 +159,7 @@ class TCNNInstantNGPField(Field):
                 n_base_inputs = 3 + latent_dim_time
 
             self.time_embedding = nn.Embedding(self.n_timesteps, latent_dim_time)
-            init.normal_(self.time_embedding.weight, mean=0., std=0.01)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(latent_dim_time))
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
