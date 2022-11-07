@@ -101,6 +101,7 @@ class InstantNGPModelConfig(ModelConfig):
 
     early_stop_eps: float = 1e-4
     alpha_thre: float = 1e-2
+    density_threshold: Optional[float] = None  # if set, densities below the value will be ignored during inference
 
 
 class NGPModel(Model):
@@ -140,7 +141,8 @@ class NGPModel(Model):
             use_deformation_field=self.config.use_deformation_field,
             num_layers_deformation_field=self.config.n_layers_deformation_field,
             no_hash_encoding=self.config.no_hash_encoding,
-            n_frequencies=self.config.n_frequencies
+            n_frequencies=self.config.n_frequencies,
+            density_threshold=self.config.density_threshold
         )
 
         if self.config.use_background_network:

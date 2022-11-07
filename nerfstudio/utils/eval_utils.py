@@ -67,7 +67,9 @@ def eval_setup(config_path: Path,
                eval_num_rays_per_chunk: Optional[int] = None,
                view_frustum_culling: Optional[bool] = None,
                checkpoint_step: Optional[int] = None,
-               eval_scene_box_scale: Optional[float] = None) -> Tuple[cfg.Config, Pipeline, Path]:
+               eval_scene_box_scale: Optional[float] = None,
+               near_plane: Optional[float] = None,
+               density_threshold: Optional[float] = None) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
@@ -96,6 +98,12 @@ def eval_setup(config_path: Path,
             config.pipeline.model.eval_scene_box_scale = None
         else:
             config.pipeline.model.eval_scene_box_scale = eval_scene_box_scale
+
+    if near_plane is not None:
+        config.pipeline.model.near_plane = near_plane
+
+    if density_threshold is not None:
+        config.pipeline.model.density_threshold = density_threshold
 
     # load checkpoints from wherever they were saved
     # TODO: expose the ability to choose an arbitrary checkpoint

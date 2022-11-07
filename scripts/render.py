@@ -87,6 +87,7 @@ def _render_trajectory_video(
             else:
                 images.append(image)
 
+
     if output_format == "video":
         fps = len(images) / seconds
         # make the folder if it doesn't exist
@@ -129,6 +130,9 @@ class RenderTrajectory:
     eval_scene_box_scale: Optional[float] = None  # Whether to not restrict the scene box during rendering
     checkpoint_step: Optional[int] = None
 
+    near_plane: Optional[float] = None
+    density_threshold: Optional[float] = None
+
     def main(self) -> None:
         """Main function."""
 
@@ -137,7 +141,9 @@ class RenderTrajectory:
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
             view_frustum_culling=self.view_frustum_culling,
             checkpoint_step=self.checkpoint_step,
-            eval_scene_box_scale=self.eval_scene_box_scale
+            eval_scene_box_scale=self.eval_scene_box_scale,
+            near_plane=self.near_plane,
+            density_threshold=self.density_threshold
         )
 
         install_checks.check_ffmpeg_installed()

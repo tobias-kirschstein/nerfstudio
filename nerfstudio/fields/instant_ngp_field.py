@@ -72,7 +72,8 @@ class TCNNInstantNGPField(Field):
             use_deformation_field: bool = False,
             num_layers_deformation_field: int = 3,
             no_hash_encoding: bool = False,
-            n_frequencies: int = 12
+            n_frequencies: int = 12,
+            density_threshold: Optional[float] = None
     ) -> None:
         super().__init__()
 
@@ -81,6 +82,7 @@ class TCNNInstantNGPField(Field):
         self.contraction_type = contraction_type
         self.n_timesteps = n_timesteps
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
+        self.density_threshold = density_threshold
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -253,6 +255,9 @@ class TCNNInstantNGPField(Field):
             # softplus, because it enables high post-activation (float32) density outputs
             # from smaller internal (float16) parameters.
             density = trunc_exp(density_before_activation.to(positions))
+
+            if not self.training and self.density_threshold is not None:
+                density[density < self.density_threshold] = 0
 
             densities.append(density)
             base_mlp_outs.append(base_mlp_out)
