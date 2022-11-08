@@ -89,6 +89,7 @@ class InstantNGPModelConfig(ModelConfig):
     num_layers_background: int = 3
 
     use_spherical_harmonics: bool = True
+    disable_view_dependency: bool = False
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
@@ -144,7 +145,8 @@ class NGPModel(Model):
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
-            use_4d_hashing=self.config.use_4d_hashing
+            use_4d_hashing=self.config.use_4d_hashing,
+            disable_view_dependency=self.config.disable_view_dependency
         )
 
         if self.config.use_background_network:
