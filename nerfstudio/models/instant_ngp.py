@@ -91,6 +91,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_spherical_harmonics: bool = True
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
+    use_4d_hashing: bool = False
     max_ray_samples_chunk_size: int = -1
 
     use_deformation_field: bool = False
@@ -142,7 +143,8 @@ class NGPModel(Model):
             num_layers_deformation_field=self.config.n_layers_deformation_field,
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
-            density_threshold=self.config.density_threshold
+            density_threshold=self.config.density_threshold,
+            use_4d_hashing=self.config.use_4d_hashing
         )
 
         if self.config.use_background_network:

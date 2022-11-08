@@ -73,7 +73,8 @@ class TCNNInstantNGPField(Field):
             num_layers_deformation_field: int = 3,
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
-            density_threshold: Optional[float] = None
+            density_threshold: Optional[float] = None,
+            use_4d_hashing: bool = float
     ) -> None:
         super().__init__()
 
@@ -83,6 +84,7 @@ class TCNNInstantNGPField(Field):
         self.n_timesteps = n_timesteps
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
         self.density_threshold = density_threshold
+        self.use_4d_hashing = use_4d_hashing
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -117,7 +119,7 @@ class TCNNInstantNGPField(Field):
             }
         else:
             hash_grid_encoding_config = {
-                "n_dims_to_encode": 3,
+                "n_dims_to_encode": 4 if use_4d_hashing else 3,
                 "otype": "HashGrid",
                 "n_levels": n_hashgrid_levels,
                 "n_features_per_level": 2,
@@ -127,7 +129,7 @@ class TCNNInstantNGPField(Field):
             }
 
         self.deformation_network = None
-        if latent_dim_time > 0:
+        if latent_dim_time > 0 and not use_4d_hashing:
             if use_deformation_field:
                 # If a deformation field is used, the time embeddings are not fed into the base MLP but into
                 # the deformation network instead
@@ -165,7 +167,7 @@ class TCNNInstantNGPField(Field):
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
-            n_base_inputs = 3
+            n_base_inputs = 4 if use_4d_hashing else 3
 
         self.mlp_base = tcnn.NetworkWithInputEncoding(
             n_input_dims=n_base_inputs,
@@ -212,7 +214,7 @@ class TCNNInstantNGPField(Field):
             positions_flat = positions.view(-1, 3)
             positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
-            if self.time_embedding is not None:
+            if self.time_embedding is not None or self.use_4d_hashing:
                 timesteps = ray_samples_chunk.timesteps
                 if timesteps is None:
                     # Assume ray_samples come from occupancy grid.
@@ -222,28 +224,33 @@ class TCNNInstantNGPField(Field):
                     timesteps = torch.randint(self.n_timesteps, (ray_samples_chunk.size,)).to(positions_flat.device)
 
                 timesteps = timesteps.squeeze(-1)
-                time_embeddings = self.time_embedding(timesteps)
-                if self.deformation_network is not None:
-                    idx_timesteps_deform = timesteps > 0 # Only deform points for other timesteps than canonical
 
-                    if idx_timesteps_deform.any():
-
-                        positions_to_deform = positions_flat[idx_timesteps_deform]
-
-                        deformed_points = self.deformation_network(positions_to_deform,
-                                                                   time_embeddings[idx_timesteps_deform])
-
-                        positions_flat[idx_timesteps_deform] = deformed_points
-
-                        # deformation_inputs = [positions_to_deform, time_embeddings[idx_timesteps_deform]]
-                        # deformation_inputs = torch.concat(deformation_inputs, dim=1)
-                        # deformation = self.deformation_network(deformation_inputs)
-                        # # deformation = torch.zeros_like(deformation)
-                        # positions_flat[idx_timesteps_deform] = positions_to_deform + deformation
-
-                    base_inputs = [positions_flat]
+                if self.use_4d_hashing:
+                    timesteps = timesteps.float() / self.n_timesteps
+                    base_inputs = [positions_flat, timesteps.unsqueeze(1)]
                 else:
-                    base_inputs = [positions_flat, time_embeddings]
+                    time_embeddings = self.time_embedding(timesteps)
+                    if self.deformation_network is not None:
+                        idx_timesteps_deform = timesteps > 0 # Only deform points for other timesteps than canonical
+
+                        if idx_timesteps_deform.any():
+
+                            positions_to_deform = positions_flat[idx_timesteps_deform]
+
+                            deformed_points = self.deformation_network(positions_to_deform,
+                                                                       time_embeddings[idx_timesteps_deform])
+
+                            positions_flat[idx_timesteps_deform] = deformed_points
+
+                            # deformation_inputs = [positions_to_deform, time_embeddings[idx_timesteps_deform]]
+                            # deformation_inputs = torch.concat(deformation_inputs, dim=1)
+                            # deformation = self.deformation_network(deformation_inputs)
+                            # # deformation = torch.zeros_like(deformation)
+                            # positions_flat[idx_timesteps_deform] = positions_to_deform + deformation
+
+                        base_inputs = [positions_flat]
+                    else:
+                        base_inputs = [positions_flat, time_embeddings]
             else:
                 base_inputs = [positions_flat]
 
