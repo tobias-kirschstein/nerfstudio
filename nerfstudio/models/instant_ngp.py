@@ -83,6 +83,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
     lambda_beta_loss: float = 0
+    lambda_l1_field_regularization: float = 0
 
     use_background_network: bool = False
     lambda_background_adjustment_regularization: float = 1
@@ -497,6 +498,10 @@ class NGPModel(Model):
             sparsity_loss = self.config.lambda_sparse_prior * accumulation_per_ray.mean()
             # sparsity_loss = self.config.lambda_sparse_prior * (1 + 2 * weights.pow(2)).log().sum()
             loss_dict["sparsity_loss"] = sparsity_loss
+
+        # TODO: L1 regularization for hash table (Is inside mlp_base)
+        if self.config.lambda_l1_field_regularization > 0:
+            loss_dict["l1_field_regularization"] = self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
 
         return loss_dict
 
