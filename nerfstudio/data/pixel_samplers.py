@@ -75,30 +75,26 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
         ).long()
 
     c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
-    image = batch["image"][c, y, x]
-    mask, semantics_stuff, semantics_thing = None, None, None
-    if "mask" in batch:
-        mask = batch["mask"][c, y, x]
-    if "semantics_stuff" in batch:
-        semantics_stuff = batch["semantics_stuff"][c, y, x]
-    if "semantics_thing" in batch:
-        semantics_thing = batch["semantics_thing"][c, y, x]
-    assert image.shape == (num_rays_per_batch, 3), image.shape
+    collated_batch = {key: value[c, y, x] for key, value in batch.items() if key not in {'image_idx', 'cam_ids', 'timesteps'} and value is not None}
+
+    assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
 
     # Needed to correct the random indices to their actual camera idx locations.
     local_indices = indices.clone()
     indices[:, 0] = batch["image_idx"][c]
-    collated_batch = {
-        "local_indices": local_indices,  # local to the batch returned
-        "indices": indices,  # with the abs camera indices
-        "image": image,
-    }
-    if mask is not None:
-        collated_batch["mask"] = mask
-    if semantics_stuff is not None:
-        collated_batch["semantics_stuff"] = semantics_stuff
-    if semantics_thing is not None:
-        collated_batch["semantics_thing"] = semantics_thing
+    collated_batch["indices"] = indices  # with the abs camera indices
+    collated_batch["local_indices"] = local_indices
+    collated_batch["cam_ids"] = batch['cam_ids']
+    collated_batch['timesteps'] = batch['timesteps']
+
+    # v0.1.9 change
+    # collated_batch = {key: value[c, y, x] for key, value in batch.items() if key != "image_idx" and value is not None}
+    #
+    # assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
+    #
+    # # Needed to correct the random indices to their actual camera idx locations.
+    # indices[:, 0] = batch["image_idx"][c]
+    # collated_batch["indices"] = indices  # with the abs camera indices
 
     if keep_full_image:
         collated_batch["full_image"] = batch["image"]

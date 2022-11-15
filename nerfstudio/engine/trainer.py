@@ -150,12 +150,13 @@ class Trainer:
 
                 # Changed: Added train_duration
                 train_duration = max(train_t.duration, 0.01)  # Ensure train_t.duration is never 0
-                writer.put_time(
-                    name=EventName.TRAIN_RAYS_PER_SEC,
-                    duration=self.config.pipeline.datamanager.train_num_rays_per_batch / train_duration,
-                    step=step,
-                    avg_over_steps=True,
-                )
+                if step > 1:
+                    writer.put_time(
+                        name=EventName.TRAIN_RAYS_PER_SEC,
+                        duration=self.config.pipeline.datamanager.train_num_rays_per_batch / train_duration,
+                        step=step,
+                        avg_over_steps=True,
+                    )
 
                 self._update_viewer_state(step)
 
@@ -173,6 +174,9 @@ class Trainer:
                 writer.write_out_storage()
             # save checkpoint at the end of training
             self.save_checkpoint(step)
+            CONSOLE.rule()
+            CONSOLE.print("[bold green]:tada: :tada: :tada: Training Finished :tada: :tada: :tada:", justify="center")
+            CONSOLE.print("Use ctrl+c to quit", justify="center")
             self._always_render(step)
 
     @check_main_thread
@@ -304,9 +308,6 @@ class Trainer:
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
-
-        self.pipeline.model.named_parameters()
-
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
         self.grad_scaler.update()
         self.optimizers.scheduler_step_all(step)
