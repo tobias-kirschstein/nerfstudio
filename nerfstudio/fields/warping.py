@@ -129,9 +129,9 @@ class SE3Field(nn.Module):
                 ]
             },
             network_config={
-                "otype": "FullyFusedMLP",
+                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
-                "output_activation": "None",
+                "output_activation": "ReLU",
                 "n_neurons": hidden_dim,
                 "n_hidden_layers": n_layers_trunk,
             },
@@ -141,9 +141,9 @@ class SE3Field(nn.Module):
             n_input_dims=hidden_dim,
             n_output_dims=3,
             network_config={
-                "otype": "FullyFusedMLP",
+                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
-                "output_activation": "Sigmoid",
+                "output_activation": "None",
                 "n_neurons": hidden_dim,
                 "n_hidden_layers": n_layers_w_head,
             }
@@ -153,9 +153,9 @@ class SE3Field(nn.Module):
             n_input_dims=hidden_dim,
             n_output_dims=3,
             network_config={
-                "otype": "FullyFusedMLP",
+                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
-                "output_activation": "Sigmoid",
+                "output_activation": "None",
                 "n_neurons": hidden_dim,
                 "n_hidden_layers": n_layers_v_head,
             }
@@ -175,8 +175,10 @@ class SE3Field(nn.Module):
         trunk_output = self.trunk(trunk_inputs)  # [B, D]
 
         # TODO: maximum scale is somewhat arbitrary
-        w = (self.w_head(trunk_output) - 0.5) * 4 * np.pi  # [B, 3]
-        v = (self.v_head(trunk_output) - 0.5) * 2 # [B, 3]
+        # w = (self.w_head(trunk_output) - 0.5) * 4 * np.pi  # [B, 3]
+        # v = (self.v_head(trunk_output) - 0.5) * 2 # [B, 3]
+        w = self.w_head(trunk_output)  # [B, 3]
+        v = self.v_head(trunk_output)  # [B, 3]
 
         theta = w.norm(dim=1)
         w = w / theta[..., None]
