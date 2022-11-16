@@ -110,7 +110,8 @@ class CacheDataloader(DataLoader):
         #  1) All images are always cached -> never delete them
         #  2) A set of images is cached for a certain number of train steps -> delete when cache period for these images is over
         if not self.cache_all_images \
-                and (self.num_times_to_repeat_images <= 0 or self.num_repeated >= self.num_times_to_repeat_images):
+                and self.num_times_to_repeat_images > 0 \
+                and self.num_repeated >= self.num_times_to_repeat_images:
             for key in list(image_batch.keys()):
                 del image_batch[key]
         # TODO: At least move stuff back to CPU?
