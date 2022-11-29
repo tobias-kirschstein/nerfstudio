@@ -793,12 +793,13 @@ class ViewerState:
                 )
                 print(f"Error: {e}")
                 del camera_ray_bundle
+                camera_ray_bundle = None
                 torch.cuda.empty_cache()
                 time.sleep(0.5)  # sleep to allow buffer to reset
 
         graph.train()
         outputs = render_thread.vis_outputs
-        if outputs is not None:
+        if outputs is not None and camera_ray_bundle is not None:
             colors = graph.colors if hasattr(graph, "colors") else None
             self._send_output_to_viewer(outputs, colors=colors)
             self._update_viewer_stats(
