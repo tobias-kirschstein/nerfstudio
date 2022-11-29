@@ -24,6 +24,10 @@ import time
 from typing import Dict, List, Tuple
 
 import torch
+from rich.console import Console
+from torch.cuda.amp.grad_scaler import GradScaler
+from typing_extensions import Literal
+
 from nerfstudio.configs import base_config as cfg
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
@@ -100,11 +104,14 @@ class Trainer:
         writer.put_config(name="config", config_dict=dataclasses.asdict(config), step=0)
         profiler.setup_profiler(config.logging)
 
-    def setup(self, test_mode=False):
+    def setup(self, test_mode: Literal["test", "val", "inference"] = "val"):
         """Setup the Trainer by calling other setup functions.
 
         Args:
-            test_mode: Whether to setup for testing. Defaults to False.
+            test_mode:
+                'val': loads train/val datasets into memory
+                'test': loads train/test datset into memory
+                'inference': does not load any dataset into memory
         """
 
         self.pipeline: VanillaPipeline = self.config.pipeline.setup(
@@ -130,6 +137,7 @@ class Trainer:
         self._init_viewer_state()
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.trainer.max_num_iterations
+            step = 0
             for step in range(self._start_step, self._start_step + num_iterations):
                 with TimeWriter(writer, EventName.ITER_TRAIN_TIME, step=step) as train_t:
 
@@ -174,10 +182,12 @@ class Trainer:
                 writer.write_out_storage()
             # save checkpoint at the end of training
             self.save_checkpoint(step)
+
             CONSOLE.rule()
             CONSOLE.print("[bold green]:tada: :tada: :tada: Training Finished :tada: :tada: :tada:", justify="center")
-            CONSOLE.print("Use ctrl+c to quit", justify="center")
-            self._always_render(step)
+            if not self.config.viewer.quit_on_train_completion:
+                CONSOLE.print("Use ctrl+c to quit", justify="center")
+                self._always_render(step)
 
     @check_main_thread
     def _always_render(self, step):
