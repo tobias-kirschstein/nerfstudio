@@ -326,7 +326,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     def create_train_dataset(self) -> InputDataset:
         """Sets up the data loaders for training"""
         return InMemoryInputDataset(
-            dataparser_outputs=self.config.dataparser.setup().get_dataparser_outputs(split="train"),
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split="train"),
             scale_factor=self.config.camera_res_scale_factor
         )
 

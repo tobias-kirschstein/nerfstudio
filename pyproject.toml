@@ -46,7 +46,9 @@ dependencies = [
     "torchvision>=0.13.0",
     "u-msgpack-python>=2.4.1",
     "nuscenes-devkit>=1.1.1",
-    "wandb>=0.13.3"
+    "wandb>=0.13.3",
+    "torch_efficient_distloss>=0.1.3",
+    "pytorch3d>=0.7.1"
 ]
 
 [project.urls]

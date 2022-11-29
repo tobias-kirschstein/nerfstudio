@@ -32,9 +32,9 @@ from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.field_components.encodings import NeRFEncoding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
-from nerfstudio.fields.vanilla_nerf_field import NeRFField
+from nerfstudio.fields.vanilla_nerf_field import NeRFField, TCNNNeRFField
 from nerfstudio.model_components.losses import MSELoss
-from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
+from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler, VolumetricSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
@@ -59,6 +59,9 @@ class VanillaModelConfig(ModelConfig):
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
 
+    n_layers: int = 8
+    hidden_dim: int = 256
+
 
 class NeRFModel(Model):
     """Vanilla NeRF model
@@ -66,6 +69,8 @@ class NeRFModel(Model):
     Args:
         config: Basic NeRF configuration to instantiate model
     """
+
+    config: VanillaModelConfig
 
     def __init__(
         self,
@@ -93,22 +98,38 @@ class NeRFModel(Model):
             in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
         )
 
+        # self.field_coarse = TCNNNeRFField(
+        #     position_encoding=position_encoding,
+        #     direction_encoding=direction_encoding
+        # )
+        #
+        # self.field_fine = TCNNNeRFField(
+        #     position_encoding=position_encoding,
+        #     direction_encoding=direction_encoding,
+        # )
+
         self.field_coarse = NeRFField(
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim
+
         )
 
         self.field_fine = NeRFField(
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim
         )
 
         # samplers
         self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
+        # self.sampler_uniform = VolumetricSampler(scene_aabb=scene_aabb, )
         self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
+        self.renderer_rgb = RGBRenderer(background_color="random")
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 

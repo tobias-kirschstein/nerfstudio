@@ -100,6 +100,8 @@ class CacheDataloader(DataLoader):
                                                                         len(self._indices_to_sample_from)))
         else:
             indices = random.sample(range(len(self.dataset)), k=min(self.num_images_to_sample_from, len(self.dataset)))
+
+        indices = random.sample(range(len(self.dataset)), k=self.num_images_to_sample_from)
         batch_list = []
         results = []
 

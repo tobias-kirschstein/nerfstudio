@@ -15,6 +15,7 @@
 """
 Multi Layer Perceptron
 """
+from dataclasses import dataclass
 from typing import Optional, Set, Tuple
 
 import torch
@@ -22,6 +23,7 @@ from torch import nn
 from torchtyping import TensorType
 
 from nerfstudio.field_components.base_field_component import FieldComponent
+import tinycudann as tcnn
 
 
 class MLP(FieldComponent):
@@ -37,14 +39,14 @@ class MLP(FieldComponent):
     """
 
     def __init__(
-        self,
-        in_dim: int,
-        num_layers: int,
-        layer_width: int,
-        out_dim: Optional[int] = None,
-        skip_connections: Optional[Tuple[int]] = None,
-        activation: Optional[nn.Module] = nn.ReLU(),
-        out_activation: Optional[nn.Module] = None,
+            self,
+            in_dim: int,
+            num_layers: int,
+            layer_width: int,
+            out_dim: Optional[int] = None,
+            skip_connections: Optional[Tuple[int]] = None,
+            activation: Optional[nn.Module] = nn.ReLU(),
+            out_activation: Optional[nn.Module] = None,
     ) -> None:
 
         super().__init__()
@@ -96,4 +98,82 @@ class MLP(FieldComponent):
                 x = self.activation(x)
         if self.out_activation is not None:
             x = self.out_activation(x)
+        return x
+
+
+@dataclass
+class TCNNMLPConfig:
+    n_input_dims: int
+    n_output_dims: int
+    n_layers: int  # Number of weight matrices
+    layer_width: int
+    skip_connections: Optional[Tuple[int]] = None
+    activation: Optional[str] = 'ReLU'
+    out_activation: Optional[str] = None
+
+
+class TCNNMLP(FieldComponent):
+
+    def __init__(self,
+                 config: TCNNMLPConfig
+                 ):
+        super(TCNNMLP, self).__init__(in_dim=config.n_input_dims, out_dim=config.n_output_dims)
+        self._config = config
+        self._mlps = None
+        self.build_nn_modules()
+
+    def build_nn_modules(self) -> None:
+        base_network_config = {
+            "otype": "FullyFusedMLP" if self._config.layer_width <= 128 else "CutlassMLP",
+            "activation": self._config.activation,
+            "output_activation": self._config.out_activation,
+            "n_neurons": self._config.layer_width,
+            # "n_hidden_layers": self._config.n_layers - 1
+        }
+        self._mlps = []
+        if self._config.skip_connections is None:
+            skip_connections = []
+        else:
+            skip_connections = self._config.skip_connections
+
+        previous_mlp_out_dim = 0
+        previous_skip_connection = 0
+        for skip_connection in skip_connections:
+            network_config = base_network_config.copy()
+            network_config["n_hidden_layers"] = skip_connection - previous_skip_connection - 1
+            mlp = tcnn.Network(previous_mlp_out_dim + self._config.n_input_dims,
+                               self._config.layer_width,
+                               network_config)
+
+            previous_mlp_out_dim = self._config.layer_width
+            previous_skip_connection = skip_connection
+            self._mlps.append(mlp)
+
+        network_config = base_network_config.copy()
+        network_config["n_hidden_layers"] = self._config.n_layers - previous_skip_connection - 1
+        mlp = tcnn.Network(previous_mlp_out_dim + self._config.n_input_dims,
+                           self._config.n_output_dims,
+                           network_config)
+        self._mlps.append(mlp)
+        # else:
+        #     network_config = base_network_config.copy()
+        #     network_config["n_hidden_layers"] = self._config.n_layers - 1
+        #     mlp = tcnn.Network(self._config.n_input_dims, self._config.n_output_dims, network_config)
+        #     self._mlps.append(mlp)
+
+    def forward(self, in_tensor: TensorType["bs":..., "in_dim"]) -> TensorType["bs":..., "out_dim"]:
+        assert self._mlps is not None, "build_nn_modules() not called"
+
+        original_shape = in_tensor.shape
+        in_tensor = in_tensor.view(-1, original_shape[-1])  # Flatten everything into batch dimension
+        # x = in_tensor
+        x = torch.zeros((in_tensor.shape[0], 0), device=in_tensor.device, dtype=in_tensor.dtype)
+        for i, mlp in enumerate(self._mlps):
+            x = torch.cat([in_tensor, x], -1)  # Add original input for skip connection
+            x = mlp(x)  # Forward
+
+        out_shape = list(original_shape)
+        out_shape[-1] = self._config.n_output_dims
+        x = x.view(out_shape)
+
         return x
