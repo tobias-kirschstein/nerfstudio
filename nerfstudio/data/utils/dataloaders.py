@@ -62,6 +62,8 @@ class CacheDataloader(DataLoader):
         self.first_time = True
 
         self.cached_collated_batch = None
+        self._indices_to_sample_from = None
+
         if self.cache_all_images:
             CONSOLE.print(f"Caching all {len(self.dataset)} images.")
             if len(self.dataset) > 500:
@@ -78,8 +80,6 @@ class CacheDataloader(DataLoader):
                 f"Caching {self.num_images_to_sample_from} out of {len(self.dataset)} images, "
                 f"resampling every {self.num_times_to_repeat_images} iters."
             )
-
-        self._indices_to_sample_from = None
 
         super().__init__(dataset=dataset, **kwargs)
 

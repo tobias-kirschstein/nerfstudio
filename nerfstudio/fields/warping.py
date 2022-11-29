@@ -1,9 +1,10 @@
 from typing import Optional, Iterable
 
-import numpy as np
+import pytorch3d
+import pytorch3d.transforms
+import tinycudann as tcnn
 import torch
 from torch import nn
-import tinycudann as tcnn
 from torch.nn import init
 
 
@@ -11,9 +12,9 @@ def skew(w: torch.Tensor) -> torch.Tensor:
     """Build a skew matrix ("cross product matrix") for vector w.
     Modern Robotics Eqn 3.30.
     Args:
-      w: (3,) A 3-vector
+      w: (B, 3,) A 3-vector
     Returns:
-      W: (3, 3) A skew matrix such that W @ v == w x v
+      W: (B, 3, 3) A skew matrix such that W @ v == w x v
     """
     B = w.shape[0]
     assert len(w.shape) == 2
@@ -36,10 +37,11 @@ def exp_so3(W: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     """Exponential map from Lie algebra so3 to Lie group SO3.
     Modern Robotics Eqn 3.51, a.k.a. Rodrigues' formula.
     Args:
-      w: (3,) An axis of rotation.
-      theta: An angle of rotation.
+      W: skew symmetric matrix W (B, 3, 3) derived from a (B, 3,) axis of rotation.
+        Note, it is assumed that the w that W is derived from is a unit vector
+      theta: (B,) An angle of rotation.
     Returns:
-      R: (3, 3) An orthonormal rotation matrix representing a rotation of
+      R: (B, 3, 3) An orthonormal rotation matrix representing a rotation of
         magnitude theta about axis w.
     """
     # W = skew(w)
@@ -47,7 +49,10 @@ def exp_so3(W: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     B = W.shape[0]
     theta = theta.view(B, 1, 1)
     identities = torch.eye(3, dtype=W.dtype, device=W.device).unsqueeze(0).repeat((B, 1, 1))
+    # Here, it is assumed that W is derived from unit vector rotation axes w.
+    # Otherwise, would have to divide by theta and theta^2
     return identities + torch.sin(theta) * W + (1.0 - torch.cos(theta)) * W @ W
+    # return identities + torch.sin(theta) / theta * W + (1.0 - torch.cos(theta) / theta.pow(2)) * W @ W
 
 
 def rp_to_se3(R: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
@@ -75,7 +80,7 @@ def exp_se3(S: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     """Exponential map from Lie algebra so3 to Lie group SO3.
     Modern Robotics Eqn 3.88.
     Args:
-      S: (6,) A screw axis of motion.
+      S: (6,) A screw axis of motion. Consists of 2 3-vectors with unit norm
       theta: Magnitude of motion.
     Returns:
       a_X_b: (4, 4) The homogeneous transformation matrix attained by integrating
@@ -103,17 +108,48 @@ def from_homogenous(v) -> torch.Tensor:
     return v[..., :3] / v[..., -1:]
 
 
-class SE3Field(nn.Module):
+class DeformationField(nn.Module):
+    def __init__(self, n_hidden_layers: int, hidden_dim: int, latent_dim_time: int):
+        super(DeformationField, self).__init__()
+        self.deformation_network = tcnn.Network(
+            n_input_dims=3 + latent_dim_time,
+            n_output_dims=3,
+            network_config={
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": hidden_dim,
+                "n_hidden_layers": n_hidden_layers,
+            },
+        )
+        nn.init.normal_(self.deformation_network.params, 0, 1e-2)  # maybe use uniform initialization
 
-    def __init__(self, dim_latent_code: int, hidden_dim: int,
+    def forward(self, points: torch.Tensor, latent_codes: torch.Tensor) -> torch.Tensor:
+        network_input = torch.concat([points, latent_codes], dim=1)  # [B, 3 + D]
+        warped_points = self.deformation_network.forward(network_input).to(points)
+        # TODO: Catch nans?
+        return warped_points
+
+
+class SE3Field(nn.Module):
+    """
+    Models deformations as SE3 transformations per 3D point.
+    x' = D(x)
+    outputs are already deformed points (not deformation offset)
+    """
+
+    def __init__(self,
+                 dim_latent_code: int,
+                 hidden_dim: int,
                  n_layers_trunk=3,
-                 n_layers_w_head = 3,
-                 n_layers_v_head = 3,
+                 n_layers_w_head=3,
+                 n_layers_v_head=3,
                  n_frequencies: int = 4):
         super(SE3Field, self).__init__()
 
+        n_input_dims_trunk = 3 + dim_latent_code
         self.trunk = tcnn.NetworkWithInputEncoding(
-            n_input_dims=3 + dim_latent_code,
+            n_input_dims=n_input_dims_trunk,
             n_output_dims=hidden_dim,
             encoding_config={
                 "otype": "Composite",
@@ -137,8 +173,9 @@ class SE3Field(nn.Module):
             },
         )
 
+        n_input_dims_w_head = hidden_dim
         self.w_head = tcnn.Network(
-            n_input_dims=hidden_dim,
+            n_input_dims=n_input_dims_w_head,
             n_output_dims=3,
             network_config={
                 "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
@@ -149,8 +186,9 @@ class SE3Field(nn.Module):
             }
         )
 
+        n_input_dims_v_head = hidden_dim
         self.v_head = tcnn.Network(
-            n_input_dims=hidden_dim,
+            n_input_dims=n_input_dims_v_head,
             n_output_dims=3,
             network_config={
                 "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
@@ -161,8 +199,10 @@ class SE3Field(nn.Module):
             }
         )
 
-        init.normal_(self.w_head.params, 0, 0.1)
-        init.normal_(self.v_head.params, 0, 0.1)
+        # TODO: Only initialize the last layer with 1e-4
+        # TODO: Maybe use uniform initilization
+        init.normal_(self.w_head.params, 0, 1e-4)
+        init.normal_(self.v_head.params, 0, 1e-3)
         init.normal_(self.trunk.params, 0, 0.1)
 
     def forward(self, points: torch.Tensor, latent_codes: torch.Tensor):
@@ -180,12 +220,16 @@ class SE3Field(nn.Module):
         w = self.w_head(trunk_output)  # [B, 3]
         v = self.v_head(trunk_output)  # [B, 3]
 
-        theta = w.norm(dim=1)
-        w = w / theta[..., None]
-        v = v / theta[..., None]
+        # theta = w.norm(dim=1, p=2)
+        # w = w / theta[:, None]
+        # v = v / theta[:, None]
+        #
+        # screw_axis = torch.concat([w, v], dim=1)  # [B, 6]
+        # transforms = exp_se3(screw_axis, theta).to(points.dtype)
 
-        screw_axis = torch.concat([w, v], dim=1)  # [B, 6]
-        transforms = exp_se3(screw_axis, theta).to(points.dtype)
+        screw_axis = torch.concat([v, w], dim=1)  # [B, 6]
+        transforms = pytorch3d.transforms.se3_exp_map(screw_axis).to(points.dtype)
+        transforms = transforms.permute(0, 2, 1)
 
         warped_points = from_homogenous((transforms @ to_homogenous(points).unsqueeze(-1)).squeeze(-1))
         warped_points = warped_points.to(points.dtype)
@@ -197,6 +241,7 @@ class SE3Field(nn.Module):
         assert warped_points.shape[1] == 3
 
         return warped_points.to(points.dtype)
+
 
 def _nerfies_warp_field():
     class SE3Field(nn.Module):
