@@ -28,7 +28,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import (
+    RTCConfiguration,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
 from cryptography.utils import CryptographyDeprecationWarning
 from rich.console import Console
 
@@ -314,11 +319,11 @@ class ViewerState:
         for idx in image_indices:
             image = dataset[idx]["image"]
             bgr = image[..., [2, 1, 0]]
-            camera_json = dataset.dataparser_outputs.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
+            camera_json = dataset.cameras.to_json(camera_idx=idx, image=bgr, max_size=100)
             self.vis[f"sceneState/cameras/{idx:06d}"].write(camera_json)
 
         # draw the scene box (i.e., the bounding box)
-        json_ = dataset.dataparser_outputs.scene_box.to_json()
+        json_ = dataset.scene_box.to_json()
         self.vis["sceneState/sceneBox"].write(json_)
 
         # set the initial state whether to train or not
@@ -507,7 +512,28 @@ class ViewerState:
         # returns the description to for WebRTC to the specific websocket connection
         offer = RTCSessionDescription(data["sdp"], data["type"])
 
-        pc = RTCPeerConnection()
+        if self.config.skip_openrelay:
+            ice_servers = [
+                RTCIceServer(urls="stun:stun.l.google.com:19302"),
+            ]
+        else:
+            ice_servers = [
+                RTCIceServer(urls="stun:stun.l.google.com:19302"),
+                RTCIceServer(urls="stun:openrelay.metered.ca:80"),
+                RTCIceServer(
+                    urls="turn:openrelay.metered.ca:80", username="openrelayproject", credential="openrelayproject"
+                ),
+                RTCIceServer(
+                    urls="turn:openrelay.metered.ca:443", username="openrelayproject", credential="openrelayproject"
+                ),
+                RTCIceServer(
+                    urls="turn:openrelay.metered.ca:443?transport=tcp",
+                    username="openrelayproject",
+                    credential="openrelayproject",
+                ),
+            ]
+
+        pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
         self.pcs.add(pc)
 
         video = SingleFrameStreamTrack()

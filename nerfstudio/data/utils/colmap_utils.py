@@ -1,10 +1,4 @@
-"""
-Here we have modified code taken from COLMAP for parsing data in the COLMAP format.
-Original file at:
-https://github.com/colmap/colmap/blob/1a4d0bad2e90aa65ce997c9d1779518eaed998d5/scripts/python/read_write_model.py.
-"""
-
-# Copyright (c) 2022, ETH Zurich and UNC Chapel Hill.
+# Copyright (c) 2018, ETH Zurich and UNC Chapel Hill.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -33,85 +27,29 @@ https://github.com/colmap/colmap/blob/1a4d0bad2e90aa65ce997c9d1779518eaed998d5/s
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 #
-# Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
+# Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
 
+# pylint: disable-all
+# Disabling all pylinting since this file is copy-pasted over from COLMAP
+
+import collections
 import os
 import struct
-from dataclasses import dataclass
-from io import BufferedReader
-from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-
-@dataclass
-class CameraModel:
-    """Camera model"""
-
-    model_id: int
-    """Model identifier"""
-    model_name: str
-    """Model name"""
-    num_params: int
-    """Number of parameters"""
+CameraModel = collections.namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
+Camera = collections.namedtuple("Camera", ["id", "model", "width", "height", "params"])
+BaseImage = collections.namedtuple("Image", ["id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"])
+Point3D = collections.namedtuple("Point3D", ["id", "xyz", "rgb", "error", "image_ids", "point2D_idxs"])
 
 
-@dataclass
-class Camera:
-    """Camera"""
-
-    id: int
-    """Camera identifier"""
-    model: str
-    """Camera model"""
-    width: int
-    """Image width"""
-    height: int
-    """Image height"""
-    params: np.ndarray
-    """Camera parameters"""
+class Image(BaseImage):
+    def qvec2rotmat(self):
+        return qvec2rotmat(self.qvec)
 
 
-@dataclass
-class Image:
-    """Data the corresponds to a single image"""
-
-    id: int
-    """Image identifier"""
-    qvec: np.ndarray
-    """Quaternion vector"""
-    tvec: np.ndarray
-    """Translation vector"""
-    camera_id: int
-    """Camera identifier"""
-    name: str
-    """Image name"""
-    xys: np.ndarray
-    """2D points"""
-    point3d_ids: np.ndarray
-    """Point3D identifiers"""
-
-
-@dataclass
-class Point3D:
-    """Data that corresponds to a single 3D point"""
-
-    id: int
-    """Point3D identifier"""
-    xyz: np.ndarray
-    """3D point"""
-    rgb: np.ndarray
-    """Color"""
-    error: float
-    """Reconstruction error"""
-    image_ids: np.ndarray
-    """Image identifiers"""
-    point2d_idxs: np.ndarray
-    """Point2D indices"""
-
-
-CAMERA_MODELS = [
+CAMERA_MODELS = {
     CameraModel(model_id=0, model_name="SIMPLE_PINHOLE", num_params=3),
     CameraModel(model_id=1, model_name="PINHOLE", num_params=4),
     CameraModel(model_id=2, model_name="SIMPLE_RADIAL", num_params=4),
@@ -123,35 +61,30 @@ CAMERA_MODELS = [
     CameraModel(model_id=8, model_name="SIMPLE_RADIAL_FISHEYE", num_params=4),
     CameraModel(model_id=9, model_name="RADIAL_FISHEYE", num_params=5),
     CameraModel(model_id=10, model_name="THIN_PRISM_FISHEYE", num_params=12),
-]
-CAMERA_MODEL_IDS = {camera_model.model_id: camera_model for camera_model in CAMERA_MODELS}
-CAMERA_MODEL_NAMES = {camera_model.model_name: camera_model for camera_model in CAMERA_MODELS}
+}
+CAMERA_MODEL_IDS = dict([(camera_model.model_id, camera_model) for camera_model in CAMERA_MODELS])
 
 
-def read_next_bytes(fid: BufferedReader, num_bytes: int, format_char_sequence, endian_character: str = "<"):
+def read_next_bytes(fid, num_bytes, format_char_sequence, endian_character="<"):
     """Read and unpack the next bytes from a binary file.
-
-    Args:
-        fid: Open file
-        num_bytes: Sum of combination of {2, 4, 8}, e.g. 2, 6, 16, 30, etc.
-        format_char_sequence: List of {c, e, f, d, h, H, i, I, l, L, q, Q}.
-        endian_character: Any of {@, =, <, >, !}
-        Tuple of read and unpacked values.
+    :param fid:
+    :param num_bytes: Sum of combination of {2, 4, 8}, e.g. 2, 6, 16, 30, etc.
+    :param format_char_sequence: List of {c, e, f, d, h, H, i, I, l, L, q, Q}.
+    :param endian_character: Any of {@, =, <, >, !}
+    :return: Tuple of read and unpacked values.
     """
     data = fid.read(num_bytes)
     return struct.unpack(endian_character + format_char_sequence, data)
 
 
-def read_cameras_text(path: Path) -> Dict[int, Camera]:
-    """Parse COLMAP cameras.txt file into a dictionary of Camera objects.
-
-    Args:
-        path: Path to cameras.txt file.
-    Returns:
-        Dictionary of Camera objects.
+def read_cameras_text(path):
+    """
+    see: src/base/reconstruction.cc
+        void Reconstruction::WriteCamerasText(const std::string& path)
+        void Reconstruction::ReadCamerasText(const std::string& path)
     """
     cameras = {}
-    with open(path, encoding="utf-8") as fid:
+    with open(path, "r") as fid:
         while True:
             line = fid.readline()
             if not line:
@@ -168,18 +101,16 @@ def read_cameras_text(path: Path) -> Dict[int, Camera]:
     return cameras
 
 
-def read_cameras_binary(path_to_model_file: Path) -> Dict[int, Camera]:
-    """Parse COLMAP cameras.bin file into a dictionary of Camera objects.
-
-    Args:
-        path_to_model_file: Path to cameras.bin file.
-    Returns:
-        Dictionary of Camera objects.
+def read_cameras_binary(path_to_model_file):
+    """
+    see: src/base/reconstruction.cc
+        void Reconstruction::WriteCamerasBinary(const std::string& path)
+        void Reconstruction::ReadCamerasBinary(const std::string& path)
     """
     cameras = {}
     with open(path_to_model_file, "rb") as fid:
         num_cameras = read_next_bytes(fid, 8, "Q")[0]
-        for _ in range(num_cameras):
+        for camera_line_index in range(num_cameras):
             camera_properties = read_next_bytes(fid, num_bytes=24, format_char_sequence="iiQQ")
             camera_id = camera_properties[0]
             model_id = camera_properties[1]
@@ -195,16 +126,14 @@ def read_cameras_binary(path_to_model_file: Path) -> Dict[int, Camera]:
     return cameras
 
 
-def read_images_text(path: Path) -> Dict[int, Image]:
-    """Parse COLMAP images.txt file into a dictionary of Image objects.
-
-    Args:
-        path: Path to images.txt file.
-    Returns:
-        Dictionary of Image objects.
+def read_images_text(path):
+    """
+    see: src/base/reconstruction.cc
+        void Reconstruction::ReadImagesText(const std::string& path)
+        void Reconstruction::WriteImagesText(const std::string& path)
     """
     images = {}
-    with open(path, encoding="utf-8") as fid:
+    with open(path, "r") as fid:
         while True:
             line = fid.readline()
             if not line:
@@ -219,7 +148,7 @@ def read_images_text(path: Path) -> Dict[int, Image]:
                 image_name = elems[9]
                 elems = fid.readline().split()
                 xys = np.column_stack([tuple(map(float, elems[0::3])), tuple(map(float, elems[1::3]))])
-                point3d_ids = np.array(tuple(map(int, elems[2::3])))
+                point3D_ids = np.array(tuple(map(int, elems[2::3])))
                 images[image_id] = Image(
                     id=image_id,
                     qvec=qvec,
@@ -227,23 +156,21 @@ def read_images_text(path: Path) -> Dict[int, Image]:
                     camera_id=camera_id,
                     name=image_name,
                     xys=xys,
-                    point3d_ids=point3d_ids,
+                    point3D_ids=point3D_ids,
                 )
     return images
 
 
-def read_images_binary(path_to_model_file: Path) -> Dict[int, Image]:
-    """Parse COLMAP images.bin file into a dictionary of Image objects.
-
-    Args:
-        path_to_model_file: Path to images.bin file.
-    Returns:
-        Dictionary of Image objects.
+def read_images_binary(path_to_model_file):
+    """
+    see: src/base/reconstruction.cc
+        void Reconstruction::ReadImagesBinary(const std::string& path)
+        void Reconstruction::WriteImagesBinary(const std::string& path)
     """
     images = {}
     with open(path_to_model_file, "rb") as fid:
         num_reg_images = read_next_bytes(fid, 8, "Q")[0]
-        for _ in range(num_reg_images):
+        for image_index in range(num_reg_images):
             binary_image_properties = read_next_bytes(fid, num_bytes=64, format_char_sequence="idddddddi")
             image_id = binary_image_properties[0]
             qvec = np.array(binary_image_properties[1:5])
@@ -254,10 +181,10 @@ def read_images_binary(path_to_model_file: Path) -> Dict[int, Image]:
             while current_char != b"\x00":  # look for the ASCII 0 entry
                 image_name += current_char.decode("utf-8")
                 current_char = read_next_bytes(fid, 1, "c")[0]
-            num_points2d = read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
-            x_y_id_s = read_next_bytes(fid, num_bytes=24 * num_points2d, format_char_sequence="ddq" * num_points2d)
+            num_points2D = read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
+            x_y_id_s = read_next_bytes(fid, num_bytes=24 * num_points2D, format_char_sequence="ddq" * num_points2D)
             xys = np.column_stack([tuple(map(float, x_y_id_s[0::3])), tuple(map(float, x_y_id_s[1::3]))])
-            point3d_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
+            point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
             images[image_id] = Image(
                 id=image_id,
                 qvec=qvec,
@@ -265,21 +192,19 @@ def read_images_binary(path_to_model_file: Path) -> Dict[int, Image]:
                 camera_id=camera_id,
                 name=image_name,
                 xys=xys,
-                point3d_ids=point3d_ids,
+                point3D_ids=point3D_ids,
             )
     return images
 
 
-def read_points3d_text(path) -> Dict[int, Point3D]:
-    """Parse COLMAP points3D.txt file into a dictionary of Point3D objects.
-
-    Args:
-        path: Path to points3D.txt file.
-    Returns:
-        Dictionary of Point3D objects.
+def read_points3D_text(path):
     """
-    points3d = {}
-    with open(path, encoding="utf-8") as fid:
+    see: src/base/reconstruction.cc
+        void Reconstruction::ReadPoints3DText(const std::string& path)
+        void Reconstruction::WritePoints3DText(const std::string& path)
+    """
+    points3D = {}
+    with open(path, "r") as fid:
         while True:
             line = fid.readline()
             if not line:
@@ -287,103 +212,56 @@ def read_points3d_text(path) -> Dict[int, Point3D]:
             line = line.strip()
             if len(line) > 0 and line[0] != "#":
                 elems = line.split()
-                point3d_id = int(elems[0])
+                point3D_id = int(elems[0])
                 xyz = np.array(tuple(map(float, elems[1:4])))
                 rgb = np.array(tuple(map(int, elems[4:7])))
                 error = float(elems[7])
                 image_ids = np.array(tuple(map(int, elems[8::2])))
-                point2d_idxs = np.array(tuple(map(int, elems[9::2])))
-                points3d[point3d_id] = Point3D(
-                    id=point3d_id, xyz=xyz, rgb=rgb, error=error, image_ids=image_ids, point2d_idxs=point2d_idxs
+                point2D_idxs = np.array(tuple(map(int, elems[9::2])))
+                points3D[point3D_id] = Point3D(
+                    id=point3D_id, xyz=xyz, rgb=rgb, error=error, image_ids=image_ids, point2D_idxs=point2D_idxs
                 )
-    return points3d
+    return points3D
 
 
-def read_points3d_binary(path_to_model_file: Path) -> Dict[int, Point3D]:
-    """Parse COLMAP points3D.bin file into a dictionary of Point3D objects.
-
-    Args:
-        path_to_model_file: Path to points3D.bin file.
-    Returns:
-        Dictionary of Point3D objects.
+def read_points3d_binary(path_to_model_file):
     """
-    points3d = {}
+    see: src/base/reconstruction.cc
+        void Reconstruction::ReadPoints3DBinary(const std::string& path)
+        void Reconstruction::WritePoints3DBinary(const std::string& path)
+    """
+    points3D = {}
     with open(path_to_model_file, "rb") as fid:
         num_points = read_next_bytes(fid, 8, "Q")[0]
-        for _ in range(num_points):
+        for point_line_index in range(num_points):
             binary_point_line_properties = read_next_bytes(fid, num_bytes=43, format_char_sequence="QdddBBBd")
-            point3d_id = binary_point_line_properties[0]
+            point3D_id = binary_point_line_properties[0]
             xyz = np.array(binary_point_line_properties[1:4])
             rgb = np.array(binary_point_line_properties[4:7])
             error = np.array(binary_point_line_properties[7])
             track_length = read_next_bytes(fid, num_bytes=8, format_char_sequence="Q")[0]
             track_elems = read_next_bytes(fid, num_bytes=8 * track_length, format_char_sequence="ii" * track_length)
             image_ids = np.array(tuple(map(int, track_elems[0::2])))
-            point2d_idxs = np.array(tuple(map(int, track_elems[1::2])))
-            points3d[point3d_id] = Point3D(
-                id=point3d_id, xyz=xyz, rgb=rgb, error=float(error), image_ids=image_ids, point2d_idxs=point2d_idxs
+            point2D_idxs = np.array(tuple(map(int, track_elems[1::2])))
+            points3D[point3D_id] = Point3D(
+                id=point3D_id, xyz=xyz, rgb=rgb, error=error, image_ids=image_ids, point2D_idxs=point2D_idxs
             )
-    return points3d
+    return points3D
 
 
-def detect_model_format(path: Path, ext: str) -> bool:
-    """Detect the format of the model file.
-
-    Args:
-        path: Path to the model file.
-        ext: Extension to test.
-    Returns:
-        True if the model file is the tested extenstion, False otherwise.
-    """
-
-    if (
-        os.path.isfile(path / f"cameras{ext}")
-        and os.path.isfile(path / f"images{ext}")
-        and os.path.isfile(path / f"points3D{ext}")
-    ):
-        print("Detected model format: '" + ext + "'")
-        return True
-
-    return False
-
-
-def read_model(path: Path, ext: Optional[str] = None) -> Tuple[Dict[int, Camera], Dict[int, Image], Dict[int, Point3D]]:
-    """Read a COLMAP model from a directory.
-
-    Args:
-        path: Path to the model directory.
-        ext: Extension of the model files. If None, the function will try to detect the format.
-    Returns:
-        Tuple of dictionaries of Camera, Image, and Point3D objects.
-    """
-    # try to detect the extension automatically
-    if ext is None:
-        if detect_model_format(path, ".bin"):
-            ext = ".bin"
-        elif detect_model_format(path, ".txt"):
-            ext = ".txt"
-        else:
-            raise ValueError("Provide model format: '.bin' or '.txt'")
-
+def read_model(path, ext):
     if ext == ".txt":
-        cameras = read_cameras_text(path / f"cameras{ext}")
-        images = read_images_text(path / f"images{ext}")
-        points3d = read_points3d_text(path / f"points3D{ext}")
+        cameras = read_cameras_text(os.path.join(path, "cameras" + ext))
+        images = read_images_text(os.path.join(path, "images" + ext))
+        points3D = read_points3D_text(os.path.join(path, "points3D") + ext)
     else:
-        cameras = read_cameras_binary(path / f"cameras{ext}")
-        images = read_images_binary(path / f"images{ext}")
-        points3d = read_points3d_binary(path / f"points3D{ext}")
-    return cameras, images, points3d
+        cameras = read_cameras_binary(os.path.join(path, "cameras" + ext))
+        images = read_images_binary(os.path.join(path, "images" + ext))
+        points3D = read_points3d_binary(os.path.join(path, "points3D") + ext)
+    return cameras, images, points3D
 
 
-def qvec2rotmat(qvec) -> np.ndarray:
-    """Convert quaternion to rotation matrix.
-
-    Args:
-        qvec: Quaternion vector of shape (4,).
-    Returns:
-        Rotation matrix of shape (3, 3).
-    """
+def qvec2rotmat(qvec):
     return np.array(
         [
             [
@@ -406,27 +284,20 @@ def qvec2rotmat(qvec) -> np.ndarray:
 
 
 def rotmat2qvec(R):
-    """Convert rotation matrix to quaternion.
-
-    Args:
-        R: Rotation matrix of shape (3, 3).
-    Returns:
-        Quaternion vector of shape (4,).
-    """
-    rxx, ryx, rzx, rxy, ryy, rzy, rxz, ryz, rzz = R.flat
+    Rxx, Ryx, Rzx, Rxy, Ryy, Rzy, Rxz, Ryz, Rzz = R.flat
     K = (
         np.array(
             [
-                [rxx - ryy - rzz, 0, 0, 0],
-                [ryx + rxy, ryy - rxx - rzz, 0, 0],
-                [rzx + rxz, rzy + ryz, rzz - rxx - ryy, 0],
-                [ryz - rzy, rzx - rxz, rxy - ryx, rxx + ryy + rzz],
+                [Rxx - Ryy - Rzz, 0, 0, 0],
+                [Ryx + Rxy, Ryy - Rxx - Rzz, 0, 0],
+                [Rzx + Rxz, Rzy + Ryz, Rzz - Rxx - Ryy, 0],
+                [Ryz - Rzy, Rzx - Rxz, Rxy - Ryx, Rxx + Ryy + Rzz],
             ]
         )
         / 3.0
     )
     eigvals, eigvecs = np.linalg.eigh(K)
-    qvec = eigvecs[np.array([3, 0, 1, 2]), np.argmax(eigvals)]
+    qvec = eigvecs[[3, 0, 1, 2], np.argmax(eigvals)]
     if qvec[0] < 0:
         qvec *= -1
     return qvec

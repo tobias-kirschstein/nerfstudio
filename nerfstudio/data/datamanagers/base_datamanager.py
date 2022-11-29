@@ -43,6 +43,9 @@ from nerfstudio.data.dataparsers.instant_ngp_dataparser import (
 )
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
 from nerfstudio.data.dataparsers.nuscenes_dataparser import NuScenesDataParserConfig
+from nerfstudio.data.dataparsers.phototourism_dataparser import (
+    PhototourismDataParserConfig,
+)
 from nerfstudio.data.dataparsers.record3d_dataparser import Record3DDataParserConfig
 from nerfstudio.data.datasets.base_dataset import InputDataset, InMemoryInputDataset
 from nerfstudio.data.pixel_samplers import PixelSampler
@@ -51,6 +54,7 @@ from nerfstudio.data.utils.dataloaders import (
     FixedIndicesEvalDataloader,
     RandIndicesEvalDataloader,
 )
+from nerfstudio.data.utils.nerfstudio_collate import nerfstudio_collate
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.model_components.ray_generators import RayGenerator
 from nerfstudio.utils.misc import IterableWrapper
@@ -67,6 +71,7 @@ AnnotatedDataParserUnion = tyro.conf.OmitSubcommandPrefixes[  # Omit prefixes of
             "nuscenes-data": NuScenesDataParserConfig(),
             "record3d-data": Record3DDataParserConfig(),
             "dnerf-data": DNeRFDataParserConfig(),
+            "phototourism-data": PhototourismDataParserConfig(),
         },
         prefix_names=False,  # Omit prefixes in subcommands themselves.
     )
@@ -268,6 +273,12 @@ class VanillaDataManagerConfig(InstantiateConfig):
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
     Record3D."""
+    collate_fn = staticmethod(nerfstudio_collate)
+    """Specifies the collate function to use for the train and eval dataloaders."""
+    camera_res_scale_factor: float = 1.0
+    """The scale factor for scaling spatial data such as images, mask, semantics
+    along with relevant information about camera intrinsics
+    """
 
     n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
     n_timesteps_warmup: int = -1  # How many keyframes will be used during warmup
@@ -306,6 +317,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         self.sampler = None
         self.test_mode = test_mode
         self.test_split = "test" if test_mode in ["test", "inference"] else "val"
+        self.dataparser = self.config.dataparser.setup()
 
         self.train_dataset = self.create_train_dataset()
         self.eval_dataset = self.create_eval_dataset()
@@ -313,11 +325,17 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
 
     def create_train_dataset(self) -> InputDataset:
         """Sets up the data loaders for training"""
-        return InMemoryInputDataset(self.config.dataparser.setup().get_dataparser_outputs(split="train"))
+        return InMemoryInputDataset(
+            dataparser_outputs=self.config.dataparser.setup().get_dataparser_outputs(split="train"),
+            scale_factor=self.config.camera_res_scale_factor
+        )
 
     def create_eval_dataset(self) -> InputDataset:
         """Sets up the data loaders for evaluation"""
-        return InputDataset(self.config.dataparser.setup().get_dataparser_outputs(split=self.test_split))
+        return InputDataset(
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split=self.test_split),
+            scale_factor=self.config.camera_res_scale_factor,
+        )
 
     def setup_train(self):
         """Sets up the data loaders for training"""
@@ -329,15 +347,16 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_times_to_repeat_images=self.config.train_num_times_to_repeat_images,
             device=self.device,
             num_workers=self.world_size * 4,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=self.config.collate_fn,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
         self.train_pixel_sampler = PixelSampler(self.config.train_num_rays_per_batch)
         self.train_camera_optimizer = self.config.camera_optimizer.setup(
-            num_cameras=self.train_dataset.dataparser_outputs.cameras.size, device=self.device
+            num_cameras=self.train_dataset.cameras.size, device=self.device
         )
         self.train_ray_generator = RayGenerator(
-            self.train_dataset.dataparser_outputs.cameras.to(self.device),
+            self.train_dataset.cameras.to(self.device),
             self.train_camera_optimizer,
         )
 
@@ -359,11 +378,12 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             device=self.device,
             num_workers=self.world_size * 4,
             pin_memory=True,
+            collate_fn=self.config.collate_fn,
         )
         self.iter_eval_image_dataloader = iter(self.eval_image_dataloader)
         self.eval_pixel_sampler = PixelSampler(self.config.eval_num_rays_per_batch)
         self.eval_ray_generator = RayGenerator(
-            self.eval_dataset.dataparser_outputs.cameras.to(self.device),
+            self.eval_dataset.cameras.to(self.device),
             self.train_camera_optimizer,  # should be shared between train and eval.
         )
         # for loading full images

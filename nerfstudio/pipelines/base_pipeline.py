@@ -229,11 +229,12 @@ class VanillaPipeline(Pipeline):
         assert self.datamanager.train_dataset is not None, "Missing input dataset"
 
         self._model = config.model.setup(
-            scene_box=self.datamanager.train_dataset.dataparser_outputs.scene_box,
+            scene_box=self.datamanager.train_dataset.scene_box,
             num_train_data=len(self.datamanager.train_dataset),
             device=device,
-            camera_frustums=self.datamanager.train_dataset.dataparser_outputs.camera_frustums,
-            metadata=self.datamanager.train_dataset.dataparser_outputs.metadata
+            # TODO: Maybe also deepcopy camera_frustums in InputDataset
+            camera_frustums=self.datamanager.train_dataset._dataparser_outputs.camera_frustums,
+            metadata=self.datamanager.train_dataset.metadata
         )
         self.model.to(device)
 
