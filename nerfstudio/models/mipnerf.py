@@ -88,6 +88,10 @@ class MipNerfModel(Model):
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
 
+        # colliders
+        if self.config.enable_collider:
+            self.collider = AABBBoxCollider(scene_box=self.scene_box)
+
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         if self.field is None:

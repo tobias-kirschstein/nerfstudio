@@ -61,6 +61,14 @@ class RAdamOptimizerConfig(OptimizerConfig):
     _target: Type = torch.optim.RAdam
 
 
+@dataclass
+class AdamWOptimizerConfig(OptimizerConfig):
+    """Basic optimizer config with AdamW"""
+
+    _target: Type = torch.optim.AdamW
+    weight_decay: float = 0
+
+
 def setup_optimizers(config: base_config.Config, param_groups: Dict[str, List[Parameter]]) -> "Optimizers":
     """Helper to set up the optimizers
 
