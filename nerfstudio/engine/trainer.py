@@ -178,8 +178,7 @@ class Trainer:
                 if step_check(step, self.config.trainer.steps_per_save):
                     self.save_checkpoint(step)
 
-                if step_check(step, self.config.logging.steps_per_log, run_at_zero=True):
-                    writer.write_out_storage()
+                writer.write_out_storage()
             # save checkpoint at the end of training
             self.save_checkpoint(step)
 
@@ -323,11 +322,12 @@ class Trainer:
         self.optimizers.scheduler_step_all(step)
 
         # Log gradients
-        for n, p in self.pipeline.model.named_parameters():
-            if p.grad is not None and p.grad.numel() > 0:
-                grad = p.grad.detach().abs()
-                writer.put_scalar(f"{n} (max)", grad.max(), step)
-                writer.put_scalar(f"{n} (mean)", grad.mean(), step)
+        if step_check(step, self.config.logging.steps_per_log, run_at_zero=True):
+            for n, p in self.pipeline.model.named_parameters():
+                if p.grad is not None and p.grad.numel() > 0:
+                    grad = p.grad.detach().abs()
+                    writer.put_scalar(f"{n} (max)", grad.max(), step)
+                    writer.put_scalar(f"{n} (mean)", grad.mean(), step)
 
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
