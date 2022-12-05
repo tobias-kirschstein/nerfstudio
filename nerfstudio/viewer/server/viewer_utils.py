@@ -185,8 +185,8 @@ class CheckThread(threading.Thread):
             if data is not None:
                 camera_object = data["object"]
                 if self.state.prev_camera_matrix is None or (
-                        not np.allclose(camera_object["matrix"], self.state.prev_camera_matrix)
-                        and not self.state.prev_moving
+                    not np.allclose(camera_object["matrix"], self.state.prev_camera_matrix)
+                    and not self.state.prev_moving
                 ):
                     self.state.check_interrupt_vis = True
                     self.state.prev_moving = True
@@ -445,6 +445,13 @@ class ViewerState:
         data = self.vis["renderingState/camera"].read()
         if data is None:
             return None
+        else:
+            if None in [v for k, v in data["object"].items()]:
+                print(data["object"])
+                import ipdb
+
+                ipdb.set_trace()
+                pass
 
         camera_object = data["object"]
 
@@ -472,9 +479,9 @@ class ViewerState:
 
         # rendering depth outputs
         if self.prev_colormap_type == ColormapTypes.DEPTH or (
-                self.prev_colormap_type == ColormapTypes.DEFAULT
-                and outputs[reformatted_output].dtype == torch.float
-                and (torch.max(outputs[reformatted_output]) - 1.0) > eps  # handle floating point arithmetic
+            self.prev_colormap_type == ColormapTypes.DEFAULT
+            and outputs[reformatted_output].dtype == torch.float
+            and (torch.max(outputs[reformatted_output]) - 1.0) > eps  # handle floating point arithmetic
         ):
             accumulation_str = (
                 OutputTypes.ACCUMULATION
@@ -485,13 +492,13 @@ class ViewerState:
 
         # rendering accumulation outputs
         if self.prev_colormap_type == ColormapTypes.TURBO or (
-                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.float
+            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.float
         ):
             return colormaps.apply_colormap(outputs[reformatted_output])
 
         # rendering semantic outputs
         if self.prev_colormap_type == ColormapTypes.SEMANTIC or (
-                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.int
+            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.int
         ):
             logits = outputs[reformatted_output]
             labels = torch.argmax(torch.nn.functional.softmax(logits, dim=-1), dim=-1)  # type: ignore
@@ -500,7 +507,7 @@ class ViewerState:
 
         # rendering boolean outputs
         if self.prev_colormap_type == ColormapTypes.BOOLEAN or (
-                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.bool
+            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.bool
         ):
             return colormaps.apply_boolean_colormap(outputs[reformatted_output])
 
@@ -533,7 +540,7 @@ class ViewerState:
                 ),
             ]
 
-        pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
+        pc = RTCPeerConnection()
         self.pcs.add(pc)
 
         video = SingleFrameStreamTrack()
@@ -585,9 +592,9 @@ class ViewerState:
             self.prev_colormap_type = ColormapTypes.DEFAULT
             colormap_options = [ColormapTypes.DEFAULT]
             if (
-                    outputs[reformatted_output].shape[-1] != 3
-                    and outputs[reformatted_output].dtype == torch.float
-                    and (torch.max(outputs[reformatted_output]) - 1.0) <= eps  # handle floating point arithmetic
+                outputs[reformatted_output].shape[-1] != 3
+                and outputs[reformatted_output].dtype == torch.float
+                and (torch.max(outputs[reformatted_output]) - 1.0) <= eps  # handle floating point arithmetic
             ):
                 # accumulation can also include depth
                 colormap_options.extend(["depth"])
@@ -618,8 +625,8 @@ class ViewerState:
             self.vis["renderingState/train_eta"].write(GLOBAL_BUFFER["events"].get(EventName.ETA.value, "Starting"))
             # process ratio time spent on vis vs train
             if (
-                    EventName.ITER_VIS_TIME.value in GLOBAL_BUFFER["events"]
-                    and EventName.ITER_TRAIN_TIME.value in GLOBAL_BUFFER["events"]
+                EventName.ITER_VIS_TIME.value in GLOBAL_BUFFER["events"]
+                and EventName.ITER_TRAIN_TIME.value in GLOBAL_BUFFER["events"]
             ):
                 vis_time = GLOBAL_BUFFER["events"][EventName.ITER_VIS_TIME.value]["avg"]
                 train_time = GLOBAL_BUFFER["events"][EventName.ITER_TRAIN_TIME.value]["avg"]
@@ -766,9 +773,9 @@ class ViewerState:
 
         timestep = (int(self.step / self.config.steps_per_timestep)) % self.config.n_timesteps
 
-        timesteps = timestep * torch.ones((camera.image_height[0], camera.image_width[0]),
-                                          device=graph.device,
-                                          dtype=torch.int32)
+        timesteps = timestep * torch.ones(
+            (camera.image_height[0], camera.image_width[0]), device=graph.device, dtype=torch.int32
+        )
         camera_ray_bundle = camera.generate_rays(camera_indices=0, timesteps=timesteps)
         graph.eval()
 

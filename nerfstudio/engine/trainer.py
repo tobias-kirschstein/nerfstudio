@@ -40,12 +40,11 @@ from nerfstudio.utils import profiler, writer
 from nerfstudio.utils.decorators import (
     check_eval_enabled,
     check_main_thread,
-    check_viewer_enabled, )
+    check_viewer_enabled,
+)
 from nerfstudio.utils.misc import step_check
 from nerfstudio.utils.writer import EventName, TimeWriter
 from nerfstudio.viewer.server import viewer_utils
-from rich.console import Console
-from torch.cuda.amp.grad_scaler import GradScaler
 
 CONSOLE = Console(width=120)
 
@@ -179,7 +178,8 @@ class Trainer:
                 if step_check(step, self.config.trainer.steps_per_save):
                     self.save_checkpoint(step)
 
-                writer.write_out_storage()
+                if step_check(step, self.config.logging.steps_per_log, run_at_zero=True):
+                    writer.write_out_storage()
             # save checkpoint at the end of training
             self.save_checkpoint(step)
 
@@ -262,7 +262,7 @@ class Trainer:
             if load_step is None:
                 print("Loading latest checkpoint from load_dir")
                 # NOTE: this is specific to the checkpoint name format
-                load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(load_dir))[-1]
+                load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(load_dir))[-1]
             load_path = load_dir / f"step-{load_step:09d}.ckpt"
             assert load_path.exists(), f"Checkpoint {load_path} does not exist"
             loaded_state = torch.load(load_path, map_location="cpu")

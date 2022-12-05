@@ -34,12 +34,17 @@ from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
 from nerfstudio.fields.vanilla_nerf_field import NeRFField, TCNNNeRFField
 from nerfstudio.model_components.losses import MSELoss
-from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler, VolumetricSampler
+from nerfstudio.model_components.ray_samplers import (
+    PDFSampler,
+    UniformSampler,
+    VolumetricSampler,
+)
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
     RGBRenderer,
 )
+from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
@@ -58,6 +63,9 @@ class VanillaModelConfig(ModelConfig):
     """Specifies whether or not to include ray warping based on time."""
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
+
+    randomize_background: bool = False
+    use_background_network: bool = False
 
     n_layers: int = 8
     hidden_dim: int = 256
@@ -112,15 +120,14 @@ class NeRFModel(Model):
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
-            base_mlp_layer_width=self.config.hidden_dim
-
+            base_mlp_layer_width=self.config.hidden_dim,
         )
 
         self.field_fine = NeRFField(
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
-            base_mlp_layer_width=self.config.hidden_dim
+            base_mlp_layer_width=self.config.hidden_dim,
         )
 
         # samplers
@@ -128,8 +135,17 @@ class NeRFModel(Model):
         # self.sampler_uniform = VolumetricSampler(scene_aabb=scene_aabb, )
         self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
+        # background
+        if self.config.use_background_network:
+            background_color = None
+        elif self.config.randomize_background:
+            background_color = "random"
+        else:
+            background_color = colors.WHITE
+            # background_color = colors.BLACK
+
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color="random")
+        self.renderer_rgb = RGBRenderer(background_color=background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 
@@ -145,6 +161,10 @@ class NeRFModel(Model):
             params = self.config.temporal_distortion_params
             kind = params.pop("kind")
             self.temporal_distortion = kind.to_temporal_distortion(params)
+
+        # colliders
+        if self.config.enable_collider:
+            self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -215,7 +235,7 @@ class NeRFModel(Model):
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         image = batch["image"].to(outputs["rgb_coarse"].device)
         rgb_coarse = outputs["rgb_coarse"]
