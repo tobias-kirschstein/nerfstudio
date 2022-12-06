@@ -85,24 +85,24 @@ class Cameras(TensorDataclass):
     times: Optional[TensorType["num_cameras", 1]]
 
     def __init__(
-        self,
-        camera_to_worlds: TensorType["batch_c2ws":..., 3, 4],
-        fx: Union[TensorType["batch_fxs":..., 1], float],
-        fy: Union[TensorType["batch_fys":..., 1], float],
-        cx: Union[TensorType["batch_cxs":..., 1], float],
-        cy: Union[TensorType["batch_cys":..., 1], float],
-        width: Optional[Union[TensorType["batch_ws":..., 1], int]] = None,
-        height: Optional[Union[TensorType["batch_hs":..., 1], int]] = None,
-        distortion_params: Optional[TensorType["batch_dist_params":..., 6]] = None,
-        camera_type: Optional[
-            Union[
-                TensorType["batch_cam_types":..., 1],
-                int,
-                List[CameraType],
-                CameraType,
-            ]
-        ] = CameraType.PERSPECTIVE,
-        times: Optional[TensorType["num_cameras"]] = None,
+            self,
+            camera_to_worlds: TensorType["batch_c2ws":..., 3, 4],
+            fx: Union[TensorType["batch_fxs":..., 1], float],
+            fy: Union[TensorType["batch_fys":..., 1], float],
+            cx: Union[TensorType["batch_cxs":..., 1], float],
+            cy: Union[TensorType["batch_cys":..., 1], float],
+            width: Optional[Union[TensorType["batch_ws":..., 1], int]] = None,
+            height: Optional[Union[TensorType["batch_hs":..., 1], int]] = None,
+            distortion_params: Optional[TensorType["batch_dist_params":..., 6]] = None,
+            camera_type: Optional[
+                Union[
+                    TensorType["batch_cam_types":..., 1],
+                    int,
+                    List[CameraType],
+                    CameraType,
+                ]
+            ] = CameraType.PERSPECTIVE,
+            times: Optional[TensorType["num_cameras"]] = None,
     ):
         """Initializes the Cameras object.
 
@@ -162,10 +162,11 @@ class Cameras(TensorDataclass):
         return fc_xy
 
     def _init_get_camera_type(
-        self,
-        camera_type: Union[
-            TensorType["batch_cam_types":..., 1], TensorType["batch_cam_types":...], int, List[CameraType], CameraType
-        ],
+            self,
+            camera_type: Union[
+                TensorType["batch_cam_types":..., 1], TensorType["batch_cam_types":...], int, List[
+                    CameraType], CameraType
+            ],
     ) -> TensorType["num_cameras":..., 1]:
         """
         Parses the __init__() argument camera_type
@@ -204,9 +205,9 @@ class Cameras(TensorDataclass):
         return camera_type
 
     def _init_get_height_width(
-        self,
-        h_w: Union[TensorType["batch_hws":..., 1], TensorType["batch_hws":...], int, None],
-        c_x_y: TensorType["batch_cxys":...],
+            self,
+            h_w: Union[TensorType["batch_hws":..., 1], TensorType["batch_hws":...], int, None],
+            c_x_y: TensorType["batch_cxys":...],
     ) -> TensorType["num_cameras":..., 1]:
         """
         Parses the __init__() argument for height or width
@@ -272,7 +273,7 @@ class Cameras(TensorDataclass):
         return h_jagged or w_jagged
 
     def get_image_coords(
-        self, pixel_offset: float = 0.5, index: Optional[Tuple] = None
+            self, pixel_offset: float = 0.5, index: Optional[Tuple] = None
     ) -> TensorType["height", "width", 2]:
         """This gets the image coordinates of one of the cameras in this object.
 
@@ -300,13 +301,13 @@ class Cameras(TensorDataclass):
         return image_coords
 
     def generate_rays(
-        self,
-        camera_indices: Union[TensorType["num_rays":..., "num_cameras_batch_dims"], int],
-        coords: Optional[TensorType["num_rays":..., 2]] = None,
-        camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
-        distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
-        timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None,
-        keep_shape: Optional[bool] = None,
+            self,
+            camera_indices: Union[TensorType["num_rays":..., "num_cameras_batch_dims"], int],
+            coords: Optional[TensorType["num_rays":..., 2]] = None,
+            camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
+            distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
+            timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None,
+            keep_shape: Optional[bool] = None,
     ) -> RayBundle:
         """Generates rays for the given camera indices.
 
@@ -376,7 +377,7 @@ class Cameras(TensorDataclass):
         # If the camera indices are an int, then we need to make sure that the camera batch is 1D
         if isinstance(camera_indices, int):
             assert (
-                len(cameras.shape) == 1
+                    len(cameras.shape) == 1
             ), "camera_indices must be a tensor if cameras are batched with more than 1 batch dimension"
             camera_indices = torch.tensor([camera_indices], device=cameras.device)
 
@@ -454,12 +455,12 @@ class Cameras(TensorDataclass):
 
     # pylint: disable=too-many-statements
     def _generate_rays_from_coords(
-        self,
-        camera_indices: TensorType["num_rays":..., "num_cameras_batch_dims"],
-        coords: TensorType["num_rays":..., 2],
-        camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
-        distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
-        timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None
+            self,
+            camera_indices: TensorType["num_rays":..., "num_cameras_batch_dims"],
+            coords: TensorType["num_rays":..., 2],
+            camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
+            distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
+            timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None
     ) -> RayBundle:
         """Generates rays for the given camera indices and coords where self isn't jagged
 
@@ -550,20 +551,20 @@ class Cameras(TensorDataclass):
         fx, fy = self.fx[true_indices].squeeze(-1), self.fy[true_indices].squeeze(-1)  # (num_rays,)
         cx, cy = self.cx[true_indices].squeeze(-1), self.cy[true_indices].squeeze(-1)  # (num_rays,)
         assert (
-            y.shape == num_rays_shape
-            and x.shape == num_rays_shape
-            and fx.shape == num_rays_shape
-            and fy.shape == num_rays_shape
-            and cx.shape == num_rays_shape
-            and cy.shape == num_rays_shape
+                y.shape == num_rays_shape
+                and x.shape == num_rays_shape
+                and fx.shape == num_rays_shape
+                and fy.shape == num_rays_shape
+                and cx.shape == num_rays_shape
+                and cy.shape == num_rays_shape
         ), (
-            str(num_rays_shape)
-            + str(y.shape)
-            + str(x.shape)
-            + str(fx.shape)
-            + str(fy.shape)
-            + str(cx.shape)
-            + str(cy.shape)
+                str(num_rays_shape)
+                + str(y.shape)
+                + str(x.shape)
+                + str(fx.shape)
+                + str(fy.shape)
+                + str(cx.shape)
+                + str(cy.shape)
         )
 
         # Get our image coordinates and image coordinates offset by 1 (offsets used for dx, dy calculations)
@@ -572,9 +573,9 @@ class Cameras(TensorDataclass):
         coord_x_offset = torch.stack([(x - cx + 1) / fx, -(y - cy) / fy], -1)  # (num_rays, 2)
         coord_y_offset = torch.stack([(x - cx) / fx, -(y - cy + 1) / fy], -1)  # (num_rays, 2)
         assert (
-            coord.shape == num_rays_shape + (2,)
-            and coord_x_offset.shape == num_rays_shape + (2,)
-            and coord_y_offset.shape == num_rays_shape + (2,)
+                coord.shape == num_rays_shape + (2,)
+                and coord_x_offset.shape == num_rays_shape + (2,)
+                and coord_y_offset.shape == num_rays_shape + (2,)
         )
 
         # Stack image coordinates and image coordinates offset by 1, check shapes too
@@ -727,7 +728,7 @@ class Cameras(TensorDataclass):
         return K
 
     def rescale_output_resolution(
-        self, scaling_factor: Union[TensorType["num_cameras":...], TensorType["num_cameras":..., 1], float, int]
+            self, scaling_factor: Union[TensorType["num_cameras":...], TensorType["num_cameras":..., 1], float, int]
     ) -> None:
         """Rescale the output resolution of the cameras.
 
@@ -751,3 +752,6 @@ class Cameras(TensorDataclass):
         self.cy = self.cy * scaling_factor
         self.height = (self.height * scaling_factor).to(torch.int64)
         self.width = (self.width * scaling_factor).to(torch.int64)
+
+    def scale_coordinate_system(self, scale_factor: float):
+        self.camera_to_worlds[:, :3, 3] *= scale_factor

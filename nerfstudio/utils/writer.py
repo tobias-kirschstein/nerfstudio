@@ -198,7 +198,11 @@ def setup_event_writer(config: cfg.Config, log_dir: Path) -> None:
     """
     using_event_writer = False
     if config.is_wandb_enabled():
-        curr_writer = WandbWriter(log_dir=log_dir, run_name=config.run_name, project=config.project)
+        curr_writer = WandbWriter(log_dir=log_dir,
+                                  run_name=config.experiment_name,
+                                  project=config.logging.project,
+                                  group=config.method_name,
+                                  tags=config.logging.tags)
         EVENT_WRITERS.append(curr_writer)
         using_event_writer = True
     if config.is_tensorboard_enabled():
@@ -282,8 +286,13 @@ class TimeWriter:
 class WandbWriter(Writer):
     """WandDB Writer Class"""
 
-    def __init__(self, log_dir: Path, run_name: str, project: str = "nerfstudio-project"):
-        wandb.init(project=project, dir=str(log_dir), reinit=True)
+    def __init__(self,
+                 log_dir: Path,
+                 run_name: str,
+                 project: str = "nerfstudio-project",
+                 group: str = "",
+                 tags: Optional[List[str]] = None):
+        wandb.init(project=project, dir=str(log_dir), reinit=True, group=group, tags=tags)
         wandb.run.name = run_name
 
     def write_image(self, name: str, image: TensorType["H", "W", "C"], step: int) -> None:

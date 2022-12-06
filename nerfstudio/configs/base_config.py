@@ -128,6 +128,9 @@ class LoggingConfig(PrintableConfig):
     """whether to enable profiling code; prints speed of functions at the end of a program.
     profiler logs run times of functions and prints at end of training"""
     log_gradients: bool = False  # Whether to log gradients during training (can create large logs)
+    project: str = 'nerfstudio-project'  # Name of project in wandb to log to
+    tags: Optional[List[str]] = None  # Tags for organizing the logged experiment in wandb
+    # group: str = ''  # Optionally, can log experiments into a group in wandb
 
 
 # Trainer related configs

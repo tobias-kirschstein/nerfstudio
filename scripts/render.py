@@ -60,6 +60,8 @@ def _render_trajectory_video(
     images = []
     cameras.rescale_output_resolution(rendered_resolution_scaling_factor)
     cameras = cameras.to(pipeline.device)
+    scale_factor = pipeline.datamanager.config.dataparser.scale_factor
+    cameras.scale_coordinate_system(scale_factor / 9)
     n_timesteps = pipeline.datamanager.config.dataparser.n_timesteps
 
     progress = Progress(
