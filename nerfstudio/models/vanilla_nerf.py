@@ -68,6 +68,9 @@ class VanillaModelConfig(ModelConfig):
     n_layers: int = 8
     hidden_dim: int = 256
 
+    n_timesteps: int = 1
+    latent_dim_time: int = 0
+
 
 class NeRFModel(Model):
     """Vanilla NeRF model
@@ -119,6 +122,8 @@ class NeRFModel(Model):
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
+            n_timesteps=self.config.n_timesteps,
+            latent_dim_time=self.config.latent_dim_time,
         )
 
         self.field_fine = NeRFField(
@@ -126,6 +131,8 @@ class NeRFModel(Model):
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
+            n_timesteps=self.config.n_timesteps,
+            latent_dim_time=self.config.latent_dim_time,
         )
 
         # samplers

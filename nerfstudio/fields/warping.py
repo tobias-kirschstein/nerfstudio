@@ -1,7 +1,11 @@
 from typing import Optional, Iterable
 
-import pytorch3d
-import pytorch3d.transforms
+try:
+    import pytorch3d
+    import pytorch3d.transforms
+except RuntimeError as e:
+    print("pytorch3d not installed => SE3Field is not available. Check their github page for installation instructions!")
+
 import tinycudann as tcnn
 import torch
 from torch import nn

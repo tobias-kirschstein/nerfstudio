@@ -13,11 +13,12 @@
 # limitations under the License.
 
 """Classic NeRF field"""
-
+from math import sqrt
 from typing import Dict, Optional, Tuple
 
 import torch
 from torch import nn
+from torch.nn import init
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import RaySamples
@@ -60,6 +61,8 @@ class NeRFField(Field):
             field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
             use_integrated_encoding: bool = False,
             spatial_distortion: Optional[SpatialDistortion] = None,
+            latent_dim_time: int = 0,
+            n_timesteps: int = 1,
     ) -> None:
         super().__init__()
         self.position_encoding = position_encoding
@@ -67,8 +70,18 @@ class NeRFField(Field):
         self.use_integrated_encoding = use_integrated_encoding
         self.spatial_distortion = spatial_distortion
 
+        n_additional_inputs = 0
+        if latent_dim_time > 0:
+            # Input is [xyz, emb(t)] concatenated
+            n_additional_inputs = latent_dim_time
+
+            self.time_embedding = nn.Embedding(n_timesteps, latent_dim_time)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(latent_dim_time))
+        else:
+            self.time_embedding = None
+
         self.mlp_base = MLP(
-            in_dim=self.position_encoding.get_out_dim(),
+            in_dim=self.position_encoding.get_out_dim() + n_additional_inputs,
             num_layers=base_mlp_num_layers,
             layer_width=base_mlp_layer_width,
             skip_connections=skip_connections,
@@ -98,7 +111,15 @@ class NeRFField(Field):
             if self.spatial_distortion is not None:
                 positions = self.spatial_distortion(positions)
             encoded_xyz = self.position_encoding(positions)
-        base_mlp_out = self.mlp_base(encoded_xyz)
+
+        base_inputs = [encoded_xyz]
+        if self.time_embedding is not None:
+            timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
+            time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
+            base_inputs.append(time_embeddings)
+
+        base_inputs = torch.concat(base_inputs, dim=2)
+        base_mlp_out = self.mlp_base(base_inputs)
         density = self.field_output_density(base_mlp_out)
         return density, base_mlp_out
 

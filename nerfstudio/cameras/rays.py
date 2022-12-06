@@ -244,6 +244,7 @@ class RayBundle(TensorDataclass):
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
             metadata=shaped_raybundle_fields.metadata,
             times=None if self.times is None else self.times[..., None],  # [..., 1, 1]
+            timesteps=None if self.timesteps is None else self.timesteps[..., None],   # [..., 1, 1]
         )
 
         return ray_samples
