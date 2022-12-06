@@ -22,22 +22,16 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
-from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
-from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.field_components.encodings import NeRFEncoding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
-from nerfstudio.fields.vanilla_nerf_field import NeRFField, TCNNNeRFField
+from nerfstudio.fields.vanilla_nerf_field import NeRFField
 from nerfstudio.model_components.losses import MSELoss
 from nerfstudio.model_components.ray_samplers import (
     PDFSampler,
     UniformSampler,
-    VolumetricSampler,
 )
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
@@ -47,6 +41,10 @@ from nerfstudio.model_components.renderers import (
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
+from torch.nn import Parameter
+from torchmetrics import PeakSignalNoiseRatio
+from torchmetrics.functional import structural_similarity_index_measure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 
 @dataclass
@@ -81,9 +79,9 @@ class NeRFModel(Model):
     config: VanillaModelConfig
 
     def __init__(
-        self,
-        config: VanillaModelConfig,
-        **kwargs,
+            self,
+            config: VanillaModelConfig,
+            **kwargs,
     ) -> None:
         self.field_coarse = None
         self.field_fine = None
@@ -222,6 +220,15 @@ class NeRFModel(Model):
         }
         return outputs
 
+    def get_metrics_dict(self, outputs, batch):
+        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+
+        rgb = outputs["rgb_fine"]
+        image = batch["image"].to(self.device)
+        metrics_dict = {}
+        metrics_dict["psnr"] = self.psnr(rgb, image)
+        return metrics_dict
+
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         # Scaling metrics by coefficients to create the losses.
         device = outputs["rgb_coarse"].device
@@ -235,7 +242,7 @@ class NeRFModel(Model):
         return loss_dict
 
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         image = batch["image"].to(outputs["rgb_coarse"].device)
         rgb_coarse = outputs["rgb_coarse"]
