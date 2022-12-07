@@ -15,6 +15,8 @@
 """
 Ray generator.
 """
+from typing import Optional
+
 from torch import nn
 from torchtyping import TensorType
 
@@ -38,7 +40,10 @@ class RayGenerator(nn.Module):
         self.pose_optimizer = pose_optimizer
         self.image_coords = nn.Parameter(cameras.get_image_coords(), requires_grad=False)
 
-    def forward(self, ray_indices: TensorType["num_rays", 3]) -> RayBundle:
+    def forward(self,
+                ray_indices: TensorType["num_rays", 3],
+                timesteps: Optional[TensorType["num_rays", 1]],
+                cam_ids: Optional[TensorType["num_rays", 1]]) -> RayBundle:
         """Index into the cameras to generate the rays.
 
         Args:
@@ -50,8 +55,9 @@ class RayGenerator(nn.Module):
         coords = self.image_coords[y, x]
 
         # Assume that an image_idx > n_cameras just means the same camera at a different timestep
-        timesteps = (c / self.cameras.size).int()
-        c = c % self.cameras.size
+        # timesteps = (c / self.cameras.size).int()
+        # c = c % self.cameras.size
+        c = cam_ids
 
         camera_opt_to_camera = self.pose_optimizer(c)
 

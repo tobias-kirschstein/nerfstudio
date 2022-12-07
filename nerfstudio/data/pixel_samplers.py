@@ -79,15 +79,16 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
 
     assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
 
+    if 'cam_ids' in batch:
+        collated_batch["cam_ids"] = batch['cam_ids'][c]
+    if 'timesteps' in batch:
+        collated_batch['timesteps'] = batch['timesteps'][c]
+
     # Needed to correct the random indices to their actual camera idx locations.
     local_indices = indices.clone()
     indices[:, 0] = batch["image_idx"][c]
     collated_batch["indices"] = indices  # with the abs camera indices
     collated_batch["local_indices"] = local_indices
-    if 'cam_ids' in batch:
-        collated_batch["cam_ids"] = batch['cam_ids']
-    if 'timesteps' in batch:
-        collated_batch['timesteps'] = batch['timesteps']
 
     # v0.1.9 change
     # collated_batch = {key: value[c, y, x] for key, value in batch.items() if key != "image_idx" and value is not None}
