@@ -19,9 +19,11 @@ Code for sampling pixels.
 import random
 from typing import Dict
 
+import numpy as np
 import torch
 from torchvision.transforms import Resize, InterpolationMode
 
+debug_sample_probabilities = None
 
 def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_image: bool = False):
     """
@@ -73,6 +75,13 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
             torch.rand((num_rays_per_batch, 3), device=device)
             * torch.tensor([num_images, image_height, image_width], device=device)
         ).long()
+
+    # global debug_sample_probabilities
+    # if debug_sample_probabilities is None:
+    #     debug_sample_probabilities = np.zeros((B, H * downscale_factor, W * downscale_factor))
+    #
+    # for c, y, x in indices:
+    #     debug_sample_probabilities[batch['image_idx'][c], y, x] += 1
 
     c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
     collated_batch = {key: value[c, y, x] for key, value in batch.items() if key not in {'image_idx', 'cam_ids', 'timesteps'} and value is not None}
