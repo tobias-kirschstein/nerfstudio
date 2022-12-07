@@ -202,11 +202,14 @@ class EvalDataloader(DataLoader):
         Args:
             image_idx: Camera image index
         """
-        c = image_idx % self.cameras.size
-        t = int(image_idx / self.cameras.size)
+        # c = image_idx % self.cameras.size
+        # t = int(image_idx / self.cameras.size)
 
-        ray_bundle = self.cameras.generate_rays(camera_indices=c, timesteps=t, keep_shape=True)
         batch = self.input_dataset[image_idx]
+
+        cam_ids = batch['cam_ids'] if 'cam_ids' in batch else image_idx % self.cameras.size
+        timesteps = batch['timesteps'] if 'timesteps' in batch else None
+        ray_bundle = self.cameras.generate_rays(camera_indices=cam_ids, timesteps=timesteps, keep_shape=True)
         batch = get_dict_to_torch(batch, device=self.device, exclude=["image"])
         return ray_bundle, batch
 
