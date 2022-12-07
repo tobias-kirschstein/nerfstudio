@@ -50,6 +50,7 @@ def apply_depth_colormap(
     near_plane: Optional[float] = None,
     far_plane: Optional[float] = None,
     cmap="turbo",
+    acc_threshold: float = 1e-1,
 ) -> TensorType["bs":..., "rgb":3]:
     """Converts a depth image to color for easier analysis.
 
@@ -64,8 +65,16 @@ def apply_depth_colormap(
         Colored depth image
     """
 
-    near_plane = near_plane or float(torch.min(depth))
-    far_plane = far_plane or float(torch.max(depth))
+    if accumulation is not None:
+        # Only use relevant part of depth to estimate min/max values for coloring.
+        # Otherwise, a single outlier in a low accumulation region might spread the colormap out too much
+        max_depth = depth[accumulation >= acc_threshold].max()
+        min_depth = depth[accumulation >= acc_threshold].min()
+    else:
+        max_depth = depth.max()
+        min_depth = depth.min()
+    near_plane = near_plane or min_depth
+    far_plane = far_plane or max_depth
 
     depth = (depth - near_plane) / (far_plane - near_plane + 1e-10)
     depth = torch.clip(depth, 0, 1)
