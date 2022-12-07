@@ -225,6 +225,11 @@ class NeRFModel(Model):
             "depth_coarse": depth_coarse,
             "depth_fine": depth_fine,
         }
+
+        if self.training:
+            outputs["ray_samples_fine"] = ray_samples_pdf
+            outputs["weights_fine"] = weights_fine
+
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
