@@ -22,58 +22,51 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
+from torch.nn import Parameter
+from torchmetrics import PeakSignalNoiseRatio
+from torchmetrics.functional import structural_similarity_index_measure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
 from nerfstudio.cameras.rays import RayBundle
-from nerfstudio.configs.config_utils import to_immutable_dict
+from nerfstudio.engine.callbacks import (
+    TrainingCallback,
+    TrainingCallbackAttributes,
+    TrainingCallbackLocation,
+)
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
 from nerfstudio.fields.hypernerf_field import HyperNeRFField
 from nerfstudio.model_components.losses import MSELoss
-from nerfstudio.model_components.ray_samplers import (
-    PDFSampler,
-    UniformSampler,
-)
+from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
     RGBRenderer,
 )
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider
-from nerfstudio.models.vanilla_nerf import NeRFModel
-from nerfstudio.models.base_model import Model, ModelConfig
-from nerfstudio.utils import colormaps, colors, misc
-from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
-from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
+from nerfstudio.utils import colors
 
 
 @dataclass
-class HyperNeRFModelConfig(ModelConfig):
+class HyperNeRFModelConfig(VanillaModelConfig):
     """HyperNeRF Model Config"""
 
     _target: Type = field(default_factory=lambda: NeRFModel)
-    num_coarse_samples: int = 64
-    """Number of samples in coarse field evaluation"""
-    num_importance_samples: int = 128
-    """Number of samples in fine field evaluation"""
 
-    enable_temporal_distortion: bool = False
-    """Specifies whether or not to include ray warping based on time."""
-    temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
-    """Parameters to instantiate temporal distortion with"""
-
-    randomize_background: bool = False
-    use_background_network: bool = False
-
+    n_freq_pos: int = 11
+    n_freq_dir: int = 5
     n_layers: int = 8
     hidden_dim: int = 256
 
     n_timesteps: int = 1
     time_embed_dim: int = 0
+
     use_deformation_field: bool = True
+    n_freq_warp: int = 8
+    warp_alpha_steps: int = 80000
 
 
-class HyperNeRFModel(Model):
+class HyperNeRFModel(NeRFModel):
     """HyperNeRF model
 
     Args:
@@ -83,13 +76,10 @@ class HyperNeRFModel(Model):
     config: HyperNeRFModelConfig
 
     def __init__(
-            self,
-            config: HyperNeRFModelConfig,
-            **kwargs,
+        self,
+        config: HyperNeRFModelConfig,
+        **kwargs,
     ) -> None:
-        self.field_coarse = None
-        self.field_fine = None
-        self.temporal_distortion = None
 
         super().__init__(
             config=config,
@@ -102,17 +92,25 @@ class HyperNeRFModel(Model):
 
         # fields
         self.field_coarse = HyperNeRFField(
+            n_freq_pos=self.config.n_freq_pos,
+            n_freq_dir=self.config.n_freq_dir,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
             n_timesteps=self.config.n_timesteps,
             time_embed_dim=self.config.time_embed_dim,
+            use_deformation_field=self.config.use_deformation_field,
+            n_freq_warp=self.config.n_freq_warp,
         )
 
         self.field_fine = HyperNeRFField(
+            n_freq_pos=self.config.n_freq_pos,
+            n_freq_dir=self.config.n_freq_dir,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
             n_timesteps=self.config.n_timesteps,
             time_embed_dim=self.config.time_embed_dim,
+            use_deformation_field=self.config.use_deformation_field,
+            n_freq_warp=self.config.n_freq_warp,
         )
 
         # samplers
@@ -127,7 +125,6 @@ class HyperNeRFModel(Model):
             background_color = "random"
         else:
             background_color = colors.WHITE
-            # background_color = colors.BLACK
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=background_color)
@@ -151,15 +148,36 @@ class HyperNeRFModel(Model):
         if self.config.enable_collider:
             self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
-    def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
-        if self.field_coarse is None or self.field_fine is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
-        if self.temporal_distortion is not None:
-            param_groups["temporal_distortion"] = list(self.temporal_distortion.parameters())
-        return param_groups
-    
+    def get_training_callbacks(
+        self, training_callback_attributes: TrainingCallbackAttributes
+    ) -> List[TrainingCallback]:
+
+        self.config.warp_alpha_steps
+
+        def get_alpha(step):
+
+            print(step)
+
+        callbacks = []
+        # # anneal the weights of the proposal network before doing PDF sampling
+        # N = self.config.proposal_weights_anneal_max_num_iters
+
+        # def set_anneal(step):
+        #     # https://arxiv.org/pdf/2111.12077.pdf eq. 18
+        #     train_frac = np.clip(step / N, 0, 1)
+        #     bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
+        #     anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
+        #     self.proposal_sampler.set_anneal(anneal)
+
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                update_every_num_iters=1,
+                func=get_alpha,
+            )
+        )
+        return callbacks
+
     def get_outputs(self, ray_bundle: RayBundle):
 
         if self.field_coarse is None or self.field_fine is None:
@@ -206,70 +224,3 @@ class HyperNeRFModel(Model):
             "depth_fine": depth_fine,
         }
         return outputs
-
-    def get_metrics_dict(self, outputs, batch):
-        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
-
-        rgb = outputs["rgb_fine"]
-        image = batch["image"].to(self.device)
-        metrics_dict = {}
-        metrics_dict["psnr"] = self.psnr(rgb, image)
-        return metrics_dict
-
-    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
-        # Scaling metrics by coefficients to create the losses.
-        device = outputs["rgb_coarse"].device
-        image = batch["image"].to(device)
-
-        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
-
-        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
-        loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
-        return loss_dict
-
-    def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
-    ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        image = batch["image"].to(outputs["rgb_coarse"].device)
-        rgb_coarse = outputs["rgb_coarse"]
-        rgb_fine = outputs["rgb_fine"]
-        acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
-        acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
-        depth_coarse = colormaps.apply_depth_colormap(
-            outputs["depth_coarse"],
-            accumulation=outputs["accumulation_coarse"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
-        )
-        depth_fine = colormaps.apply_depth_colormap(
-            outputs["depth_fine"],
-            accumulation=outputs["accumulation_fine"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
-        )
-
-        combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
-        combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
-        combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
-
-        # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
-        image = torch.moveaxis(image, -1, 0)[None, ...]
-        rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
-        rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
-
-        coarse_psnr = self.psnr(image, rgb_coarse)
-        fine_psnr = self.psnr(image, rgb_fine)
-        fine_ssim = self.ssim(image, rgb_fine)
-        fine_lpips = self.lpips(image, rgb_fine)
-
-        metrics_dict = {
-            "psnr": float(fine_psnr.item()),
-            "coarse_psnr": float(coarse_psnr),
-            "fine_psnr": float(fine_psnr),
-            "fine_ssim": float(fine_ssim),
-            "fine_lpips": float(fine_lpips),
-        }
-        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
-        return metrics_dict, images_dict
-

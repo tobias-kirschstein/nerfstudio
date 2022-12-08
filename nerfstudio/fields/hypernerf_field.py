@@ -32,16 +32,17 @@ from nerfstudio.field_components.field_heads import (
 from nerfstudio.field_components.mlp import MLP, TCNNMLP, TCNNMLPConfig
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field
+
 # from nerfstudio.fields.warping import SE3Field, DeformationField
-from nerfstudio.field_components.warping import NeRFieWarping
+from nerfstudio.fields.deformation_field import DeformationField, SE3Field
 
 
 class HyperNeRFField(Field):
     """NeRF Field
 
     Args:
-        position_encoding: Position encoder.
-        direction_encoding: Direction encoder.
+        n_freq_pos: Number of frequencies for position in positional encoding.
+        n_freq_dir: Number of frequencies for direction in positional encoding..
         base_mlp_num_layers: Number of layers for base MLP.
         base_mlp_layer_width: Width of base MLP layers.
         head_mlp_num_layers: Number of layer for ourput head MLP.
@@ -52,39 +53,46 @@ class HyperNeRFField(Field):
     """
 
     def __init__(
-            self,
-            position_encoding = NeRFEncoding(in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0),
-            direction_encoding = NeRFEncoding(in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0),
-            base_mlp_num_layers: int = 8,
-            base_mlp_layer_width: int = 256,
-            head_mlp_num_layers: int = 2,
-            head_mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
-            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-            use_integrated_encoding: bool = False,
-            spatial_distortion: Optional[SpatialDistortion] = None,
-            n_timesteps: int = 1,
-            time_embed_dim: int = 0,
-            use_deformation_field: bool = False,
+        self,
+        n_freq_pos: int = 11,
+        n_freq_dir: int = 5,
+        base_mlp_num_layers: int = 8,
+        base_mlp_layer_width: int = 256,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+        use_integrated_encoding: bool = False,
+        spatial_distortion: Optional[SpatialDistortion] = None,
+        n_timesteps: int = 1,
+        time_embed_dim: int = 0,
+        use_deformation_field: bool = True,
+        n_freq_warp: int = 8,
     ) -> None:
         super().__init__()
-        self.position_encoding = position_encoding
-        self.direction_encoding = direction_encoding
+        self.position_encoding = NeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
+        )
+        self.direction_encoding = NeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1
+        )
         self.use_integrated_encoding = use_integrated_encoding
         self.spatial_distortion = spatial_distortion
 
         assert time_embed_dim > 0
 
         self.time_embedding = nn.Embedding(n_timesteps, time_embed_dim)
-        init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(time_embed_dim))
-        
+        init.normal_(self.time_embedding.weight, mean=0.0, std=0.01 / sqrt(time_embed_dim))
+
         if use_deformation_field:
             additional_dim = 0
-            self.deformation_network = NeRFieWarping(warp_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128)
+            self.deformation_network = DeformationField(
+                warp_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128
+            )
         else:
             additional_dim = time_embed_dim
             self.deformation_network = None
-    
+
         self.mlp_base = MLP(
             in_dim=self.position_encoding.get_out_dim() + additional_dim,
             num_layers=base_mlp_num_layers,
@@ -113,17 +121,14 @@ class HyperNeRFField(Field):
         timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
         time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
 
-        
         if self.deformation_network is not None:
-            positions = self.deformation_network(positions, warp_embed)
+            positions = self.deformation_network(positions, time_embeddings)
 
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz]
         else:
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz, time_embeddings]
-      
-
 
         base_inputs = torch.concat(base_inputs, dim=2)
         base_mlp_out = self.mlp_base(base_inputs)
@@ -131,7 +136,7 @@ class HyperNeRFField(Field):
         return density, base_mlp_out
 
     def get_outputs(
-            self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+        self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:

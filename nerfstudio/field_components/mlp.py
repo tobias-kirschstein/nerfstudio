@@ -18,12 +18,12 @@ Multi Layer Perceptron
 from dataclasses import dataclass
 from typing import Optional, Set, Tuple
 
+import tinycudann as tcnn
 import torch
 from torch import nn
 from torchtyping import TensorType
 
 from nerfstudio.field_components.base_field_component import FieldComponent
-import tinycudann as tcnn
 
 
 class MLP(FieldComponent):
@@ -39,14 +39,14 @@ class MLP(FieldComponent):
     """
 
     def __init__(
-            self,
-            in_dim: int,
-            num_layers: int,
-            layer_width: int,
-            out_dim: Optional[int] = None,
-            skip_connections: Optional[Tuple[int]] = None,
-            activation: Optional[nn.Module] = nn.ReLU(),
-            out_activation: Optional[nn.Module] = None,
+        self,
+        in_dim: int,
+        num_layers: int,
+        layer_width: int,
+        out_dim: Optional[int] = None,
+        skip_connections: Optional[Tuple[int]] = None,
+        activation: Optional[nn.Module] = nn.ReLU(),
+        out_activation: Optional[nn.Module] = None,
     ) -> None:
 
         super().__init__()
@@ -108,15 +108,12 @@ class TCNNMLPConfig:
     n_layers: int  # Number of weight matrices
     layer_width: int
     skip_connections: Optional[Tuple[int]] = None
-    activation: Optional[str] = 'ReLU'
+    activation: Optional[str] = "ReLU"
     out_activation: Optional[str] = None
 
 
 class TCNNMLP(FieldComponent):
-
-    def __init__(self,
-                 config: TCNNMLPConfig
-                 ):
+    def __init__(self, config: TCNNMLPConfig):
         super(TCNNMLP, self).__init__(in_dim=config.n_input_dims, out_dim=config.n_output_dims)
         self._config = config
         self._mlps = None
@@ -141,9 +138,9 @@ class TCNNMLP(FieldComponent):
         for skip_connection in skip_connections:
             network_config = base_network_config.copy()
             network_config["n_hidden_layers"] = skip_connection - previous_skip_connection - 1
-            mlp = tcnn.Network(previous_mlp_out_dim + self._config.n_input_dims,
-                               self._config.layer_width,
-                               network_config)
+            mlp = tcnn.Network(
+                previous_mlp_out_dim + self._config.n_input_dims, self._config.layer_width, network_config
+            )
 
             previous_mlp_out_dim = self._config.layer_width
             previous_skip_connection = skip_connection
@@ -151,9 +148,7 @@ class TCNNMLP(FieldComponent):
 
         network_config = base_network_config.copy()
         network_config["n_hidden_layers"] = self._config.n_layers - previous_skip_connection - 1
-        mlp = tcnn.Network(previous_mlp_out_dim + self._config.n_input_dims,
-                           self._config.n_output_dims,
-                           network_config)
+        mlp = tcnn.Network(previous_mlp_out_dim + self._config.n_input_dims, self._config.n_output_dims, network_config)
         self._mlps.append(mlp)
         # else:
         #     network_config = base_network_config.copy()
