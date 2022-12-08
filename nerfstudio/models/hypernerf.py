@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
-from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -63,7 +62,7 @@ class HyperNeRFModelConfig(VanillaModelConfig):
 
     use_deformation_field: bool = True
     n_freq_warp: int = 8
-    warp_alpha_steps: int = 80000
+    warp_alpha_steps: int = 80000  # the number of steps before warp_alpha reaches its maximum
 
 
 class HyperNeRFModel(NeRFModel):
@@ -89,6 +88,8 @@ class HyperNeRFModel(NeRFModel):
     def populate_modules(self):
         """Set the fields and modules"""
         super().populate_modules()
+
+        self.alpha_sched = GenericScheduler(self.config.n_freq_warp, self.config.warp_alpha_steps)
 
         # fields
         self.field_coarse = HyperNeRFField(
@@ -155,8 +156,8 @@ class HyperNeRFModel(NeRFModel):
         self.config.warp_alpha_steps
 
         def get_alpha(step):
-
-            print(step)
+            self.alpha_sched.update(step)
+            print(self.alpha_sched.get_value())
 
         callbacks = []
         # # anneal the weights of the proposal network before doing PDF sampling
@@ -224,3 +225,25 @@ class HyperNeRFModel(NeRFModel):
             "depth_fine": depth_fine,
         }
         return outputs
+
+
+class GenericScheduler(torch.nn.Module):
+    """A generic scheduler"""
+
+    def __init__(self, final_value, max_step) -> None:
+        super().__init__()
+        self.value = final_value
+        self.final_value = final_value
+        self.max_step = max_step
+
+    def update(self, step):
+        if step > self.max_step:
+            self.value = self.final_value
+        else:
+            self.value = min(max(step / self.max_step, 0), 1) * self.final_value
+
+    def get_value(self):
+        if self.training:  # inherit from torch.nn.Module
+            return self.value
+        else:
+            return self.final_value
