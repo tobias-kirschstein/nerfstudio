@@ -22,6 +22,7 @@ from torch.nn import init
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.encodings import NeRFEncoding
 from nerfstudio.field_components.field_heads import (
     DensityFieldHead,
@@ -68,19 +69,15 @@ class HyperNeRFField(Field):
         time_embed_dim: int = 0,
         use_deformation_field: bool = True,
         n_freq_warp: int = 8,
+        alpah_sched: Optional[GenericScheduler] = None,
     ) -> None:
         super().__init__()
-        self.position_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
-        )
-        self.direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1
-        )
+
         self.use_integrated_encoding = use_integrated_encoding
         self.spatial_distortion = spatial_distortion
 
+        # time-conditioning
         assert time_embed_dim > 0
-
         self.time_embedding = nn.Embedding(n_timesteps, time_embed_dim)
         init.normal_(self.time_embedding.weight, mean=0.0, std=0.01 / sqrt(time_embed_dim))
 
@@ -92,6 +89,16 @@ class HyperNeRFField(Field):
         else:
             additional_dim = time_embed_dim
             self.deformation_network = None
+
+        self.alpah_sched = alpah_sched
+
+        # template NeRF
+        self.position_encoding = NeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+        )
+        self.direction_encoding = NeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
+        )
 
         self.mlp_base = MLP(
             in_dim=self.position_encoding.get_out_dim() + additional_dim,
@@ -122,7 +129,8 @@ class HyperNeRFField(Field):
         time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
 
         if self.deformation_network is not None:
-            positions = self.deformation_network(positions, time_embeddings)
+            alpha = self.alpah_sched.get_value() if self.alpah_sched is not None else None
+            positions = self.deformation_network(positions, time_embeddings, alpha)
 
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz]

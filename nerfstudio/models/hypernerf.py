@@ -32,6 +32,7 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
+from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.hypernerf_field import HyperNeRFField
 from nerfstudio.model_components.losses import MSELoss
@@ -101,6 +102,7 @@ class HyperNeRFModel(NeRFModel):
             time_embed_dim=self.config.time_embed_dim,
             use_deformation_field=self.config.use_deformation_field,
             n_freq_warp=self.config.n_freq_warp,
+            alpah_sched=self.alpha_sched,
         )
 
         self.field_fine = HyperNeRFField(
@@ -112,6 +114,7 @@ class HyperNeRFModel(NeRFModel):
             time_embed_dim=self.config.time_embed_dim,
             use_deformation_field=self.config.use_deformation_field,
             n_freq_warp=self.config.n_freq_warp,
+            alpah_sched=self.alpha_sched,
         )
 
         # samplers
@@ -157,18 +160,9 @@ class HyperNeRFModel(NeRFModel):
 
         def get_alpha(step):
             self.alpha_sched.update(step)
-            print(self.alpha_sched.get_value())
+            writer.put_scalar(name=f"alpha", scalar=self.alpha_sched.get_value(), step=step)
 
         callbacks = []
-        # # anneal the weights of the proposal network before doing PDF sampling
-        # N = self.config.proposal_weights_anneal_max_num_iters
-
-        # def set_anneal(step):
-        #     # https://arxiv.org/pdf/2111.12077.pdf eq. 18
-        #     train_frac = np.clip(step / N, 0, 1)
-        #     bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
-        #     anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
-        #     self.proposal_sampler.set_anneal(anneal)
 
         callbacks.append(
             TrainingCallback(
@@ -225,25 +219,3 @@ class HyperNeRFModel(NeRFModel):
             "depth_fine": depth_fine,
         }
         return outputs
-
-
-class GenericScheduler(torch.nn.Module):
-    """A generic scheduler"""
-
-    def __init__(self, final_value, max_step) -> None:
-        super().__init__()
-        self.value = final_value
-        self.final_value = final_value
-        self.max_step = max_step
-
-    def update(self, step):
-        if step > self.max_step:
-            self.value = self.final_value
-        else:
-            self.value = min(max(step / self.max_step, 0), 1) * self.final_value
-
-    def get_value(self):
-        if self.training:  # inherit from torch.nn.Module
-            return self.value
-        else:
-            return self.final_value
