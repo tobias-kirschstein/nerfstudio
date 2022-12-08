@@ -59,11 +59,15 @@ class HyperNeRFModelConfig(VanillaModelConfig):
     hidden_dim: int = 256
 
     n_timesteps: int = 1
-    time_embed_dim: int = 0
+    time_embed_dim: int = 8
 
     use_deformation_field: bool = True
     n_freq_warp: int = 8
-    warp_alpha_steps: int = 80000  # the number of steps before warp_alpha reaches its maximum
+    n_freq_slice: int = 6
+    window_alpha_begin: int = 0  # the number of steps window_alpha is set to 0
+    window_alpha_end: int = 80000  # the number of steps when window_alpha reaches its maximum
+    window_beta_begin: int = 1000  # the number of steps window_beta is set to 0
+    window_beta_end: int = 10000  # the number of steps when window_beta reaches its maximum
 
 
 class HyperNeRFModel(NeRFModel):
@@ -85,15 +89,27 @@ class HyperNeRFModel(NeRFModel):
             config=config,
             **kwargs,
         )
+        self.sched_alpha = None
+        self.sched_beta = None
 
     def populate_modules(self):
         """Set the fields and modules"""
         super().populate_modules()
 
-        if self.config.warp_alpha_steps < 1:
-            self.alpha_sched = None
-        else:
-            self.alpha_sched = GenericScheduler(self.config.n_freq_warp, self.config.warp_alpha_steps)
+        if self.config.window_alpha_end >= 1:
+            self.sched_alpha = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_warp,
+                begin_step=self.config.window_alpha_begin,
+                end_step=self.config.window_alpha_end,
+            )
+        if self.config.window_beta_end >= 1:
+            self.sched_beta = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_slice,
+                begin_step=self.config.window_beta_begin,
+                end_step=self.config.window_beta_end,
+            )
 
         # fields
         self.field_coarse = HyperNeRFField(
@@ -105,7 +121,7 @@ class HyperNeRFModel(NeRFModel):
             time_embed_dim=self.config.time_embed_dim,
             use_deformation_field=self.config.use_deformation_field,
             n_freq_warp=self.config.n_freq_warp,
-            alpah_sched=self.alpha_sched,
+            alpah_sched=self.sched_alpha,
         )
 
         self.field_fine = HyperNeRFField(
@@ -117,7 +133,7 @@ class HyperNeRFModel(NeRFModel):
             time_embed_dim=self.config.time_embed_dim,
             use_deformation_field=self.config.use_deformation_field,
             n_freq_warp=self.config.n_freq_warp,
-            alpah_sched=self.alpha_sched,
+            alpah_sched=self.sched_alpha,
         )
 
         # samplers
@@ -161,17 +177,19 @@ class HyperNeRFModel(NeRFModel):
 
         callbacks = []
 
-        if self.alpha_sched is not None:
+        if self.sched_alpha is not None:
 
-            def get_alpha(step):
-                self.alpha_sched.update(step)
-                writer.put_scalar(name="alpha/warp", scalar=self.alpha_sched.get_value(), step=step)
+            def update_window_param(step):
+                self.sched_alpha.update(step)
+                self.sched_beta.update(step)
+                writer.put_scalar(name="window_param/alpha", scalar=self.sched_alpha.get_value(), step=step)
+                writer.put_scalar(name="window_param/beta", scalar=self.sched_beta.get_value(), step=step)
 
             callbacks.append(
                 TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
                     update_every_num_iters=1,
-                    func=get_alpha,
+                    func=update_window_param,
                 )
             )
         return callbacks

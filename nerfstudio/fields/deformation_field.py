@@ -30,7 +30,7 @@ class SE3Field(nn.Module):
     def __init__(
         self,
         n_freq_warp=8,
-        warp_embed_dim: int = 8,
+        time_embed_dim: int = 8,
         mlp_num_layers: int = 6,
         mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
@@ -40,7 +40,7 @@ class SE3Field(nn.Module):
             in_dim=3, num_frequencies=n_freq_warp, min_freq_exp=0.0, max_freq_exp=n_freq_warp - 1, include_input=True
         )
         self.mlp_stem = MLP(
-            in_dim=self.position_encoding.get_out_dim() + warp_embed_dim,
+            in_dim=self.position_encoding.get_out_dim() + time_embed_dim,
             out_dim=mlp_layer_width,
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
@@ -63,13 +63,13 @@ class SE3Field(nn.Module):
         nn.init.uniform_(self.mlp_r.layers[-1].weight, a=-1e-5, b=1e-5)
         nn.init.uniform_(self.mlp_v.layers[-1].weight, a=-1e-5, b=1e-5)
 
-    def forward(self, positions, warp_embed=None, alpha=None):
-        if warp_embed is None:
+    def forward(self, positions, time_embed=None, windows_param=None):
+        if time_embed is None:
             return None
 
-        x = self.position_encoding(positions, alpha=alpha)  # (R, S, 3)
+        x = self.position_encoding(positions, windows_param=windows_param)  # (R, S, 3)
 
-        feat = self.mlp_stem(torch.cat([x, warp_embed], dim=-1))  # (R, S, D)
+        feat = self.mlp_stem(torch.cat([x, time_embed], dim=-1))  # (R, S, D)
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
         v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
 
@@ -102,7 +102,7 @@ class DeformationField(nn.Module):
     def __init__(
         self,
         n_freq_warp=8,
-        warp_embed_dim: int = 8,
+        time_embed_dim: int = 8,
         mlp_num_layers: int = 6,
         mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
@@ -112,7 +112,7 @@ class DeformationField(nn.Module):
             in_dim=3, num_frequencies=n_freq_warp, min_freq_exp=0.0, max_freq_exp=n_freq_warp - 1, include_input=True
         )
         self.mlp_warping = MLP(
-            in_dim=self.position_encoding.get_out_dim() + warp_embed_dim,
+            in_dim=self.position_encoding.get_out_dim() + time_embed_dim,
             out_dim=3,
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
@@ -121,8 +121,8 @@ class DeformationField(nn.Module):
 
         nn.init.normal_(self.mlp_warping.layers[-1].weight, std=1e-4)
 
-    def forward(self, positions, warp_embed=None, alpha=None):
-        if warp_embed is None:
+    def forward(self, positions, time_embed=None, alpha=None):
+        if time_embed is None:
             return None
         p = self.position_encoding(positions, alpha=alpha)
-        return self.mlp_warping(torch.cat([p, warp_embed], dim=-1))
+        return self.mlp_warping(torch.cat([p, time_embed], dim=-1))

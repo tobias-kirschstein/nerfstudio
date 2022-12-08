@@ -185,7 +185,7 @@ class WindowedNeRFEncoding(NeRFEncoding):
         self,
         in_tensor: TensorType["bs":..., "input_dim"],
         covs: Optional[TensorType["bs":..., "input_dim", "input_dim"]] = None,
-        alpha: Optional[float] = None,
+        windows_param: Optional[float] = None,
     ) -> TensorType["bs":..., "output_dim"]:
         """Calculates NeRF encoding. If covariances are provided the encodings will be integrated as proposed
             in mip-NeRF.
@@ -210,9 +210,9 @@ class WindowedNeRFEncoding(NeRFEncoding):
                 torch.cat([scaled_inputs, scaled_inputs + torch.pi / 2.0], dim=-1), torch.cat(2 * [input_var], dim=-1)
             )
 
-        if alpha is not None:
+        if windows_param is not None:
             window = (
-                self.posenc_window(alpha)
+                self.posenc_window(windows_param)
                 .to(in_tensor.device)[None, :]
                 .repeat(in_tensor.shape[-1], 1)
                 .reshape(-1)
@@ -224,7 +224,7 @@ class WindowedNeRFEncoding(NeRFEncoding):
             encoded_inputs = torch.cat([encoded_inputs, in_tensor], dim=-1)
         return encoded_inputs
 
-    def posenc_window(self, alpha):
+    def posenc_window(self, windows_param):
         """Windows a the encoding using a cosiney window.
 
         This is equivalent to taking a truncated Hann window and sliding it to the
@@ -233,13 +233,13 @@ class WindowedNeRFEncoding(NeRFEncoding):
         Args:
             min_deg: the lower frequency band.
             max_deg: the upper frequency band.
-            alpha: will ease in each frequency as alpha goes from 0.0 to num_freqs.
+            windows_param: will ease in each frequency as windows_param goes from 0.0 to num_freqs.
 
         Returns:
             A 1-d numpy array with num_sample elements containing the window.
         """
         bands = torch.linspace(self.min_freq, self.max_freq, self.num_frequencies)
-        x = torch.clamp(alpha - bands, 0, 1)
+        x = torch.clamp(windows_param - bands, 0, 1)
         return 0.5 * (1 - torch.cos(torch.pi * x))
 
 

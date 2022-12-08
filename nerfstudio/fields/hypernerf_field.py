@@ -85,7 +85,7 @@ class HyperNeRFField(Field):
             additional_dim = 0
             # self.deformation_network = DeformationField(
             self.deformation_network = SE3Field(
-                n_freq_warp=n_freq_warp, warp_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128
+                n_freq_warp=n_freq_warp, time_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128
             )
         else:
             additional_dim = time_embed_dim
@@ -130,8 +130,8 @@ class HyperNeRFField(Field):
         time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
 
         if self.deformation_network is not None:
-            alpha = self.alpah_sched.get_value() if self.alpah_sched is not None else None
-            positions = self.deformation_network(positions, time_embeddings, alpha)
+            window_alpha = self.alpah_sched.get_value() if self.alpah_sched is not None else None
+            positions = self.deformation_network(positions, time_embeddings, window_alpha)
 
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz]
