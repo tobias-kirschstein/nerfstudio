@@ -83,7 +83,8 @@ class HyperNeRFField(Field):
 
         if use_deformation_field:
             additional_dim = 0
-            self.deformation_network = DeformationField(
+            # self.deformation_network = DeformationField(
+            self.deformation_network = SE3Field(
                 n_freq_warp=n_freq_warp, warp_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128
             )
         else:

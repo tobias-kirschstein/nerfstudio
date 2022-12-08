@@ -44,7 +44,7 @@ from nerfstudio.model_components.renderers import (
 )
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
-from nerfstudio.utils import colors
+from nerfstudio.utils import colors, writer
 
 
 @dataclass
@@ -160,7 +160,7 @@ class HyperNeRFModel(NeRFModel):
 
         def get_alpha(step):
             self.alpha_sched.update(step)
-            writer.put_scalar(name=f"alpha", scalar=self.alpha_sched.get_value(), step=step)
+            writer.put_scalar(name="alpha/warp", scalar=self.alpha_sched.get_value(), step=step)
 
         callbacks = []
 

@@ -1,16 +1,20 @@
-from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
+import pytorch3d
+import pytorch3d.transforms
 import torch
 from torch import nn
-from torchtyping import TensorType
 
-from nerfstudio.field_components.encodings import (
-    Encoding,
-    NeRFEncoding,
-    WindowedNeRFEncoding,
-)
+from nerfstudio.field_components.encodings import WindowedNeRFEncoding
 from nerfstudio.field_components.mlp import MLP
+
+
+def to_homogenous(v: torch.Tensor) -> torch.Tensor:
+    return torch.concat([v, torch.ones_like(v[..., :1])], dim=-1)
+
+
+def from_homogenous(v) -> torch.Tensor:
+    return v[..., :3] / v[..., -1:]
 
 
 class SE3Field(nn.Module):
@@ -33,23 +37,56 @@ class SE3Field(nn.Module):
     ) -> None:
         super().__init__()
         self.position_encoding = WindowedNeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_warp, min_freq_exp=0.0, max_freq_exp=n_freq_warp - 1, include_input=Ture
+            in_dim=3, num_frequencies=n_freq_warp, min_freq_exp=0.0, max_freq_exp=n_freq_warp - 1, include_input=True
         )
-        self.mlp_warping = MLP(
+        self.mlp_stem = MLP(
             in_dim=self.position_encoding.get_out_dim() + warp_embed_dim,
-            out_dim=3,
+            out_dim=mlp_layer_width,
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
             skip_connections=skip_connections,
         )
+        self.mlp_r = MLP(
+            in_dim=mlp_layer_width,
+            out_dim=3,
+            num_layers=2,
+            layer_width=mlp_layer_width,
+        )
+        self.mlp_v = MLP(
+            in_dim=mlp_layer_width,
+            out_dim=3,
+            num_layers=2,
+            layer_width=mlp_layer_width,
+        )
 
-        nn.init.uniform_(self.mlp_warping.layers[-1].weight, a=-1e-5, b=1e-5)  # for SE3 Field
+        # diminish the last layer of SE3 Field to approximate an identity transformation
+        nn.init.uniform_(self.mlp_r.layers[-1].weight, a=-1e-5, b=1e-5)
+        nn.init.uniform_(self.mlp_v.layers[-1].weight, a=-1e-5, b=1e-5)
 
     def forward(self, positions, warp_embed=None, alpha=None):
         if warp_embed is None:
             return None
-        p = self.position_encoding(positions, alpha=alpha)
-        return self.mlp_warping(torch.cat([p, warp_embed], dim=-1))
+
+        x = self.position_encoding(positions, alpha=alpha)  # (R, S, 3)
+
+        feat = self.mlp_stem(torch.cat([x, warp_embed], dim=-1))  # (R, S, D)
+        r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
+        v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
+
+        screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
+        screw_axis = screw_axis.to(positions.dtype)
+        transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
+        transformsT = transforms.permute(0, 2, 1)
+
+        p = positions.reshape(-1, 3)
+
+        warped_p = from_homogenous((transformsT @ to_homogenous(p).unsqueeze(-1)).squeeze(-1))
+        warped_p = warped_p.to(positions.dtype)
+
+        idx_nan = warped_p.isnan()
+        warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
+
+        return warped_p.reshape(*positions.shape[:2], 3)
 
 
 class DeformationField(nn.Module):
@@ -89,4 +126,3 @@ class DeformationField(nn.Module):
             return None
         p = self.position_encoding(positions, alpha=alpha)
         return self.mlp_warping(torch.cat([p, warp_embed], dim=-1))
-        # return self.mlp_warping(torch.cat([p, warp_embed], dim=-1)) + positions
