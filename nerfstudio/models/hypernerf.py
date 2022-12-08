@@ -90,7 +90,10 @@ class HyperNeRFModel(NeRFModel):
         """Set the fields and modules"""
         super().populate_modules()
 
-        self.alpha_sched = GenericScheduler(self.config.n_freq_warp, self.config.warp_alpha_steps)
+        if self.config.warp_alpha_steps < 1:
+            self.alpha_sched = None
+        else:
+            self.alpha_sched = GenericScheduler(self.config.n_freq_warp, self.config.warp_alpha_steps)
 
         # fields
         self.field_coarse = HyperNeRFField(
@@ -156,21 +159,21 @@ class HyperNeRFModel(NeRFModel):
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
 
-        self.config.warp_alpha_steps
-
-        def get_alpha(step):
-            self.alpha_sched.update(step)
-            writer.put_scalar(name="alpha/warp", scalar=self.alpha_sched.get_value(), step=step)
-
         callbacks = []
 
-        callbacks.append(
-            TrainingCallback(
-                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                update_every_num_iters=1,
-                func=get_alpha,
+        if self.alpha_sched is not None:
+
+            def get_alpha(step):
+                self.alpha_sched.update(step)
+                writer.put_scalar(name="alpha/warp", scalar=self.alpha_sched.get_value(), step=step)
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=get_alpha,
+                )
             )
-        )
         return callbacks
 
     def get_outputs(self, ray_bundle: RayBundle):
