@@ -553,7 +553,8 @@ class VolumetricSampler(Sampler):
                 ray_indices = ray_indices[visibility_mask]
 
                 samples_per_ray = ray_indices.bincount(minlength=n_rays)
-                cumsum = torch.concat([torch.zeros(1, device=packed_info.device), samples_per_ray.cumsum(0)[:-1]])
+                cumsum = torch.concat([torch.zeros(1, device=packed_info.device, dtype=packed_info.dtype
+                                                   ), samples_per_ray.cumsum(0)[:-1]])
                 packed_info = torch.stack([cumsum, samples_per_ray], dim=1).type(packed_info.dtype)
 
         zeros = torch.zeros_like(origins[:, :1])

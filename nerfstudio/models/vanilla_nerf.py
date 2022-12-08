@@ -97,7 +97,7 @@ class NeRFModel(Model):
 
     def populate_modules(self):
         """Set the fields and modules"""
-        super().populate_modules()
+        # super().populate_modules()
 
         # fields
         position_encoding = NeRFEncoding(
@@ -225,6 +225,11 @@ class NeRFModel(Model):
             "depth_coarse": depth_coarse,
             "depth_fine": depth_fine,
         }
+
+        if self.training:
+            outputs["ray_samples_fine"] = ray_samples_pdf
+            outputs["weights_fine"] = weights_fine
+
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
@@ -256,17 +261,21 @@ class NeRFModel(Model):
         rgb_fine = outputs["rgb_fine"]
         acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
         acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
+
+        near_plane = None if self.config.collider_params is None else self.config.collider_params["near_plane"]
+        far_plane = None if self.config.collider_params is None else self.config.collider_params["far_plane"]
+
         depth_coarse = colormaps.apply_depth_colormap(
             outputs["depth_coarse"],
             accumulation=outputs["accumulation_coarse"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
+            near_plane=near_plane,
+            far_plane=far_plane,
         )
         depth_fine = colormaps.apply_depth_colormap(
             outputs["depth_fine"],
             accumulation=outputs["accumulation_fine"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
+            near_plane=near_plane,
+            far_plane=far_plane,
         )
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
@@ -282,6 +291,7 @@ class NeRFModel(Model):
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
         fine_lpips = self.lpips(image, rgb_fine)
+        mse = self.rgb_loss(image, rgb_fine)
 
         metrics_dict = {
             "psnr": float(fine_psnr.item()),
@@ -289,6 +299,7 @@ class NeRFModel(Model):
             "fine_psnr": float(fine_psnr),
             "fine_ssim": float(fine_ssim),
             "fine_lpips": float(fine_lpips),
+            "mse": float(mse)
         }
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict
