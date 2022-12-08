@@ -89,12 +89,9 @@ class HyperNeRFModel(NeRFModel):
             config=config,
             **kwargs,
         )
-        self.sched_alpha = None
-        self.sched_beta = None
 
     def populate_modules(self):
         """Set the fields and modules"""
-        super().populate_modules()
 
         if self.config.window_alpha_end >= 1:
             self.sched_alpha = GenericScheduler(
@@ -103,6 +100,9 @@ class HyperNeRFModel(NeRFModel):
                 begin_step=self.config.window_alpha_begin,
                 end_step=self.config.window_alpha_end,
             )
+        else:
+            self.sched_alpha = None
+
         if self.config.window_beta_end >= 1:
             self.sched_beta = GenericScheduler(
                 init_value=0,
@@ -110,6 +110,8 @@ class HyperNeRFModel(NeRFModel):
                 begin_step=self.config.window_beta_begin,
                 end_step=self.config.window_beta_end,
             )
+        else:
+            self.sched_beta = None
 
         # fields
         self.field_coarse = HyperNeRFField(
@@ -174,69 +176,29 @@ class HyperNeRFModel(NeRFModel):
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
+        def update_window_param(sched: GenericScheduler, name: str, step: int):
+            sched.update(step)
+            writer.put_scalar(name=f"window_param/{name}", scalar=sched.get_value(), step=step)
 
         callbacks = []
 
         if self.sched_alpha is not None:
-
-            def update_window_param(step):
-                self.sched_alpha.update(step)
-                self.sched_beta.update(step)
-                writer.put_scalar(name="window_param/alpha", scalar=self.sched_alpha.get_value(), step=step)
-                writer.put_scalar(name="window_param/beta", scalar=self.sched_beta.get_value(), step=step)
-
             callbacks.append(
                 TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
                     update_every_num_iters=1,
                     func=update_window_param,
+                    args=[self.sched_alpha, "alpha"],
+                )
+            )
+
+        if self.sched_beta is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_beta, "beta"],
                 )
             )
         return callbacks
-
-    def get_outputs(self, ray_bundle: RayBundle):
-
-        if self.field_coarse is None or self.field_fine is None:
-            raise ValueError("populate_fields() must be called before get_outputs")
-
-        # uniform sampling
-        ray_samples_uniform = self.sampler_uniform(ray_bundle)
-        if self.temporal_distortion is not None:
-            offsets = self.temporal_distortion(ray_samples_uniform.frustums.get_positions(), ray_samples_uniform.times)
-            ray_samples_uniform.frustums.set_offsets(offsets)
-
-        # coarse field:
-        field_outputs_coarse = self.field_coarse.forward(ray_samples_uniform)
-        weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
-        rgb_coarse = self.renderer_rgb(
-            rgb=field_outputs_coarse[FieldHeadNames.RGB],
-            weights=weights_coarse,
-        )
-        accumulation_coarse = self.renderer_accumulation(weights_coarse)
-        depth_coarse = self.renderer_depth(weights_coarse, ray_samples_uniform)
-
-        # pdf sampling
-        ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
-        if self.temporal_distortion is not None:
-            offsets = self.temporal_distortion(ray_samples_pdf.frustums.get_positions(), ray_samples_pdf.times)
-            ray_samples_pdf.frustums.set_offsets(offsets)
-
-        # fine field:
-        field_outputs_fine = self.field_fine.forward(ray_samples_pdf)
-        weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
-        rgb_fine = self.renderer_rgb(
-            rgb=field_outputs_fine[FieldHeadNames.RGB],
-            weights=weights_fine,
-        )
-        accumulation_fine = self.renderer_accumulation(weights_fine)
-        depth_fine = self.renderer_depth(weights_fine, ray_samples_pdf)
-
-        outputs = {
-            "rgb_coarse": rgb_coarse,
-            "rgb_fine": rgb_fine,
-            "accumulation_coarse": accumulation_coarse,
-            "accumulation_fine": accumulation_fine,
-            "depth_coarse": depth_coarse,
-            "depth_fine": depth_fine,
-        }
-        return outputs
