@@ -121,8 +121,8 @@ class DeformationField(nn.Module):
 
         nn.init.normal_(self.mlp_warping.layers[-1].weight, std=1e-4)
 
-    def forward(self, positions, time_embed=None, alpha=None):
+    def forward(self, positions, time_embed=None, windows_param=None):
         if time_embed is None:
             return None
-        p = self.position_encoding(positions, alpha=alpha)
+        p = self.position_encoding(positions, windows_param=windows_param)
         return self.mlp_warping(torch.cat([p, time_embed], dim=-1))

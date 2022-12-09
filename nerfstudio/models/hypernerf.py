@@ -19,9 +19,12 @@ Implementation of hypernerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import sqrt
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
+from torch import nn
+from torch.nn import init
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -34,6 +37,7 @@ from nerfstudio.engine.callbacks import (
 )
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.fields.deformation_field import SE3Field
 from nerfstudio.fields.hypernerf_field import HyperNeRFField
 from nerfstudio.model_components.losses import MSELoss
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
@@ -90,8 +94,10 @@ class HyperNeRFModel(NeRFModel):
             **kwargs,
         )
 
-    def populate_modules(self):
-        """Set the fields and modules"""
+        # time-conditioning
+        assert self.config.time_embed_dim > 0
+        self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
+        init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
 
         if self.config.window_alpha_end >= 1:
             self.sched_alpha = GenericScheduler(
@@ -113,29 +119,36 @@ class HyperNeRFModel(NeRFModel):
         else:
             self.sched_beta = None
 
+    def populate_modules(self):
+        """Set the fields and modules"""
+
         # fields
+        if self.config.use_deformation_field:
+            extra_dim = 0
+            self.deformation_network = SE3Field(
+                n_freq_warp=self.config.n_freq_warp,
+                time_embed_dim=self.config.time_embed_dim,
+                mlp_num_layers=6,
+                mlp_layer_width=128,
+            )
+        else:
+            extra_dim = time_embed_dim
+            self.deformation_network = None
+
         self.field_coarse = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            extra_dim=extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
-            n_timesteps=self.config.n_timesteps,
-            time_embed_dim=self.config.time_embed_dim,
-            use_deformation_field=self.config.use_deformation_field,
-            n_freq_warp=self.config.n_freq_warp,
-            alpah_sched=self.sched_alpha,
         )
 
         self.field_fine = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            extra_dim=extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
-            n_timesteps=self.config.n_timesteps,
-            time_embed_dim=self.config.time_embed_dim,
-            use_deformation_field=self.config.use_deformation_field,
-            n_freq_warp=self.config.n_freq_warp,
-            alpah_sched=self.sched_alpha,
         )
 
         # samplers
@@ -202,3 +215,76 @@ class HyperNeRFModel(NeRFModel):
                 )
             )
         return callbacks
+
+    def get_outputs(self, ray_bundle: RayBundle):
+
+        if self.field_coarse is None or self.field_fine is None:
+            raise ValueError("populate_fields() must be called before get_outputs")
+
+        # window parameters
+        if self.sched_alpha is not None:
+            window_alpha = self.sched_alpha.get_value() if self.sched_alpha is not None else None
+        else:
+            window_alpha = None
+
+        if self.sched_beta is not None:
+            window_beta = self.sched_beta.get_value() if self.sched_beta is not None else None
+        else:
+            window_beta = None
+
+        # uniform sampling
+        ray_samples_uniform = self.sampler_uniform(ray_bundle)
+        if self.temporal_distortion is not None:
+            offsets = self.temporal_distortion(ray_samples_uniform.frustums.get_positions(), ray_samples_uniform.times)
+            ray_samples_uniform.frustums.set_offsets(offsets)
+
+        # coarse field:
+        field_outputs_coarse = self.field_coarse.forward(
+            ray_samples_uniform,
+            time_embeddings=self.time_embeddings,
+            deformation_network=self.deformation_network,
+            window_alpha=window_alpha,
+        )
+        weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
+        rgb_coarse = self.renderer_rgb(
+            rgb=field_outputs_coarse[FieldHeadNames.RGB],
+            weights=weights_coarse,
+        )
+        accumulation_coarse = self.renderer_accumulation(weights_coarse)
+        depth_coarse = self.renderer_depth(weights_coarse, ray_samples_uniform)
+
+        # pdf sampling
+        ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
+        if self.temporal_distortion is not None:
+            offsets = self.temporal_distortion(ray_samples_pdf.frustums.get_positions(), ray_samples_pdf.times)
+            ray_samples_pdf.frustums.set_offsets(offsets)
+
+        # fine field:
+        field_outputs_fine = self.field_fine.forward(
+            ray_samples_pdf,
+            time_embeddings=self.time_embeddings,
+            deformation_network=self.deformation_network,
+            window_alpha=window_alpha,
+        )
+        weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
+        rgb_fine = self.renderer_rgb(
+            rgb=field_outputs_fine[FieldHeadNames.RGB],
+            weights=weights_fine,
+        )
+        accumulation_fine = self.renderer_accumulation(weights_fine)
+        depth_fine = self.renderer_depth(weights_fine, ray_samples_pdf)
+
+        outputs = {
+            "rgb_coarse": rgb_coarse,
+            "rgb_fine": rgb_fine,
+            "accumulation_coarse": accumulation_coarse,
+            "accumulation_fine": accumulation_fine,
+            "depth_coarse": depth_coarse,
+            "depth_fine": depth_fine,
+        }
+
+        if self.training:
+            outputs["ray_samples_fine"] = ray_samples_pdf
+            outputs["weights_fine"] = weights_fine
+
+        return outputs

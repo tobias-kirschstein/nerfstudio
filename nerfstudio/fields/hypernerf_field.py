@@ -13,16 +13,13 @@
 # limitations under the License.
 
 """Classic NeRF field"""
-from math import sqrt
 from typing import Dict, Optional, Tuple
 
 import torch
 from torch import nn
-from torch.nn import init
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import RaySamples
-from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.encodings import NeRFEncoding
 from nerfstudio.field_components.field_heads import (
     DensityFieldHead,
@@ -30,12 +27,10 @@ from nerfstudio.field_components.field_heads import (
     FieldHeadNames,
     RGBFieldHead,
 )
-from nerfstudio.field_components.mlp import MLP, TCNNMLP, TCNNMLPConfig
+from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field
-
-# from nerfstudio.fields.warping import SE3Field, DeformationField
-from nerfstudio.fields.deformation_field import DeformationField, SE3Field
+from nerfstudio.fields.deformation_field import SE3Field
 
 
 class HyperNeRFField(Field):
@@ -57,6 +52,7 @@ class HyperNeRFField(Field):
         self,
         n_freq_pos: int = 11,
         n_freq_dir: int = 5,
+        extra_dim: int = 0,
         base_mlp_num_layers: int = 8,
         base_mlp_layer_width: int = 256,
         head_mlp_num_layers: int = 2,
@@ -65,33 +61,11 @@ class HyperNeRFField(Field):
         field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
         use_integrated_encoding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
-        n_timesteps: int = 1,
-        time_embed_dim: int = 0,
-        use_deformation_field: bool = True,
-        n_freq_warp: int = 8,
-        alpah_sched: Optional[GenericScheduler] = None,
     ) -> None:
         super().__init__()
 
         self.use_integrated_encoding = use_integrated_encoding
         self.spatial_distortion = spatial_distortion
-
-        # time-conditioning
-        assert time_embed_dim > 0
-        self.time_embedding = nn.Embedding(n_timesteps, time_embed_dim)
-        init.normal_(self.time_embedding.weight, mean=0.0, std=0.01 / sqrt(time_embed_dim))
-
-        if use_deformation_field:
-            additional_dim = 0
-            # self.deformation_network = DeformationField(
-            self.deformation_network = SE3Field(
-                n_freq_warp=n_freq_warp, time_embed_dim=time_embed_dim, mlp_num_layers=6, mlp_layer_width=128
-            )
-        else:
-            additional_dim = time_embed_dim
-            self.deformation_network = None
-
-        self.alpah_sched = alpah_sched
 
         # template NeRF
         self.position_encoding = NeRFEncoding(
@@ -102,7 +76,7 @@ class HyperNeRFField(Field):
         )
 
         self.mlp_base = MLP(
-            in_dim=self.position_encoding.get_out_dim() + additional_dim,
+            in_dim=self.position_encoding.get_out_dim() + extra_dim,
             num_layers=base_mlp_num_layers,
             layer_width=base_mlp_layer_width,
             skip_connections=skip_connections,
@@ -121,17 +95,19 @@ class HyperNeRFField(Field):
         for field_head in self.field_heads:
             field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
 
-    def get_density(self, ray_samples: RaySamples):
+    def get_density(
+        self,
+        ray_samples: RaySamples,
+        time_embedding: Optional[torch.Tensor] = None,
+        deformation_network: Optional[SE3Field] = None,
+        window_alpha: Optional[float] = None,
+    ):
         positions = ray_samples.frustums.get_positions()
         if self.spatial_distortion is not None:
             positions = self.spatial_distortion(positions)
 
-        timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
-        time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
-
-        if self.deformation_network is not None:
-            window_alpha = self.alpah_sched.get_value() if self.alpah_sched is not None else None
-            positions = self.deformation_network(positions, time_embeddings, window_alpha)
+        if deformation_network is not None:
+            positions = deformation_network(positions, time_embedding, window_alpha)
 
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz]
@@ -153,3 +129,39 @@ class HyperNeRFField(Field):
             mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding], dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs
+
+    def forward(
+        self,
+        ray_samples: RaySamples,
+        compute_normals: bool = False,
+        time_embeddings: Optional[nn.Embedding] = None,
+        deformation_network: Optional[SE3Field] = None,
+        window_alpha: Optional[float] = None,
+    ):
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if time_embeddings is not None:
+            timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
+            time_embed = time_embeddings(timesteps)  # [R, S, D]
+        else:
+            time_embed = None
+
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding = self.get_density(
+                    ray_samples, time_embed, deformation_network, window_alpha
+                )
+        else:
+            density, density_embedding = self.get_density(ray_samples, time_embed, deformation_network, window_alpha)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs
