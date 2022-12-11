@@ -98,7 +98,7 @@ class HyperNeRFField(Field):
     def get_density(
         self,
         ray_samples: RaySamples,
-        time_embedding: Optional[torch.Tensor] = None,
+        time_embed: Optional[torch.Tensor] = None,
         deformation_network: Optional[SE3Field] = None,
         window_alpha: Optional[float] = None,
     ):
@@ -107,13 +107,13 @@ class HyperNeRFField(Field):
             positions = self.spatial_distortion(positions)
 
         if deformation_network is not None:
-            positions = deformation_network(positions, time_embedding, window_alpha)
+            positions = deformation_network(positions, time_embed, window_alpha)
 
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz]
         else:
             encoded_xyz = self.position_encoding(positions)
-            base_inputs = [encoded_xyz, time_embeddings]
+            base_inputs = [encoded_xyz, time_embed]
 
         base_inputs = torch.concat(base_inputs, dim=2)
         base_mlp_out = self.mlp_base(base_inputs)

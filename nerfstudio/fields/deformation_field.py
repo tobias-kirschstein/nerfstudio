@@ -67,9 +67,9 @@ class SE3Field(nn.Module):
         if time_embed is None:
             return None
 
-        x = self.position_encoding(positions, windows_param=windows_param)  # (R, S, 3)
+        encoded_xyz = self.position_encoding(positions, windows_param=windows_param)  # (R, S, 3)
 
-        feat = self.mlp_stem(torch.cat([x, time_embed], dim=-1))  # (R, S, D)
+        feat = self.mlp_stem(torch.cat([encoded_xyz, time_embed], dim=-1))  # (R, S, D)
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
         v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
 
