@@ -109,7 +109,8 @@ class SE3WarpingField(nn.Module):
         idx_nan = warped_p.isnan()
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
-        return warped_p.reshape(*positions.shape[:2], 3)
+        # Reshape to shape of input positions tensor
+        return warped_p.reshape(*positions.shape[:len(positions.shape) - 1], 3)
 
 
 class DeformationField(nn.Module):

@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Type
 import nerfacc
 import torch
 from nerfacc import ContractionType
+from nerfstudio.engine.generic_scheduler import GenericScheduler
 from torch.nn import Parameter
 from torch.nn.modules.module import T
 from torchmetrics import PeakSignalNoiseRatio
@@ -20,7 +21,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torch_efficient_distloss import flatten_eff_distloss
 import tinycudann as tcnn
 
-from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -36,7 +37,7 @@ from nerfstudio.model_components.renderers import (
     RGBRenderer,
 )
 from nerfstudio.models.base_model import Model, ModelConfig
-from nerfstudio.utils import colormaps, colors
+from nerfstudio.utils import colormaps, colors, writer
 
 
 @dataclass
@@ -98,6 +99,9 @@ class InstantNGPModelConfig(ModelConfig):
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 3
+    n_freq_pos_warping: int = 7
+    window_deform_begin: int = 0  # the number of steps window_deform is set to 0
+    window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -212,6 +216,16 @@ class NGPModel(Model):
         )
         self.sampler = self.sampler_train
 
+        if self.config.window_deform_end >= 1:
+            self.sched_window_deform = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_pos_warping,
+                begin_step=self.config.window_deform_begin,
+                end_step=self.config.window_deform_end,
+            )
+        else:
+            self.sched_window_deform = None
+
         # renderers
         if self.config.use_background_network:
             background_color = None
@@ -256,6 +270,9 @@ class NGPModel(Model):
     def get_training_callbacks(
             self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
+        callbacks = []
+
+        # Occupancy grid
         def update_occupancy_grid(step: int):
             # TODO: needs to get access to the sampler, on how the step size is determinated at each x. See
             # https://github.com/KAIR-BAIR/nerfacc/blob/127223b11401125a9fce5ce269bb0546ee4de6e8/examples/train_ngp_nerf.py#L190-L213
@@ -264,13 +281,28 @@ class NGPModel(Model):
                 occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
             )
 
-        return [
-            TrainingCallback(
-                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                update_every_num_iters=1,
-                func=update_occupancy_grid,
-            ),
-        ]
+        callbacks.append(TrainingCallback(
+            where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+            update_every_num_iters=1,
+            func=update_occupancy_grid,
+        ))
+
+        # Window scheduling for deformation field
+        def update_window_param(sched: GenericScheduler, name: str, step: int):
+            sched.update(step)
+            writer.put_scalar(name=f"window_param/{name}", scalar=sched.get_value(), step=step)
+
+        if self.sched_window_deform is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_deform, "sched_window_deform"],
+                )
+            )
+
+        return callbacks
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -314,7 +346,15 @@ class NGPModel(Model):
                 alpha_thre=self.config.alpha_thre
             )
 
-        field_outputs = self.field(ray_samples)
+        # window parameters
+        if self.sched_window_deform is not None:
+            # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
+            # window_deform = self.sched_window_deform.get_value() if self.sched_window_deform is not None else None
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+        else:
+            window_deform = None
+
+        field_outputs = self.field(ray_samples, window_deform=window_deform)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(
@@ -501,7 +541,8 @@ class NGPModel(Model):
 
         # TODO: L1 regularization for hash table (Is inside mlp_base)
         if self.config.lambda_l1_field_regularization > 0:
-            loss_dict["l1_field_regularization"] = self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+            loss_dict[
+                "l1_field_regularization"] = self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
 
         return loss_dict
 
