@@ -58,7 +58,7 @@ from nerfstudio.utils import colors, writer
 class HyperNeRFModelConfig(VanillaModelConfig):
     """HyperNeRF Model Config"""
 
-    _target: Type = field(default_factory=lambda: NeRFModel)
+    _target: Type = field(default_factory=lambda: HyperNeRFModel)
 
     n_freq_pos: int = 9
     n_freq_dir: int = 5
@@ -101,57 +101,56 @@ class HyperNeRFModel(NeRFModel):
             **kwargs,
         )
 
+    def populate_modules(self):
+        """Set the fields and modules"""
+
         # time-conditioning
         assert self.config.time_embed_dim > 0
         self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
         init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
 
-        if self.config.window_alpha_end >= 1:
-            self.sched_alpha = GenericScheduler(
-                init_value=0,
-                final_value=self.config.n_freq_pos_warping - 1,
-                begin_step=self.config.window_alpha_begin,
-                end_step=self.config.window_alpha_end,
-            )
-        else:
-            self.sched_alpha = None
-
-        if self.config.window_beta_end >= 1:
-            self.sched_beta = GenericScheduler(
-                init_value=0,
-                final_value=self.config.n_freq_slice - 1,
-                begin_step=self.config.window_beta_begin,
-                end_step=self.config.window_beta_end,
-            )
-        else:
-            self.sched_beta = None
-
-    def populate_modules(self):
-        """Set the fields and modules"""
-
         # fields
         extra_dim = 0
-        self.warp_network = None
-        self.slice_network = None
+        self.warp_field = None
+        self.slice_field = None
+        self.sched_alpha = None
+        self.sched_beta = None
 
         if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            extra_dim = time_embed_dim
+            extra_dim = self.config.time_embed_dim
 
         if self.config.use_se3_warping:
-            self.warp_network = SE3WarpingField(
+            self.warp_field = SE3WarpingField(
                 n_freq_pos=self.config.n_freq_pos_warping,
                 time_embed_dim=self.config.time_embed_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=128,
             )
+            if self.config.window_alpha_end >= 1:
+                assert self.config.window_alpha_end > self.config.window_alpha_begin
+                self.sched_alpha = GenericScheduler(
+                    init_value=0,
+                    final_value=self.config.n_freq_pos_warping,
+                    begin_step=self.config.window_alpha_begin,
+                    end_step=self.config.window_alpha_end,
+                )
+
         if self.config.use_hyper_slicing:
-            self.slice_network = HyperSlicingField(
+            self.slice_field = HyperSlicingField(
                 n_freq_pos=self.config.n_freq_pos_slicing,
                 out_dim=self.config.hyper_slice_dim,
                 time_embed_dim=self.config.time_embed_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=64,
             )
+            if self.config.window_beta_end >= 1:
+                assert self.config.window_beta_end > self.config.window_beta_begin
+                self.sched_beta = GenericScheduler(
+                    init_value=0,
+                    final_value=self.config.n_freq_slice,
+                    begin_step=self.config.window_beta_begin,
+                    end_step=self.config.window_beta_end,
+                )
 
         self.field_coarse = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
@@ -240,6 +239,22 @@ class HyperNeRFModel(NeRFModel):
             )
         return callbacks
 
+    def get_param_groups(self) -> Dict[str, List[Parameter]]:
+        param_groups = {}
+        if self.field_coarse is None or self.field_fine is None:
+            raise ValueError("populate_fields() must be called before get_param_groups")
+        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+
+        if self.warp_field is not None:
+            param_groups["fields"] += list(self.warp_field.parameters())
+
+        if self.slice_field is not None:
+            param_groups["fields"] += list(self.slice_field.parameters())
+
+        if self.temporal_distortion is not None:
+            param_groups["temporal_distortion"] = list(self.temporal_distortion.parameters())
+        return param_groups
+
     def get_outputs(self, ray_bundle: RayBundle):
 
         if self.field_coarse is None or self.field_fine is None:
@@ -266,8 +281,8 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_coarse = self.field_coarse.forward(
             ray_samples_uniform,
             time_embeddings=self.time_embeddings,
-            warp_network=self.warp_network,
-            slice_network=self.slice_network,
+            warp_field=self.warp_field,
+            slice_field=self.slice_field,
             window_alpha=window_alpha,
             window_beta=window_beta,
         )
@@ -289,8 +304,8 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_fine = self.field_fine.forward(
             ray_samples_pdf,
             time_embeddings=self.time_embeddings,
-            warp_network=self.warp_network,
-            slice_network=self.slice_network,
+            warp_field=self.warp_field,
+            slice_field=self.slice_field,
             window_alpha=window_alpha,
             window_beta=window_beta,
         )
