@@ -156,6 +156,7 @@ class HyperNeRFModel(NeRFModel):
         self.field_coarse = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             extra_dim=extra_dim,
@@ -166,6 +167,7 @@ class HyperNeRFModel(NeRFModel):
         self.field_fine = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             extra_dim=extra_dim,

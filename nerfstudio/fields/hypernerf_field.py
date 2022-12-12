@@ -206,6 +206,7 @@ class HyperNeRFField(Field):
         self,
         n_freq_pos: int = 9,
         n_freq_dir: int = 5,
+        use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
         extra_dim: int = 0,
@@ -230,7 +231,7 @@ class HyperNeRFField(Field):
         self.direction_encoding = NeRFEncoding(
             in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
         )
-        if hyper_slice_dim > 0:
+        if use_hyper_slicing and hyper_slice_dim > 0:
             self.slicing_encoding = WindowedNeRFEncoding(
                 in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
             )
