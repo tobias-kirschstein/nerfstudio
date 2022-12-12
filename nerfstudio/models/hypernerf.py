@@ -109,7 +109,7 @@ class HyperNeRFModel(NeRFModel):
         if self.config.window_alpha_end >= 1:
             self.sched_alpha = GenericScheduler(
                 init_value=0,
-                final_value=self.config.n_freq_pos_warping,
+                final_value=self.config.n_freq_pos_warping - 1,
                 begin_step=self.config.window_alpha_begin,
                 end_step=self.config.window_alpha_end,
             )
@@ -119,7 +119,7 @@ class HyperNeRFModel(NeRFModel):
         if self.config.window_beta_end >= 1:
             self.sched_beta = GenericScheduler(
                 init_value=0,
-                final_value=self.config.n_freq_slice,
+                final_value=self.config.n_freq_slice - 1,
                 begin_step=self.config.window_beta_begin,
                 end_step=self.config.window_beta_end,
             )
