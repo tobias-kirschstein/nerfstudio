@@ -13,6 +13,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
+from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from nerfstudio.fields.warping import SE3Field, DeformationField
 from torch import nn
 from torch.nn import init
@@ -71,6 +72,7 @@ class TCNNInstantNGPField(Field):
             n_timesteps: int = 1,
             max_ray_samples_chunk_size: int = -1,
             use_deformation_field: bool = False,
+            n_freq_pos_warping: int = 7,
             num_layers_deformation_field: int = 3,
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -139,7 +141,14 @@ class TCNNInstantNGPField(Field):
 
                 # self.deformation_network = SE3Field(latent_dim_time, hidden_dim)
 
-                self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
+                # self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
+
+                self.deformation_network = SE3WarpingField(
+                    n_freq_pos=n_freq_pos_warping,
+                    time_embed_dim=latent_dim_time,
+                    mlp_num_layers=6,
+                    mlp_layer_width=128,
+                )
 
                 base_network_encoding_config = hash_grid_encoding_config
                 n_base_inputs = 3
@@ -195,7 +204,9 @@ class TCNNInstantNGPField(Field):
             },
         )
 
-    def get_density(self, ray_samples: RaySamples):
+    def get_density(self,
+                    ray_samples: RaySamples,
+                    window_deform: Optional[float] = None):
 
         densities = []
         base_mlp_outs = []
@@ -206,7 +217,7 @@ class TCNNInstantNGPField(Field):
         # This should not hurt performance too much as the occupancy grid is only updated periodically
         max_chunk_size = ray_samples.size if self.max_ray_samples_chunk_size == -1 else self.max_ray_samples_chunk_size
         for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
-            ray_samples_chunk = ray_samples[i_chunk * max_chunk_size : (i_chunk + 1) * max_chunk_size]
+            ray_samples_chunk = ray_samples[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
 
             positions = ray_samples_chunk.frustums.get_positions()
             positions_flat = positions.view(-1, 3)
@@ -232,11 +243,15 @@ class TCNNInstantNGPField(Field):
                         idx_timesteps_deform = timesteps > 0  # Only deform points for other timesteps than canonical
 
                         if idx_timesteps_deform.any():
-
                             positions_to_deform = positions_flat[idx_timesteps_deform]
 
+                            # TODO: windows_param scheduling
                             deformed_points = self.deformation_network(positions_to_deform,
-                                                                       time_embeddings[idx_timesteps_deform])
+                                                                       time_embeddings[idx_timesteps_deform],
+                                                                       windows_param=window_deform)
+
+                            # deformed_points = self.deformation_network(positions_to_deform,
+                            #                                            time_embeddings[idx_timesteps_deform])
 
                             positions_flat[idx_timesteps_deform] = deformed_points
                             # positions_flat[idx_timesteps_deform] = positions_to_deform
@@ -287,7 +302,6 @@ class TCNNInstantNGPField(Field):
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
 
-
         if density_embedding is None:
             positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
             if self.direction_encoding is None:
@@ -316,6 +330,30 @@ class TCNNInstantNGPField(Field):
 
         rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
         return {FieldHeadNames.RGB: rgb}
+
+    def forward(self,
+                ray_samples: RaySamples,
+                compute_normals: bool = False,
+                window_deform: Optional[float] = None):
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding = self.get_density(ray_samples, window_deform=window_deform)
+        else:
+            density, density_embedding = self.get_density(ray_samples, window_deform=window_deform)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs
 
     def get_opacity(self, positions: TensorType["bs":..., 3], step_size) -> TensorType["bs":..., 1]:
         """Returns the opacity for a position. Used primarily by the occupancy grid.
