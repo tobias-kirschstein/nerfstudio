@@ -279,9 +279,9 @@ class HyperNeRFField(Field):
             base_inputs = []
 
         if warp_network is not None:
-            positions = warp_network(positions, time_embed, window_alpha)
+            warped_positions = warp_network(positions, time_embed, window_alpha)
 
-            encoded_xyz = self.position_encoding(positions)
+            encoded_xyz = self.position_encoding(warped_positions)
             base_inputs.append(encoded_xyz)
         if slice_network is not None:
             w = slice_network(positions, time_embed)
