@@ -37,8 +37,11 @@ from nerfstudio.engine.callbacks import (
 )
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.fields.deformation_field import SE3Field
-from nerfstudio.fields.hypernerf_field import HyperNeRFField
+from nerfstudio.fields.hypernerf_field import (
+    HyperNeRFField,
+    HyperSlicingField,
+    SE3WarpingField,
+)
 from nerfstudio.model_components.losses import MSELoss
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
@@ -57,19 +60,23 @@ class HyperNeRFModelConfig(VanillaModelConfig):
 
     _target: Type = field(default_factory=lambda: NeRFModel)
 
-    n_freq_pos: int = 11
+    n_freq_pos: int = 9
     n_freq_dir: int = 5
+    n_freq_slice: int = 2
     n_layers: int = 8
     hidden_dim: int = 256
 
     n_timesteps: int = 1
     time_embed_dim: int = 8
 
-    use_deformation_field: bool = True
-    n_freq_warp: int = 8
-    n_freq_slice: int = 6
+    use_se3_warping: bool = True
+    n_freq_pos_warping: int = 7
     window_alpha_begin: int = 0  # the number of steps window_alpha is set to 0
     window_alpha_end: int = 80000  # the number of steps when window_alpha reaches its maximum
+
+    use_hyper_slicing: bool = True
+    n_freq_pos_slicing: int = 7
+    hyper_slice_dim: int = 2
     window_beta_begin: int = 1000  # the number of steps window_beta is set to 0
     window_beta_end: int = 10000  # the number of steps when window_beta reaches its maximum
 
@@ -102,7 +109,7 @@ class HyperNeRFModel(NeRFModel):
         if self.config.window_alpha_end >= 1:
             self.sched_alpha = GenericScheduler(
                 init_value=0,
-                final_value=self.config.n_freq_warp,
+                final_value=self.config.n_freq_pos_warping,
                 begin_step=self.config.window_alpha_begin,
                 end_step=self.config.window_alpha_end,
             )
@@ -123,21 +130,34 @@ class HyperNeRFModel(NeRFModel):
         """Set the fields and modules"""
 
         # fields
-        if self.config.use_deformation_field:
-            extra_dim = 0
-            self.deformation_network = SE3Field(
-                n_freq_warp=self.config.n_freq_warp,
+        extra_dim = 0
+        self.warp_network = None
+        self.slice_network = None
+
+        if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
+            extra_dim = time_embed_dim
+
+        if self.config.use_se3_warping:
+            self.warp_network = SE3WarpingField(
+                n_freq_pos=self.config.n_freq_pos_warping,
                 time_embed_dim=self.config.time_embed_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=128,
             )
-        else:
-            extra_dim = time_embed_dim
-            self.deformation_network = None
+        if self.config.use_hyper_slicing:
+            self.slice_network = HyperSlicingField(
+                n_freq_pos=self.config.n_freq_pos_slicing,
+                out_dim=self.config.hyper_slice_dim,
+                time_embed_dim=self.config.time_embed_dim,
+                mlp_num_layers=6,
+                mlp_layer_width=64,
+            )
 
         self.field_coarse = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
             extra_dim=extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
@@ -146,6 +166,8 @@ class HyperNeRFModel(NeRFModel):
         self.field_fine = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
             extra_dim=extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
@@ -242,8 +264,10 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_coarse = self.field_coarse.forward(
             ray_samples_uniform,
             time_embeddings=self.time_embeddings,
-            deformation_network=self.deformation_network,
+            warp_network=self.warp_network,
+            slice_network=self.slice_network,
             window_alpha=window_alpha,
+            window_beta=window_beta,
         )
         weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
         rgb_coarse = self.renderer_rgb(
@@ -263,8 +287,10 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_fine = self.field_fine.forward(
             ray_samples_pdf,
             time_embeddings=self.time_embeddings,
-            deformation_network=self.deformation_network,
+            warp_network=self.warp_network,
+            slice_network=self.slice_network,
             window_alpha=window_alpha,
+            window_beta=window_beta,
         )
         weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
         rgb_fine = self.renderer_rgb(
