@@ -68,17 +68,18 @@ class SE3WarpingField(nn.Module):
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
             skip_connections=skip_connections,
+            out_activation=nn.ReLU(),
         )
         self.mlp_r = MLP(
             in_dim=mlp_layer_width,
             out_dim=3,
-            num_layers=2,
+            num_layers=1,
             layer_width=mlp_layer_width,
         )
         self.mlp_v = MLP(
             in_dim=mlp_layer_width,
             out_dim=3,
-            num_layers=2,
+            num_layers=1,
             layer_width=mlp_layer_width,
         )
 
@@ -110,7 +111,7 @@ class SE3WarpingField(nn.Module):
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
         # Reshape to shape of input positions tensor
-        return warped_p.reshape(*positions.shape[:len(positions.shape) - 1], 3)
+        return warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
 
 
 class DeformationField(nn.Module):
@@ -179,7 +180,7 @@ class HyperSlicingField(nn.Module):
             skip_connections=skip_connections,
         )
 
-        nn.init.normal_(self.mlp.layers[-1].weight, std=1e-4)
+        nn.init.normal_(self.mlp.layers[-1].weight, std=1e-5)
 
     def forward(self, positions, time_embed=None):
         if time_embed is None:
@@ -207,6 +208,7 @@ class HyperNeRFField(Field):
         self,
         n_freq_pos: int = 9,
         n_freq_dir: int = 5,
+        use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
         extra_dim: int = 0,
@@ -231,7 +233,7 @@ class HyperNeRFField(Field):
         self.direction_encoding = NeRFEncoding(
             in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
         )
-        if hyper_slice_dim > 0:
+        if use_hyper_slicing and hyper_slice_dim > 0:
             self.slicing_encoding = WindowedNeRFEncoding(
                 in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
             )
@@ -263,8 +265,8 @@ class HyperNeRFField(Field):
         self,
         ray_samples: RaySamples,
         time_embed: Optional[torch.Tensor] = None,
-        warp_network: Optional[SE3WarpingField] = None,
-        slice_network: Optional[HyperSlicingField] = None,
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
         window_beta: Optional[float] = None,
     ):
@@ -272,19 +274,19 @@ class HyperNeRFField(Field):
         if self.spatial_distortion is not None:
             positions = self.spatial_distortion(positions)
 
-        if warp_network is None and slice_network is None:
+        if warp_field is None and slice_field is None:
             encoded_xyz = self.position_encoding(positions)
             base_inputs = [encoded_xyz, time_embed]
         else:
             base_inputs = []
 
-        if warp_network is not None:
-            positions = warp_network(positions, time_embed, window_alpha)
+        if warp_field is not None:
+            warped_positions = warp_field(positions, time_embed, window_alpha)
 
-            encoded_xyz = self.position_encoding(positions)
+            encoded_xyz = self.position_encoding(warped_positions)
             base_inputs.append(encoded_xyz)
-        if slice_network is not None:
-            w = slice_network(positions, time_embed)
+        if slice_field is not None:
+            w = slice_field(positions, time_embed)
 
             encoded_w = self.slicing_encoding(w, windows_param=window_beta)
             base_inputs.append(encoded_w)
@@ -309,8 +311,8 @@ class HyperNeRFField(Field):
         ray_samples: RaySamples,
         compute_normals: bool = False,
         time_embeddings: Optional[nn.Embedding] = None,
-        warp_network: Optional[SE3WarpingField] = None,
-        slice_network: Optional[HyperSlicingField] = None,
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
         window_beta: Optional[float] = None,
     ):
@@ -328,11 +330,11 @@ class HyperNeRFField(Field):
         if compute_normals:
             with torch.enable_grad():
                 density, density_embedding = self.get_density(
-                    ray_samples, time_embed, warp_network, slice_network, window_alpha, window_beta
+                    ray_samples, time_embed, warp_field, slice_field, window_alpha, window_beta
                 )
         else:
             density, density_embedding = self.get_density(
-                ray_samples, time_embed, warp_network, slice_network, window_alpha, window_beta
+                ray_samples, time_embed, warp_field, slice_field, window_alpha, window_beta
             )
 
         field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
