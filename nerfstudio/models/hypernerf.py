@@ -245,6 +245,9 @@ class HyperNeRFModel(NeRFModel):
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
 
+        if self.time_embeddings is not None:
+            param_groups["embeddings"] = list(self.time_embeddings.parameters())
+
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
 

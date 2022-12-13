@@ -68,17 +68,18 @@ class SE3WarpingField(nn.Module):
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
             skip_connections=skip_connections,
+            out_activation=nn.ReLU(),
         )
         self.mlp_r = MLP(
             in_dim=mlp_layer_width,
             out_dim=3,
-            num_layers=2,
+            num_layers=1,
             layer_width=mlp_layer_width,
         )
         self.mlp_v = MLP(
             in_dim=mlp_layer_width,
             out_dim=3,
-            num_layers=2,
+            num_layers=1,
             layer_width=mlp_layer_width,
         )
 
@@ -110,7 +111,7 @@ class SE3WarpingField(nn.Module):
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
         # Reshape to shape of input positions tensor
-        return warped_p.reshape(*positions.shape[:len(positions.shape) - 1], 3)
+        return warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
 
 
 class DeformationField(nn.Module):
@@ -179,7 +180,7 @@ class HyperSlicingField(nn.Module):
             skip_connections=skip_connections,
         )
 
-        nn.init.normal_(self.mlp.layers[-1].weight, std=1e-4)
+        nn.init.normal_(self.mlp.layers[-1].weight, std=1e-5)
 
     def forward(self, positions, time_embed=None):
         if time_embed is None:
