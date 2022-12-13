@@ -102,6 +102,7 @@ class InstantNGPModelConfig(ModelConfig):
     n_freq_pos_warping: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
+    fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -146,6 +147,7 @@ class NGPModel(Model):
             n_timesteps=self.config.n_timesteps,
             max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
             use_deformation_field=self.config.use_deformation_field,
+            fix_canonical_space=self.config.fix_canonical_space,
             num_layers_deformation_field=self.config.n_layers_deformation_field,
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
@@ -279,6 +281,7 @@ class NGPModel(Model):
             self.occupancy_grid.every_n_step(
                 step=step,
                 occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
+                # occ_eval_fn=lambda x: torch.ones_like(x)[..., 0],
             )
 
         callbacks.append(TrainingCallback(

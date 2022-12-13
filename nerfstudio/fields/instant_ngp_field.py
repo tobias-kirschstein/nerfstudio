@@ -9,12 +9,14 @@ import torch
 from nerfacc import ContractionType, contract
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
+from nerfstudio.field_components import MLP
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
 from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from nerfstudio.fields.warping import SE3Field, DeformationField
+from nerfstudio.utils.torch import disable_gradients_for
 from torch import nn
 from torch.nn import init
 from torch.nn.parameter import Parameter
@@ -72,6 +74,7 @@ class TCNNInstantNGPField(Field):
             n_timesteps: int = 1,
             max_ray_samples_chunk_size: int = -1,
             use_deformation_field: bool = False,
+            fix_canonical_space: bool = False,
             n_freq_pos_warping: int = 7,
             num_layers_deformation_field: int = 3,
             no_hash_encoding: bool = False,
@@ -88,6 +91,7 @@ class TCNNInstantNGPField(Field):
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
         self.density_threshold = density_threshold
         self.use_4d_hashing = use_4d_hashing
+        self.fix_canonical_space = fix_canonical_space
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -96,7 +100,8 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
         # TODO: set this properly based on the aabb
-        per_level_scale = 1.4472692012786865
+        # per_level_scale = 1.4472692012786865
+        per_level_scale = 2
 
         if disable_view_dependency:
             self.direction_encoding = None
@@ -141,14 +146,27 @@ class TCNNInstantNGPField(Field):
 
                 # self.deformation_network = SE3Field(latent_dim_time, hidden_dim)
 
-                # self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
+                self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
 
-                self.deformation_network = SE3WarpingField(
-                    n_freq_pos=n_freq_pos_warping,
-                    time_embed_dim=latent_dim_time,
-                    mlp_num_layers=6,
-                    mlp_layer_width=128,
-                )
+                # self.deformation_network = SE3WarpingField(
+                #     n_freq_pos=n_freq_pos_warping,
+                #     time_embed_dim=latent_dim_time,
+                #     mlp_num_layers=6,
+                #     mlp_layer_width=128,
+                # )
+
+                # self.bullshit_deformer = nn.Linear(3, 3)
+                # self.bullshit_deformer.weight.register_hook(lambda grad: print(f"GRADIENT: ", grad))
+                # self.bullshit_deformer_2 = nn.Parameter(torch.zeros((2, 3), dtype=torch.float32), requires_grad=True)
+                # # self.bullshit_deformer_3 = nn.Parameter(torch.zeros((3, 3), dtype=torch.float32), requires_grad=True)
+                # self.bullshit_deformer_3 = tcnn.Network(3, 3, {
+                #     "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
+                #     "activation": "ReLU",
+                #     "output_activation": "None",
+                #     "n_neurons": hidden_dim,
+                #     "n_hidden_layers": num_layers - 1,
+                # })
+
 
                 base_network_encoding_config = hash_grid_encoding_config
                 n_base_inputs = 3
@@ -223,6 +241,7 @@ class TCNNInstantNGPField(Field):
             positions_flat = positions.view(-1, 3)
             positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
+            timesteps = None
             if self.time_embedding is not None or self.use_4d_hashing:
                 timesteps = ray_samples_chunk.timesteps
                 if timesteps is None:
@@ -245,13 +264,50 @@ class TCNNInstantNGPField(Field):
                         if idx_timesteps_deform.any():
                             positions_to_deform = positions_flat[idx_timesteps_deform]
 
-                            # TODO: windows_param scheduling
-                            deformed_points = self.deformation_network(positions_to_deform,
-                                                                       time_embeddings[idx_timesteps_deform],
-                                                                       windows_param=window_deform)
+                            # TODO: Remove torch.zeros_like()
+
+                            # ps = torch.randn((5, 11, 3)).cuda()
+                            # te = torch.randn((5, 11, 128)).cuda()
+                            #
+                            # self.deformation_network(ps,
+                            #                          time_embed=te,
+                            #                          windows_param=window_deform)
+
+                            # deformed_points = self.deformation_network(positions_to_deform,
+                            #                                            time_embed=time_embeddings[idx_timesteps_deform],
+                            #                                            windows_param=window_deform)
+
+                            deformed_points = positions_to_deform + self.deformation_network(positions_to_deform,
+                                                                       time_embeddings[idx_timesteps_deform])
+
+                            # deformed_points = deformed_points + self.bullshit_deformer(deformed_points)
+                            # deformed_points = deformed_points + self.bullshit_deformer_2[timesteps[idx_timesteps_deform]] + self.bullshit_deformer_3(deformed_points)
+
+                            # if torch.is_grad_enabled():
+                            #     with torch.enable_grad():
+                            #         deformed_points = self.deformation_network(positions_to_deform,
+                            #                                                    time_embed=time_embeddings[idx_timesteps_deform],
+                            #                                                    windows_param=window_deform)
+                            # else:
+                            #     deformed_points = self.deformation_network(positions_to_deform,
+                            #                                                time_embed=time_embeddings[
+                            #                                                    idx_timesteps_deform],
+                            #                                                windows_param=window_deform)
 
                             # deformed_points = self.deformation_network(positions_to_deform,
                             #                                            time_embeddings[idx_timesteps_deform])
+
+
+                            # hypernerf_field = SE3WarpingField(time_embed_dim=128).cuda()
+                            # ps = torch.randn((5, 11, 3)).cuda()
+                            # te = torch.randn((5, 11, 8)).cuda()
+                            # deformed_points = hypernerf_field(positions_to_deform, time_embed=time_embeddings[idx_timesteps_deform])
+
+                            # with torch.enable_grad():
+                            #     if deformed_points.grad_fn is not None:
+                            #         (deformed_points ** 2).sum().backward()
+                            #         for p in self.parameters():
+                            #             p.grad = None
 
                             positions_flat[idx_timesteps_deform] = deformed_points
                             # positions_flat[idx_timesteps_deform] = positions_to_deform
@@ -269,7 +325,23 @@ class TCNNInstantNGPField(Field):
                 base_inputs = [positions_flat]
 
             base_inputs = torch.concat(base_inputs, dim=1)
-            h = self.mlp_base(base_inputs).view(*ray_samples_chunk.frustums.shape, -1)
+            if timesteps is not None and self.fix_canonical_space:
+                # TODO: Experimental
+                # Only accumulate gradients for mlp_base for canonical space rays.
+                # All other timesteps should only update the deformation field
+                idx_timesteps_deform = timesteps > 0
+                h_canonical = self.mlp_base(base_inputs[~idx_timesteps_deform])
+                with disable_gradients_for(self.mlp_base):
+                    h_deform = self.mlp_base(base_inputs[idx_timesteps_deform])
+
+                h = torch.zeros((base_inputs.shape[0], *h_canonical.shape[1:]),
+                                dtype=h_canonical.dtype,
+                                device=h_canonical.device)
+                h[~idx_timesteps_deform] = h_canonical
+                h[idx_timesteps_deform] = h_deform
+                h = h.view(*ray_samples_chunk.frustums.shape, -1)
+            else:
+                h = self.mlp_base(base_inputs).view(*ray_samples_chunk.frustums.shape, -1)
             density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
 
             # Rectifying the density with an exponential is much more stable than a ReLU or
@@ -328,7 +400,23 @@ class TCNNInstantNGPField(Field):
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
 
-        rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
+        if ray_samples.timesteps is not None and self.fix_canonical_space:
+            # Ensure that only canonical space rays accumulate gradients
+            idx_timesteps_deform = ray_samples.timesteps.squeeze(-1) > 0
+
+            rgb_canonical = self.mlp_head(h[~idx_timesteps_deform])
+            with disable_gradients_for(self.mlp_head):
+                rgb_deform = self.mlp_head(h[idx_timesteps_deform])
+
+            rgb = torch.zeros((h.shape[0], *rgb_canonical.shape[1:]),
+                            dtype=rgb_canonical.dtype,
+                            device=rgb_canonical.device)
+            rgb[~idx_timesteps_deform] = rgb_canonical
+            rgb[idx_timesteps_deform] = rgb_deform
+            rgb = rgb.view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
+        else:
+            rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
+
         return {FieldHeadNames.RGB: rgb}
 
     def forward(self,
