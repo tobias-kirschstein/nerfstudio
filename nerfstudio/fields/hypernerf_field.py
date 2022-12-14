@@ -276,7 +276,9 @@ class HyperNeRFField(Field):
 
         if warp_field is None and slice_field is None:
             encoded_xyz = self.position_encoding(positions)
-            base_inputs = [encoded_xyz, time_embed]
+            base_inputs = [encoded_xyz]
+            if time_embed is not None:
+                base_inputs.append(time_embed)
         else:
             base_inputs = []
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import sqrt
-from typing import Any, Dict, List, Tuple, Type
+from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
 import torch
 from torch import nn
@@ -30,6 +30,7 @@ from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -49,7 +50,7 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider
+from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.utils import colors, writer
 
@@ -59,6 +60,9 @@ class HyperNeRFModelConfig(VanillaModelConfig):
     """HyperNeRF Model Config"""
 
     _target: Type = field(default_factory=lambda: HyperNeRFModel)
+
+    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
+    collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.01, "far_plane": 2.0})
 
     n_freq_pos: int = 9
     n_freq_dir: int = 5
@@ -105,9 +109,10 @@ class HyperNeRFModel(NeRFModel):
         """Set the fields and modules"""
 
         # time-conditioning
-        assert self.config.time_embed_dim > 0
-        self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
-        init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
+        self.time_embeddings = None
+        if self.config.time_embed_dim > 0:
+            self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
+            init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
 
         # fields
         extra_dim = 0
@@ -207,7 +212,16 @@ class HyperNeRFModel(NeRFModel):
 
         # colliders
         if self.config.enable_collider:
-            self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            if self.config.collider_type == "AABBBox":
+                self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            elif self.config.collider_type == "NearFar":
+                assert self.config.collider_params is not None
+                self.collider = NearFarCollider(
+                    near_plane=self.config.collider_params["near_plane"],
+                    far_plane=self.config.collider_params["far_plane"],
+                )
+            else:
+                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
