@@ -72,6 +72,8 @@ class HyperNeRFModelConfig(VanillaModelConfig):
 
     n_timesteps: int = 1
     time_embed_dim: int = 8
+    n_cameras: int = 1
+    camera_embed_dim: int = 8
 
     use_se3_warping: bool = True
     n_freq_pos_warping: int = 7
@@ -108,23 +110,32 @@ class HyperNeRFModel(NeRFModel):
     def populate_modules(self):
         """Set the fields and modules"""
 
+        base_extra_dim = 0
+        head_extra_dim = 0
+        self.warp_field = None
+        self.slice_field = None
+        self.sched_alpha = None
+        self.sched_beta = None
+
         # time-conditioning
         self.time_embeddings = None
         if self.config.time_embed_dim > 0:
             self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
             init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
 
-        # fields
-        extra_dim = 0
-        self.warp_field = None
-        self.slice_field = None
-        self.sched_alpha = None
-        self.sched_beta = None
+        # camera embedding to model the difference of exposure, color, etc. between cameras
+        self.camera_embeddings = None
+        if self.config.camera_embed_dim > 0:
+            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_embed_dim)
+            init.normal_(self.camera_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.camera_embed_dim))
+            head_extra_dim = self.config.camera_embed_dim
 
+        # fields
         if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            extra_dim = self.config.time_embed_dim
+            base_extra_dim = self.config.time_embed_dim
 
         if self.config.use_se3_warping:
+            assert self.time_embeddings is not None, "SE3WarpingField requires time_embed_dim > 0."
             self.warp_field = SE3WarpingField(
                 n_freq_pos=self.config.n_freq_pos_warping,
                 time_embed_dim=self.config.time_embed_dim,
@@ -141,6 +152,7 @@ class HyperNeRFModel(NeRFModel):
                 )
 
         if self.config.use_hyper_slicing:
+            assert self.time_embeddings is not None, "HyperSlicingField requires time_embed_dim > 0."
             self.slice_field = HyperSlicingField(
                 n_freq_pos=self.config.n_freq_pos_slicing,
                 out_dim=self.config.hyper_slice_dim,
@@ -163,7 +175,8 @@ class HyperNeRFModel(NeRFModel):
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
-            extra_dim=extra_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
         )
@@ -174,7 +187,8 @@ class HyperNeRFModel(NeRFModel):
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
-            extra_dim=extra_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
         )
@@ -262,6 +276,9 @@ class HyperNeRFModel(NeRFModel):
         if self.time_embeddings is not None:
             param_groups["embeddings"] = list(self.time_embeddings.parameters())
 
+        if self.camera_embeddings is not None:
+            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
+
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
 
@@ -298,6 +315,7 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_coarse = self.field_coarse.forward(
             ray_samples_uniform,
             time_embeddings=self.time_embeddings,
+            camera_embeddings=self.camera_embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,
@@ -321,6 +339,7 @@ class HyperNeRFModel(NeRFModel):
         field_outputs_fine = self.field_fine.forward(
             ray_samples_pdf,
             time_embeddings=self.time_embeddings,
+            camera_embeddings=self.camera_embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,

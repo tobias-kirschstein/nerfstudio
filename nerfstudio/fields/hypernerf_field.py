@@ -211,7 +211,8 @@ class HyperNeRFField(Field):
         use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
-        extra_dim: int = 0,
+        base_extra_dim: int = 0,
+        head_extra_dim: int = 0,
         base_mlp_num_layers: int = 8,
         base_mlp_layer_width: int = 256,
         head_mlp_num_layers: int = 2,
@@ -237,12 +238,12 @@ class HyperNeRFField(Field):
             self.slicing_encoding = WindowedNeRFEncoding(
                 in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
             )
-            extra_dim += self.slicing_encoding.get_out_dim()
+            base_extra_dim += self.slicing_encoding.get_out_dim()
         else:
             self.slicing_encoding = None
 
         self.mlp_base = MLP(
-            in_dim=self.position_encoding.get_out_dim() + extra_dim,
+            in_dim=self.position_encoding.get_out_dim() + base_extra_dim,
             num_layers=base_mlp_num_layers,
             layer_width=base_mlp_layer_width,
             skip_connections=skip_connections,
@@ -250,7 +251,7 @@ class HyperNeRFField(Field):
         )
 
         self.mlp_head = MLP(
-            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim(),
+            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim() + head_extra_dim,
             num_layers=head_mlp_num_layers,
             layer_width=head_mlp_layer_width,
             out_activation=nn.ReLU(),
@@ -299,12 +300,19 @@ class HyperNeRFField(Field):
         return density, base_mlp_out
 
     def get_outputs(
-        self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+        self,
+        ray_samples: RaySamples,
+        density_embedding: Optional[TensorType] = None,
+        camera_embed: Optional[torch.Tensor] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
             encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
-            mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding], dim=-1))  # type: ignore
+            head_input = [encoded_dir, density_embedding]
+
+            if camera_embed is not None:
+                head_inputs.append(camera_embed)
+            mlp_out = self.mlp_head(torch.cat(head_inputs, dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs
 
@@ -313,6 +321,7 @@ class HyperNeRFField(Field):
         ray_samples: RaySamples,
         compute_normals: bool = False,
         time_embeddings: Optional[nn.Embedding] = None,
+        camera_embeddings: Optional[nn.Embedding] = None,
         warp_field: Optional[SE3WarpingField] = None,
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
@@ -329,6 +338,12 @@ class HyperNeRFField(Field):
         else:
             time_embed = None
 
+        if camera_embeddings is not None:
+            camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
+            camera_embed = camera_embeddings(camera_indices)  # [R, S, D]
+        else:
+            camera_embed = None
+
         if compute_normals:
             with torch.enable_grad():
                 density, density_embedding = self.get_density(
@@ -339,7 +354,7 @@ class HyperNeRFField(Field):
                 ray_samples, time_embed, warp_field, slice_field, window_alpha, window_beta
             )
 
-        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, camera_embed=camera_embed)
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 
         if compute_normals:
