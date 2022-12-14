@@ -308,7 +308,7 @@ class HyperNeRFField(Field):
         outputs = {}
         for field_head in self.field_heads:
             encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
-            head_input = [encoded_dir, density_embedding]
+            head_inputs = [encoded_dir, density_embedding]
 
             if camera_embed is not None:
                 head_inputs.append(camera_embed)
