@@ -126,7 +126,8 @@ class DeformationField(nn.Module):
                 "n_hidden_layers": n_hidden_layers,
             },
         )
-        nn.init.normal_(self.deformation_network.params, 0, 1e-2)  # maybe use uniform initialization
+        nn.init.uniform_(self.deformation_network.params, a=-1e-1, b=1e-1)  #1e-5 is too small for all layers. Needs to be at least 1e-1 (but then also sometimes creates inf)
+        # nn.init.normal_(self.deformation_network.params, 0, 1e-2)  # maybe use uniform initialization
 
     def forward(self, points: torch.Tensor, latent_codes: torch.Tensor) -> torch.Tensor:
         network_input = torch.concat([points, latent_codes], dim=1)  # [B, 3 + D]
