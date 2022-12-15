@@ -40,12 +40,13 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
     num_images, image_height, image_width, _ = batch["image"].shape
 
     # only sample within the mask, if the mask is in the batch
-    if "mask" in batch:
-        nonzero_indices = torch.nonzero(batch["mask"][..., 0], as_tuple=False)
-        chosen_indices = random.sample(range(len(nonzero_indices)), k=num_rays_per_batch)
-        indices = nonzero_indices[chosen_indices]
-    elif "pixel_sample_probabilities" in batch:
+
+    if "pixel_sample_probabilities" in batch:
         pixel_sample_probabilities = batch["pixel_sample_probabilities"]  # [C, H, W]
+
+        if 'mask' in batch:
+            mask = batch['mask']
+            pixel_sample_probabilities[~mask.squeeze(-1)] = 0  # Do not sample masked out areas
 
         downscale_factor = 4
         resizer = Resize((image_height // downscale_factor, image_width // downscale_factor),
@@ -70,6 +71,10 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
                                                  replacement=True)
         grid = torch.stack([grid_b, grid_y, grid_x], dim=-1)
         indices = grid.view(-1, 3)[pixel_sample_indices]
+    elif "mask" in batch:
+        nonzero_indices = torch.nonzero(batch["mask"][..., 0], as_tuple=False)
+        chosen_indices = random.sample(range(len(nonzero_indices)), k=num_rays_per_batch)
+        indices = nonzero_indices[chosen_indices]
     else:
         indices = torch.floor(
             torch.rand((num_rays_per_batch, 3), device=device)
@@ -77,11 +82,11 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
         ).long()
 
     # global debug_sample_probabilities
+    # B, H, W, _ = batch['image'].shape
     # if debug_sample_probabilities is None:
-    #     debug_sample_probabilities = np.zeros((B, H * downscale_factor, W * downscale_factor))
+    #     debug_sample_probabilities = np.zeros((B, H, W))
     #
-    # for c, y, x in indices:
-    #     debug_sample_probabilities[batch['image_idx'][c], y, x] += 1
+    # debug_sample_probabilities[batch['image_idx'][indices[:, 0]].cpu(), indices[:, 1].cpu(), indices[:, 2].cpu()] += 1
 
     c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
     collated_batch = {key: value[c, y, x] for key, value in batch.items() if key not in {'image_idx', 'cam_ids', 'timesteps'} and value is not None}

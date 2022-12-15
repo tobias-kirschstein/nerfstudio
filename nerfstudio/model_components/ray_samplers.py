@@ -567,7 +567,7 @@ class VolumetricSampler(Sampler):
                 pixel_area=zeros,
             ),
             camera_indices=valid_camera_indices,
-            timesteps=valid_timesteps.reshape(-1, 1)
+            timesteps=None if valid_timesteps is None else valid_timesteps.reshape(-1, 1)
         )
         return ray_samples, packed_info, ray_indices
 
