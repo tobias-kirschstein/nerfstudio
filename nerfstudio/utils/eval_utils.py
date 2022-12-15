@@ -97,7 +97,10 @@ def eval_setup(
         print("Overriden config items:")
         for k, v in overwrite_config.items():
             if v is not None:
-                exec("k = v")
+                obj = eval(".".join(k.split(".")[:-1]))
+                attr = k.split(".")[-1]
+                obj.__setattr__(attr, v)
+
                 print(f"\t{k}: {eval(k)}")
 
     config.trainer.load_dir = config.get_checkpoint_dir()
