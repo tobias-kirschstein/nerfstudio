@@ -451,7 +451,20 @@ class NGPModel(Model):
         # We removed the masking here to allow gradients to update the background network in transparent regions
         # mask = outputs["alive_ray_mask"]
         # rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
-        rgb_loss = self.rgb_loss(image, rgb_pred)
+
+        if 'mask' in batch:
+            # Only compute RGB loss on non-masked pixels
+            pixel_indices_per_ray = batch['local_indices']  # [R, [c, y, x]]
+            masks = batch['mask'].squeeze(3)  # [B, H, W]
+            mask = masks[
+                pixel_indices_per_ray[:, 0],
+                pixel_indices_per_ray[:, 1],
+                pixel_indices_per_ray[:, 2],
+            ]
+
+            rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
+        else:
+            rgb_loss = self.rgb_loss(image, rgb_pred)
 
         loss_dict["rgb_loss"] = rgb_loss
 
@@ -567,7 +580,24 @@ class NGPModel(Model):
         )
         alive_ray_mask = colormaps.apply_colormap(outputs["alive_ray_mask"])
 
-        combined_rgb = torch.cat([image, rgb], dim=1)
+        if 'mask' in batch:
+            # Log GT image + full model prediction
+            combined_rgb = torch.cat([image.clone(), rgb.clone() if rgb_without_bg is None else rgb_without_bg], dim=1)
+
+            # Log masked GT image + masked model prediction which is what the evaluation is performed on
+            mask = batch['mask'].squeeze(2)
+            image[~mask] = 0
+            rgb[~mask] = 0
+            combined_rgb_masked = torch.cat([image, rgb], dim=1)
+
+            # Density that is in the masked-out area will be summarized in a "floaters" metric
+            # "floaters" is high when there is a lot of density in the masked-out region
+            floaters = outputs["accumulation"][~mask].mean()
+        else:
+            combined_rgb = torch.cat([image, rgb], dim=1)
+            combined_rgb_masked = None
+            floaters = None
+
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
         combined_alive_ray_mask = torch.cat([alive_ray_mask], dim=1)
@@ -596,6 +626,12 @@ class NGPModel(Model):
         }
         if "rgb_without_bg" in outputs:
             images_dict["img_without_bg"] = outputs["rgb_without_bg"]
+
+        if combined_rgb_masked is not None:
+            images_dict["img_masked"] = combined_rgb_masked
+
+        if floaters is not None:
+            metrics_dict["floaters"] = float(floaters)
 
         return metrics_dict, images_dict
 
