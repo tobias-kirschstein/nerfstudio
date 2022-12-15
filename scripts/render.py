@@ -29,9 +29,9 @@ from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.configs.base_config import Config  # pylint: disable=unused-import
 from nerfstudio.pipelines.base_pipeline import Pipeline
 from nerfstudio.utils import install_checks
+from nerfstudio.utils.colormaps import apply_depth_colormap
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import ItersPerSecColumn
-from nerfstudio.utils.colormaps import apply_depth_colormap
 
 CONSOLE = Console(width=120)
 
@@ -61,7 +61,7 @@ def _render_trajectory_video(
     cameras.rescale_output_resolution(rendered_resolution_scaling_factor)
     cameras = cameras.to(pipeline.device)
     scale_factor = pipeline.datamanager.config.dataparser.scale_factor
-    cameras.scale_coordinate_system(scale_factor / 9)
+    cameras.scale_coordinate_system(scale_factor)
     n_timesteps = pipeline.datamanager.config.dataparser.n_timesteps
 
     progress = Progress(
@@ -89,7 +89,7 @@ def _render_trajectory_video(
                     sys.exit(1)
                 output_image = outputs[rendered_output_name].cpu().numpy()
 
-                if rendered_output_name == 'depth':
+                if rendered_output_name == "depth":
                     output_image = apply_depth_colormap(torch.from_numpy(output_image)).numpy()
 
                 render_image.append(output_image)
@@ -98,7 +98,6 @@ def _render_trajectory_video(
                 media.write_image(output_image_dir / f"{camera_idx:05d}.png", render_image)
             else:
                 images.append(render_image)
-
 
     if output_format == "video":
         fps = len(images) / seconds
@@ -136,10 +135,13 @@ class RenderTrajectory:
     # Whether to only render points that are seen by at least 1 train view
     view_frustum_culling: bool = True
     # Which checkpoint to load
-    eval_scene_box_scale: Optional[float] = None  # Whether to not restrict the scene box during rendering
     checkpoint_step: Optional[int] = None
 
+    # collider settings for trajectory rendering
+    overwrite_collider_type: Literal["NearFar", "AABBBox", None] = None
+    eval_scene_box_scale: Optional[float] = None  # Whether to not restrict the scene box during rendering
     near_plane: Optional[float] = None
+
     density_threshold: Optional[float] = None
 
     def main(self) -> None:
@@ -151,9 +153,10 @@ class RenderTrajectory:
             test_mode="test" if self.traj == "spiral" else "inference",
             view_frustum_culling=self.view_frustum_culling,
             checkpoint_step=self.checkpoint_step,
+            overwrite_collider_type=self.overwrite_collider_type,
             eval_scene_box_scale=self.eval_scene_box_scale,
             near_plane=self.near_plane,
-            density_threshold=self.density_threshold
+            density_threshold=self.density_threshold,
         )
 
         install_checks.check_ffmpeg_installed()

@@ -53,7 +53,7 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
                 justify="center",
             )
             sys.exit(1)
-        load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(config.load_dir))[-1]
+        load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(config.load_dir))[-1]
     else:
         load_step = config.load_step
     load_path = config.load_dir / f"step-{load_step:09d}.ckpt"
@@ -64,14 +64,17 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
     return load_path
 
 
-def eval_setup(config_path: Path,
-               eval_num_rays_per_chunk: Optional[int] = None,
-            test_mode: Literal["test", "val", "inference"] = "test",
-               view_frustum_culling: Optional[bool] = None,
-               checkpoint_step: Optional[int] = None,
-               eval_scene_box_scale: Optional[float] = None,
-               near_plane: Optional[float] = None,
-               density_threshold: Optional[float] = None) -> Tuple[cfg.Config, Pipeline, Path]:
+def eval_setup(
+    config_path: Path,
+    eval_num_rays_per_chunk: Optional[int] = None,
+    test_mode: Literal["test", "val", "inference"] = "test",
+    view_frustum_culling: Optional[bool] = None,
+    checkpoint_step: Optional[int] = None,
+    overwrite_collider_type: Literal["NearFar", "AABBBox", None] = None,
+    eval_scene_box_scale: Optional[float] = None,
+    near_plane: Optional[float] = None,
+    density_threshold: Optional[float] = None,
+) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
@@ -100,6 +103,9 @@ def eval_setup(config_path: Path,
 
     if view_frustum_culling is not None:
         config.pipeline.datamanager.dataparser.view_frustum_culling = view_frustum_culling
+
+    if overwrite_collider_type is not None:
+        config.pipeline.model.collider_type = overwrite_collider_type
 
     if eval_scene_box_scale is not None:
         if eval_scene_box_scale < 0:
