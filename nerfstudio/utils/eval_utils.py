@@ -66,14 +66,9 @@ def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
 
 def eval_setup(
     config_path: Path,
-    eval_num_rays_per_chunk: Optional[int] = None,
     test_mode: Literal["test", "val", "inference"] = "test",
-    view_frustum_culling: Optional[bool] = None,
     checkpoint_step: Optional[int] = None,
-    overwrite_collider_type: Literal["NearFar", "AABBBox", None] = None,
-    eval_scene_box_scale: Optional[float] = None,
-    near_plane: Optional[float] = None,
-    density_threshold: Optional[float] = None,
+    overwrite_config: Optional[dict] = None,
 ) -> Tuple[cfg.Config, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
@@ -98,29 +93,13 @@ def eval_setup(
     config = yaml.load(config_path.read_text(), Loader=yaml.Loader)
     assert isinstance(config, cfg.Config)
 
-    if eval_num_rays_per_chunk:
-        config.pipeline.model.eval_num_rays_per_chunk = eval_num_rays_per_chunk
+    if overwrite_config:
+        print("Overriden config items:")
+        for k, v in overwrite_config.items():
+            if v is not None:
+                exec("k = v")
+                print(f"\t{k}: {eval(k)}")
 
-    if view_frustum_culling is not None:
-        config.pipeline.datamanager.dataparser.view_frustum_culling = view_frustum_culling
-
-    if overwrite_collider_type is not None:
-        config.pipeline.model.collider_type = overwrite_collider_type
-
-    if eval_scene_box_scale is not None:
-        if eval_scene_box_scale < 0:
-            config.pipeline.model.eval_scene_box_scale = None
-        else:
-            config.pipeline.model.eval_scene_box_scale = eval_scene_box_scale
-
-    if near_plane is not None:
-        config.pipeline.model.near_plane = near_plane
-
-    if density_threshold is not None:
-        config.pipeline.model.density_threshold = density_threshold
-
-    # load checkpoints from wherever they were saved
-    # TODO: expose the ability to choose an arbitrary checkpoint
     config.trainer.load_dir = config.get_checkpoint_dir()
     config.trainer.load_step = checkpoint_step
     config.pipeline.datamanager.eval_image_indices = None

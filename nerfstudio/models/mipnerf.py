@@ -82,8 +82,8 @@ class MipNerfModel(Model):
         elif self.config.randomize_background:
             background_color = "random"
         else:
-            background_color = colors.WHITE
-        
+            background_color = colors.BLACK
+
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=background_color)
         self.renderer_accumulation = AccumulationRenderer()

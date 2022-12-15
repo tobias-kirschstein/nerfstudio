@@ -130,33 +130,19 @@ class RenderTrajectory:
     seconds: float = 5.0
     # How to save output data.
     output_format: Literal["images", "video"] = "video"
-    # Specifies number of rays per chunk during eval.
-    eval_num_rays_per_chunk: Optional[int] = None
-    # Whether to only render points that are seen by at least 1 train view
-    view_frustum_culling: bool = True
     # Which checkpoint to load
     checkpoint_step: Optional[int] = None
 
-    # collider settings for trajectory rendering
-    overwrite_collider_type: Literal["NearFar", "AABBBox", None] = None
-    eval_scene_box_scale: Optional[float] = None  # Whether to not restrict the scene box during rendering
-    near_plane: Optional[float] = None
-
-    density_threshold: Optional[float] = None
+    overwrite_config: Optional[dict] = None
 
     def main(self) -> None:
         """Main function."""
 
         _, pipeline, _ = eval_setup(
             self.load_config,
-            eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
             test_mode="test" if self.traj == "spiral" else "inference",
-            view_frustum_culling=self.view_frustum_culling,
             checkpoint_step=self.checkpoint_step,
-            overwrite_collider_type=self.overwrite_collider_type,
-            eval_scene_box_scale=self.eval_scene_box_scale,
-            near_plane=self.near_plane,
-            density_threshold=self.density_threshold,
+            overwrite_config=self.overwrite_config,
         )
 
         install_checks.check_ffmpeg_installed()

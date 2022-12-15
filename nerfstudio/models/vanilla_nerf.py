@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
+from torch.nn import Parameter
+from torchmetrics import PeakSignalNoiseRatio
+from torchmetrics.functional import structural_similarity_index_measure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.field_components.encodings import NeRFEncoding
@@ -29,10 +34,7 @@ from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
 from nerfstudio.fields.vanilla_nerf_field import NeRFField
 from nerfstudio.model_components.losses import MSELoss
-from nerfstudio.model_components.ray_samplers import (
-    PDFSampler,
-    UniformSampler,
-)
+from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
@@ -41,10 +43,6 @@ from nerfstudio.model_components.renderers import (
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
-from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
-from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 
 @dataclass
@@ -82,9 +80,9 @@ class NeRFModel(Model):
     config: VanillaModelConfig
 
     def __init__(
-            self,
-            config: VanillaModelConfig,
-            **kwargs,
+        self,
+        config: VanillaModelConfig,
+        **kwargs,
     ) -> None:
         self.field_coarse = None
         self.field_fine = None
@@ -146,8 +144,7 @@ class NeRFModel(Model):
         elif self.config.randomize_background:
             background_color = "random"
         else:
-            background_color = colors.WHITE
-            # background_color = colors.BLACK
+            background_color = colors.BLACK
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=background_color)
@@ -254,7 +251,7 @@ class NeRFModel(Model):
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         image = batch["image"].to(outputs["rgb_coarse"].device)
         rgb_coarse = outputs["rgb_coarse"]
@@ -299,7 +296,7 @@ class NeRFModel(Model):
             "fine_psnr": float(fine_psnr),
             "fine_ssim": float(fine_ssim),
             "fine_lpips": float(fine_lpips),
-            "mse": float(mse)
+            "mse": float(mse),
         }
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict
