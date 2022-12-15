@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import sqrt
-from typing import Any, Dict, List, Tuple, Type
+from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
 import torch
 from torch import nn
@@ -30,6 +30,7 @@ from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -49,7 +50,7 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider
+from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.utils import colors, writer
 
@@ -60,6 +61,9 @@ class HyperNeRFModelConfig(VanillaModelConfig):
 
     _target: Type = field(default_factory=lambda: HyperNeRFModel)
 
+    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
+    collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.01, "far_plane": 2.0})
+
     n_freq_pos: int = 9
     n_freq_dir: int = 5
     n_freq_slice: int = 2
@@ -67,7 +71,10 @@ class HyperNeRFModelConfig(VanillaModelConfig):
     hidden_dim: int = 256
 
     n_timesteps: int = 1
-    time_embed_dim: int = 8
+    warp_code_dim: int = 8
+    appearance_code_dim: int = 8
+    n_cameras: int = 1
+    camera_code_dim: int = 8
 
     use_se3_warping: bool = True
     n_freq_pos_warping: int = 7
@@ -104,25 +111,42 @@ class HyperNeRFModel(NeRFModel):
     def populate_modules(self):
         """Set the fields and modules"""
 
-        # time-conditioning
-        assert self.config.time_embed_dim > 0
-        self.time_embeddings = nn.Embedding(self.config.n_timesteps, self.config.time_embed_dim)
-        init.normal_(self.time_embeddings.weight, mean=0.0, std=0.01 / sqrt(self.config.time_embed_dim))
-
-        # fields
-        extra_dim = 0
+        base_extra_dim = 0
+        head_extra_dim = 0
         self.warp_field = None
         self.slice_field = None
         self.sched_alpha = None
         self.sched_beta = None
 
+        # warp embeddings
+        self.warp_embeddings = None
+        if self.config.warp_code_dim > 0:
+            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
+            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
+
+        # appearance embeddings
+        self.appearance_embeddings = None
+        if self.config.appearance_code_dim > 0:
+            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
+            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
+            head_extra_dim += self.config.appearance_code_dim
+
+        # camera embeddings to model the difference of exposure, color, etc. between cameras
+        self.camera_embeddings = None
+        if self.config.camera_code_dim > 0:
+            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
+            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
+            head_extra_dim += self.config.camera_code_dim
+
+        # fields
         if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            extra_dim = self.config.time_embed_dim
+            base_extra_dim = self.config.warp_code_dim
 
         if self.config.use_se3_warping:
+            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
             self.warp_field = SE3WarpingField(
                 n_freq_pos=self.config.n_freq_pos_warping,
-                time_embed_dim=self.config.time_embed_dim,
+                warp_code_dim=self.config.warp_code_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=128,
             )
@@ -136,10 +160,11 @@ class HyperNeRFModel(NeRFModel):
                 )
 
         if self.config.use_hyper_slicing:
+            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
             self.slice_field = HyperSlicingField(
                 n_freq_pos=self.config.n_freq_pos_slicing,
                 out_dim=self.config.hyper_slice_dim,
-                time_embed_dim=self.config.time_embed_dim,
+                warp_code_dim=self.config.warp_code_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=64,
             )
@@ -158,7 +183,8 @@ class HyperNeRFModel(NeRFModel):
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
-            extra_dim=extra_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
         )
@@ -169,7 +195,8 @@ class HyperNeRFModel(NeRFModel):
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
-            extra_dim=extra_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
         )
@@ -207,7 +234,16 @@ class HyperNeRFModel(NeRFModel):
 
         # colliders
         if self.config.enable_collider:
-            self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            if self.config.collider_type == "AABBBox":
+                self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            elif self.config.collider_type == "NearFar":
+                assert self.config.collider_params is not None
+                self.collider = NearFarCollider(
+                    near_plane=self.config.collider_params["near_plane"],
+                    far_plane=self.config.collider_params["far_plane"],
+                )
+            else:
+                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -245,8 +281,14 @@ class HyperNeRFModel(NeRFModel):
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
 
-        if self.time_embeddings is not None:
-            param_groups["embeddings"] = list(self.time_embeddings.parameters())
+        if self.warp_embeddings is not None:
+            param_groups["embeddings"] = list(self.warp_embeddings.parameters())
+
+        if self.appearance_embeddings is not None:
+            param_groups["embeddings"] = list(self.appearance_embeddings.parameters())
+
+        if self.camera_embeddings is not None:
+            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
 
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
@@ -283,7 +325,9 @@ class HyperNeRFModel(NeRFModel):
         # coarse field:
         field_outputs_coarse = self.field_coarse.forward(
             ray_samples_uniform,
-            time_embeddings=self.time_embeddings,
+            warp_embeddings=self.warp_embeddings,
+            appearance_embeddings=self.appearance_embeddings,
+            camera_embeddings=self.camera_embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,
@@ -306,7 +350,9 @@ class HyperNeRFModel(NeRFModel):
         # fine field:
         field_outputs_fine = self.field_fine.forward(
             ray_samples_pdf,
-            time_embeddings=self.time_embeddings,
+            warp_embeddings=self.warp_embeddings,
+            appearance_embeddings=self.appearance_embeddings,
+            camera_embeddings=self.camera_embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,

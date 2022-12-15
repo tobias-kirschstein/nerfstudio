@@ -3,10 +3,15 @@ Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
 from math import ceil, sqrt
-from typing import Optional, List
+from typing import List, Optional
 
 import torch
 from nerfacc import ContractionType, contract
+from torch import nn
+from torch.nn import init
+from torch.nn.parameter import Parameter
+from torchtyping import TensorType
+
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components import MLP
@@ -15,12 +20,8 @@ from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.base_field import Field
 from nerfstudio.fields.hypernerf_field import SE3WarpingField
-from nerfstudio.fields.warping import SE3Field, DeformationField
+from nerfstudio.fields.warping import DeformationField, SE3Field
 from nerfstudio.utils.torch import disable_gradients_for
-from torch import nn
-from torch.nn import init
-from torch.nn.parameter import Parameter
-from torchtyping import TensorType
 
 try:
     import tinycudann as tcnn
@@ -270,11 +271,11 @@ class TCNNInstantNGPField(Field):
                             # te = torch.randn((5, 11, 128)).cuda()
                             #
                             # self.deformation_network(ps,
-                            #                          time_embed=te,
+                            #                          warp_code=te,
                             #                          windows_param=window_deform)
 
                             # deformed_points = self.deformation_network(positions_to_deform,
-                            #                                            time_embed=time_embeddings[idx_timesteps_deform],
+                            #                                            warp_code=time_embeddings[idx_timesteps_deform],
                             #                                            windows_param=window_deform)
 
                             deformed_points = positions_to_deform + self.deformation_network(positions_to_deform,
@@ -286,11 +287,11 @@ class TCNNInstantNGPField(Field):
                             # if torch.is_grad_enabled():
                             #     with torch.enable_grad():
                             #         deformed_points = self.deformation_network(positions_to_deform,
-                            #                                                    time_embed=time_embeddings[idx_timesteps_deform],
+                            #                                                    warp_code=time_embeddings[idx_timesteps_deform],
                             #                                                    windows_param=window_deform)
                             # else:
                             #     deformed_points = self.deformation_network(positions_to_deform,
-                            #                                                time_embed=time_embeddings[
+                            #                                                warp_code=time_embeddings[
                             #                                                    idx_timesteps_deform],
                             #                                                windows_param=window_deform)
 
@@ -301,7 +302,7 @@ class TCNNInstantNGPField(Field):
                             # hypernerf_field = SE3WarpingField(time_embed_dim=128).cuda()
                             # ps = torch.randn((5, 11, 3)).cuda()
                             # te = torch.randn((5, 11, 8)).cuda()
-                            # deformed_points = hypernerf_field(positions_to_deform, time_embed=time_embeddings[idx_timesteps_deform])
+                            # deformed_points = hypernerf_field(positions_to_deform, warp_code=time_embeddings[idx_timesteps_deform])
 
                             # with torch.enable_grad():
                             #     if deformed_points.grad_fn is not None:
