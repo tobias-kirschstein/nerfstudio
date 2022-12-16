@@ -46,18 +46,19 @@ class RGBRenderer(nn.Module):
         background_color: Background color as RGB. Uses random colors if None.
     """
 
-    def __init__(self, background_color: Union[Literal["random", "last_sample"], TensorType[3], None] = "random") -> None:
+    def __init__(self,
+                 background_color: Union[Literal["random", "last_sample"], TensorType[3], None] = "random") -> None:
         super().__init__()
         self.background_color = background_color
 
     @classmethod
     def combine_rgb(
-        cls,
-        rgb: TensorType["bs":..., "num_samples", 3],
-        weights: TensorType["bs":..., "num_samples", 1],
-        background_color: Union[Literal["random", "last_sample"], TensorType[3]] = "random",
-        ray_indices: Optional[TensorType["num_samples"]] = None,
-        num_rays: Optional[int] = None,
+            cls,
+            rgb: TensorType["bs":..., "num_samples", 3],
+            weights: TensorType["bs":..., "num_samples", 1],
+            background_color: Union[Literal["random", "last_sample"], TensorType[3]] = "random",
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
     ) -> TensorType["bs":..., 3]:
         """Composite samples along ray and render color image
 
@@ -128,19 +129,19 @@ class SHRenderer(nn.Module):
     """
 
     def __init__(
-        self,
-        background_color: Union[Literal["random", "last_sample"], TensorType[3]] = "random",
-        activation: Optional[nn.Module] = nn.Sigmoid(),
+            self,
+            background_color: Union[Literal["random", "last_sample"], TensorType[3]] = "random",
+            activation: Optional[nn.Module] = nn.Sigmoid(),
     ) -> None:
         super().__init__()
         self.background_color = background_color
         self.activation = activation
 
     def forward(
-        self,
-        sh: TensorType[..., "num_samples", "coeffs"],
-        directions: TensorType[..., "num_samples", 3],
-        weights: TensorType[..., "num_samples", 1],
+            self,
+            sh: TensorType[..., "num_samples", "coeffs"],
+            directions: TensorType[..., "num_samples", 3],
+            weights: TensorType[..., "num_samples", 1],
     ) -> TensorType[..., 3]:
         """Composite samples along ray and render color image
 
@@ -174,10 +175,10 @@ class AccumulationRenderer(nn.Module):
 
     @classmethod
     def forward(
-        cls,
-        weights: TensorType["bs":..., "num_samples", 1],
-        ray_indices: Optional[TensorType["num_samples"]] = None,
-        num_rays: Optional[int] = None,
+            cls,
+            weights: TensorType["bs":..., "num_samples", 1],
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
     ) -> TensorType["bs":..., 1]:
         """Composite samples along ray and calculate accumulation.
 
@@ -214,11 +215,11 @@ class DepthRenderer(nn.Module):
         self.method = method
 
     def forward(
-        self,
-        weights: TensorType[..., "num_samples", 1],
-        ray_samples: RaySamples,
-        ray_indices: Optional[TensorType["num_samples"]] = None,
-        num_rays: Optional[int] = None,
+            self,
+            weights: TensorType[..., "num_samples", 1],
+            ray_samples: RaySamples,
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
     ) -> TensorType[..., 1]:
         """Composite samples along ray and calculate depths.
 
@@ -267,7 +268,7 @@ class UncertaintyRenderer(nn.Module):
 
     @classmethod
     def forward(
-        cls, betas: TensorType["bs":..., "num_samples", 1], weights: TensorType["bs":..., "num_samples", 1]
+            cls, betas: TensorType["bs":..., "num_samples", 1], weights: TensorType["bs":..., "num_samples", 1]
     ) -> TensorType["bs":..., 1]:
         """Calculate uncertainty along the ray.
 
@@ -287,9 +288,9 @@ class SemanticRenderer(nn.Module):
 
     @classmethod
     def forward(
-        cls,
-        semantics: TensorType["bs":..., "num_samples", "num_classes"],
-        weights: TensorType["bs":..., "num_samples", 1],
+            cls,
+            semantics: TensorType["bs":..., "num_samples", "num_classes"],
+            weights: TensorType["bs":..., "num_samples", 1],
     ) -> TensorType["bs":..., "num_classes"]:
         """Calculate semantics along the ray."""
         sem = torch.sum(weights * semantics, dim=-2)
@@ -301,9 +302,9 @@ class NormalsRenderer(nn.Module):
 
     @classmethod
     def forward(
-        cls,
-        normals: TensorType["bs":..., "num_samples", 3],
-        weights: TensorType["bs":..., "num_samples", 1],
+            cls,
+            normals: TensorType["bs":..., "num_samples", 3],
+            weights: TensorType["bs":..., "num_samples", 1],
     ) -> TensorType["bs":..., 3]:
         """Calculate normals along the ray."""
         n = torch.sum(weights * normals, dim=-2)

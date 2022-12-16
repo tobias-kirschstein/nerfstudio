@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Type
 
 import nerfacc
 import torch
+from elias.config import implicit
 from nerfacc import ContractionType
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from torch.nn import Parameter
@@ -86,9 +87,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_beta_loss: float = 0
     lambda_l1_field_regularization: float = 0
 
-    use_background_network: bool = False
-    lambda_background_adjustment_regularization: float = 1
-    num_layers_background: int = 3
+    use_backgrounds: bool = implicit(False)
 
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
@@ -156,36 +155,6 @@ class NGPModel(Model):
             disable_view_dependency=self.config.disable_view_dependency
         )
 
-        if self.config.use_background_network:
-            self.mlp_background = tcnn.NetworkWithInputEncoding(
-                n_input_dims=6,
-                n_output_dims=3,
-                encoding_config={
-                    "otype": "Composite",
-                    "nested": [
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "Frequency",
-                            "n_frequencies": 12
-                        },
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "SphericalHarmonics",
-                            "degree": 6
-                        }
-                    ]
-
-                },
-                network_config={
-                    "otype": "FullyFusedMLP",
-                    "activation": "ReLU",
-                    "output_activation": "Sigmoid",
-                    "n_neurons": self.config.hidden_dim_color,
-                    "n_hidden_layers": self.config.num_layers_background,
-                },
-            )
-            self.softplus_bg = torch.nn.Softplus()
-
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
         # Occupancy Grid
@@ -229,7 +198,7 @@ class NGPModel(Model):
             self.sched_window_deform = None
 
         # renderers
-        if self.config.use_background_network:
+        if self.config.use_backgrounds:
             background_color = None
         elif self.config.randomize_background:
             background_color = 'random'
@@ -308,16 +277,14 @@ class NGPModel(Model):
         return callbacks
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
+        param_groups = super(NGPModel, self).get_param_groups()
+
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
 
         parameters = list(self.field.parameters())
 
-        if self.config.use_background_network:
-            parameters.extend(self.mlp_background.parameters())
-
-        param_groups["fields"] = parameters
+        param_groups["fields"].extend(parameters)
 
         # parameters = list(self.field.get_head_parameters())
         # parameters.extend(self.field.get_base_parameters())
@@ -393,12 +360,7 @@ class NGPModel(Model):
             idx_last_sample_per_ray = (packed_info[:, 0] + packed_info[:, 1] - 1).long()
             t_fars = ray_samples.frustums.ends[idx_last_sample_per_ray]
 
-            background_adjustments = self.mlp_background(
-                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions,
-                              ray_bundle.directions],
-                             dim=1))  # [R, 3]
-
-            outputs["background_adjustments"] = background_adjustments
+            self.apply_background_adjustment(ray_bundle, t_fars, outputs)
 
         # TODO: should these just always be returned?
         if self.training:
@@ -419,7 +381,8 @@ class NGPModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+        self._apply_background_network(batch, outputs)
+        rgb = outputs["rgb"]
 
         image = batch["image"].to(self.device)
         metrics_dict = {}
@@ -431,42 +394,24 @@ class NGPModel(Model):
         loss_dict = dict()
         self.train_step += 1
 
-        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
-        outputs["rgb"] = rgb
-        if rgb_without_bg is not None:
-            outputs["rgb_without_bg"] = rgb_without_bg
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
 
-        if self.config.use_background_network and "background_adjustments" in outputs:
-            background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
-            background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
-
-            if background_adjustment_displacement.isnan().any():
-                print("WARNING! BACKGRUOND ADJUSTMENT REGULARIZATION IS NAN!")
-
-            loss_dict["background_adjustment_displacement"] = background_adjustment_displacement
+        background_adjustment_loss = self.get_background_adjustment_loss(outputs)
+        if background_adjustment_loss is not None:
+            loss_dict["background_adjustment_displacement"] = background_adjustment_loss
 
         rgb_pred = outputs["rgb"]
 
-        image = batch["image"].to(self.device)
         # We removed the masking here to allow gradients to update the background network in transparent regions
         # mask = outputs["alive_ray_mask"]
         # rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
 
-        if 'mask' in batch:
-            # Only compute RGB loss on non-masked pixels
-            pixel_indices_per_ray = batch['local_indices']  # [R, [c, y, x]]
-            masks = batch['mask'].squeeze(3)  # [B, H, W]
-            mask = masks[
-                pixel_indices_per_ray[:, 0],
-                pixel_indices_per_ray[:, 1],
-                pixel_indices_per_ray[:, 2],
-            ]
-
-            rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
-        else:
-            rgb_loss = self.rgb_loss(image, rgb_pred)
-
+        rgb_loss = self.get_masked_rgb_loss(batch, rgb_pred)
         loss_dict["rgb_loss"] = rgb_loss
+
+        mask_loss = self.get_mask_loss(batch, outputs["accumulation"])
+        if mask_loss is not None:
+            loss_dict["mask_loss"] = mask_loss
 
         # print(f"RGB Loss: {rgb_loss.item():0.4f}")
 
@@ -566,12 +511,8 @@ class NGPModel(Model):
             self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
-        rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
-        outputs["rgb"] = rgb
-        if rgb_without_bg is not None:
-            outputs["rgb_without_bg"] = rgb_without_bg
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
 
-        image = batch["image"].to(self.device)
         rgb = outputs["rgb"]
         acc = colormaps.apply_colormap(outputs["accumulation"])
         depth = colormaps.apply_depth_colormap(
@@ -580,23 +521,8 @@ class NGPModel(Model):
         )
         alive_ray_mask = colormaps.apply_colormap(outputs["alive_ray_mask"])
 
-        if 'mask' in batch:
-            # Log GT image + full model prediction
-            combined_rgb = torch.cat([image.clone(), rgb.clone() if rgb_without_bg is None else rgb_without_bg], dim=1)
-
-            # Log masked GT image + masked model prediction which is what the evaluation is performed on
-            mask = batch['mask'].squeeze(2)
-            image[~mask] = 0
-            rgb[~mask] = 0
-            combined_rgb_masked = torch.cat([image, rgb], dim=1)
-
-            # Density that is in the masked-out area will be summarized in a "floaters" metric
-            # "floaters" is high when there is a lot of density in the masked-out region
-            floaters = outputs["accumulation"][~mask].mean()
-        else:
-            combined_rgb = torch.cat([image, rgb], dim=1)
-            combined_rgb_masked = None
-            floaters = None
+        image, combined_rgb, combined_rgb_masked, floaters = self.apply_mask_and_combine_images(
+            batch, rgb, acc, outputs["rgb_without_bg"] if "rgb_without_bg" in outputs else None)
 
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
@@ -636,36 +562,16 @@ class NGPModel(Model):
         return metrics_dict, images_dict
 
     def _apply_background_network(self,
+                                  batch: Dict[str, torch.Tensor],
                                   outputs: Dict[str, torch.Tensor],
-                                  batch: Dict[str, torch.Tensor]):
-        if "background_images" in batch and not "rgb_without_bg" in outputs:
-            background_images = batch["background_images"]  # [B, H, W, 3] or [H, W, 3] (eval)
+                                  overwrite_outputs: bool = False):
+        if self.config.use_backgrounds:
+            background_adjustments = outputs["background_adjustments"] if "background_adjustments" in outputs else None
+            rgb = self.apply_background_network(batch,
+                                                outputs["rgb"],
+                                                outputs["accumulation"],
+                                                background_adjustments)
 
-            if self.training or "local_indices" in batch:
-                local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
-                background_pixels = background_images[
-                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
-            else:
-                background_pixels = torch.tensor(background_images).to(self.device)  # [H, W, 3]
-
-            if "background_adjustments" in outputs:
-                # background_pixels = self.softplus_bg(background_pixels + outputs["background_adjustments"])
-                # TODO: subtract -0.5 from background_pixels to make the effort for the bg network symmetric?
-                # background_pixels = torch.sigmoid(background_pixels - 0.5 + 10 * outputs["background_adjustments"] - 5)
-
-                ba = outputs["background_adjustments"].mean(dim=-1)
-                alpha = (4 * ba.pow(2) - 4 * ba + 1)  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
-                alpha = alpha.unsqueeze(-1)  # [R, 1]
-                background_pixels = ((1 - alpha) * background_pixels + alpha * outputs["background_adjustments"])
-
-            rgb_without_bg = outputs["rgb"]
-            rgb = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels
-            # rgb = outputs["rgb"]
-        else:
-            rgb = outputs["rgb"]
-            if "rgb_without_bg" in outputs:
-                rgb_without_bg = outputs["rgb_without_bg"]
-            else:
-                rgb_without_bg = None
-
-        return rgb, rgb_without_bg
+            if overwrite_outputs:
+                outputs["rgb_without_bg"] = outputs["rgb"]
+                outputs["rgb"] = rgb
