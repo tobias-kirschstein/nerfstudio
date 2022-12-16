@@ -27,8 +27,8 @@ import torch
 from torch import nn
 from torch.nn import Parameter
 
-from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.cameras.frustum import Frustum
+from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.configs.base_config import InstantiateConfig
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
@@ -51,7 +51,9 @@ class ModelConfig(InstantiateConfig):
     """parameters to instantiate density field with"""
     eval_num_rays_per_chunk: int = 4096
     """specifies number of rays per chunk during eval"""
-    eval_scene_box_scale: Optional[float] = None  # scene box that should be used for inference rendering. Should be smaller than train scene box
+    eval_scene_box_scale: Optional[float] = None
+    """scene box that should be used for inference rendering. Should be smaller than train scene box"""
+    background_color: Literal["random", "last_sample", "white", "black"] = "random"
 
 
 class Model(nn.Module):
@@ -187,9 +189,10 @@ class Model(nn.Module):
                 continue
 
             concat_output = torch.cat(outputs_list)
-            assert concat_output.numel() % (image_width * image_height) == 0, \
-                f"aggregated model output for channel {output_name} has {concat_output.numel()} elements " \
+            assert concat_output.numel() % (image_width * image_height) == 0, (
+                f"aggregated model output for channel {output_name} has {concat_output.numel()} elements "
                 f"which cannot be reshaped into [{image_height}, {image_width}, -1]"
+            )
             outputs[output_name] = concat_output.view(image_height, image_width, -1)  # type: ignore
         return outputs
 

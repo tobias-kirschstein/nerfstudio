@@ -10,16 +10,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type
 
 import nerfacc
+import tinycudann as tcnn
 import torch
 from nerfacc import ContractionType
-from nerfstudio.engine.generic_scheduler import GenericScheduler
 from torch.nn import Parameter
 from torch.nn.modules.module import T
+from torch_efficient_distloss import flatten_eff_distloss
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from torch_efficient_distloss import flatten_eff_distloss
-import tinycudann as tcnn
 
 from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.engine.callbacks import (
@@ -27,6 +26,7 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
+from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.instant_ngp_field import TCNNInstantNGPField
 from nerfstudio.model_components.losses import MSELoss
@@ -68,8 +68,6 @@ class InstantNGPModelConfig(ModelConfig):
     """How far along ray to stop sampling."""
     use_appearance_embedding: bool = False
     """Whether to use an appearance embedding."""
-    randomize_background: bool = True
-    """Whether to randomize the background color."""
 
     num_layers_base: int = 2  # Number of layers of the first MLP (both density and RGB)
     hidden_dim_base: int = 64  # Hidden dimensions of first MLP
@@ -153,7 +151,7 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
-            disable_view_dependency=self.config.disable_view_dependency
+            disable_view_dependency=self.config.disable_view_dependency,
         )
 
         if self.config.use_background_network:
@@ -163,18 +161,9 @@ class NGPModel(Model):
                 encoding_config={
                     "otype": "Composite",
                     "nested": [
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "Frequency",
-                            "n_frequencies": 12
-                        },
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "SphericalHarmonics",
-                            "degree": 6
-                        }
-                    ]
-
+                        {"n_dims_to_encode": 3, "otype": "Frequency", "n_frequencies": 12},
+                        {"n_dims_to_encode": 3, "otype": "SphericalHarmonics", "degree": 6},
+                    ],
                 },
                 network_config={
                     "otype": "FullyFusedMLP",
@@ -214,7 +203,7 @@ class NGPModel(Model):
             scene_aabb=vol_sampler_aabb_eval,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
-            camera_frustums=self.camera_frustums
+            camera_frustums=self.camera_frustums,
         )
         self.sampler = self.sampler_train
 
@@ -228,14 +217,18 @@ class NGPModel(Model):
         else:
             self.sched_window_deform = None
 
-        # renderers
+        # background
         if self.config.use_background_network:
             background_color = None
-        elif self.config.randomize_background:
-            background_color = 'random'
         else:
-            background_color = colors.BLACK
+            if self.config.background_color == "black":
+                background_color = colors.BLACK
+            elif self.config.background_color == "white":
+                background_color = colors.WHITE
+            else:
+                background_color = self.config.background_color
 
+        # renderers
         self.renderer_rgb_train = RGBRenderer(background_color=background_color)
         self.renderer_rgb_eval = RGBRenderer(background_color=colors.BLACK)
         self.renderer_rgb = self.renderer_rgb_train
@@ -270,7 +263,7 @@ class NGPModel(Model):
         return super().train(mode)
 
     def get_training_callbacks(
-            self, training_callback_attributes: TrainingCallbackAttributes
+        self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         callbacks = []
 
@@ -284,11 +277,13 @@ class NGPModel(Model):
                 # occ_eval_fn=lambda x: torch.ones_like(x)[..., 0],
             )
 
-        callbacks.append(TrainingCallback(
-            where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-            update_every_num_iters=1,
-            func=update_occupancy_grid,
-        ))
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                update_every_num_iters=1,
+                func=update_occupancy_grid,
+            )
+        )
 
         # Window scheduling for deformation field
         def update_window_param(sched: GenericScheduler, name: str, step: int):
@@ -346,7 +341,7 @@ class NGPModel(Model):
                 render_step_size=self.config.render_step_size,
                 cone_angle=self.config.cone_angle,
                 early_stop_eps=self.config.early_stop_eps,
-                alpha_thre=self.config.alpha_thre
+                alpha_thre=self.config.alpha_thre,
             )
 
         # window parameters
@@ -384,7 +379,7 @@ class NGPModel(Model):
             "accumulation": accumulation,
             "depth": depth,
             "alive_ray_mask": alive_ray_mask,  # the rays we kept from sampler
-            "num_samples_per_ray": packed_info[:, 1]
+            "num_samples_per_ray": packed_info[:, 1],
         }
 
         if self.config.use_background_network:
@@ -394,9 +389,8 @@ class NGPModel(Model):
             t_fars = ray_samples.frustums.ends[idx_last_sample_per_ray]
 
             background_adjustments = self.mlp_background(
-                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions,
-                              ray_bundle.directions],
-                             dim=1))  # [R, 3]
+                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions, ray_bundle.directions], dim=1)
+            )  # [R, 3]
 
             outputs["background_adjustments"] = background_adjustments
 
@@ -438,7 +432,9 @@ class NGPModel(Model):
 
         if self.config.use_background_network and "background_adjustments" in outputs:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
-            background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+            background_adjustment_displacement = (
+                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+            )
 
             if background_adjustment_displacement.isnan().any():
                 print("WARNING! BACKGRUOND ADJUSTMENT REGULARIZATION IS NAN!")
@@ -452,10 +448,10 @@ class NGPModel(Model):
         # mask = outputs["alive_ray_mask"]
         # rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
 
-        if 'mask' in batch:
+        if "mask" in batch:
             # Only compute RGB loss on non-masked pixels
-            pixel_indices_per_ray = batch['local_indices']  # [R, [c, y, x]]
-            masks = batch['mask'].squeeze(3)  # [B, H, W]
+            pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
+            masks = batch["mask"].squeeze(3)  # [B, H, W]
             mask = masks[
                 pixel_indices_per_ray[:, 0],
                 pixel_indices_per_ray[:, 1],
@@ -486,7 +482,8 @@ class NGPModel(Model):
 
             max_samples = 10000
             indices = sorted(
-                random.sample(range(len(weights)), min(max_samples, len(weights))))  # Sorting is important!
+                random.sample(range(len(weights)), min(max_samples, len(weights)))
+            )  # Sorting is important!
             ray_indices_small = ray_indices[indices]
             weights_small = weights[indices]
             ends_rays = ray_samples.frustums.ends[indices]
@@ -499,10 +496,9 @@ class NGPModel(Model):
             midpoint_distances = (ends + starts) * 0.5
             intervals = ends - starts
             # Need ray_indices for flatten_eff_distloss
-            dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(weights_small,
-                                                                            midpoint_distances.squeeze(0),
-                                                                            intervals.squeeze(0),
-                                                                            ray_indices_small)
+            dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
+                weights_small, midpoint_distances.squeeze(0), intervals.squeeze(0), ray_indices_small
+            )
             #
             # n_samples = ray_indices_small.shape[0]
             # different_ray_indices = ray_indices_small.bincount()
@@ -557,13 +553,14 @@ class NGPModel(Model):
 
         # TODO: L1 regularization for hash table (Is inside mlp_base)
         if self.config.lambda_l1_field_regularization > 0:
-            loss_dict[
-                "l1_field_regularization"] = self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+            loss_dict["l1_field_regularization"] = (
+                self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+            )
 
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
@@ -580,12 +577,12 @@ class NGPModel(Model):
         )
         alive_ray_mask = colormaps.apply_colormap(outputs["alive_ray_mask"])
 
-        if 'mask' in batch:
+        if "mask" in batch:
             # Log GT image + full model prediction
             combined_rgb = torch.cat([image.clone(), rgb.clone() if rgb_without_bg is None else rgb_without_bg], dim=1)
 
             # Log masked GT image + masked model prediction which is what the evaluation is performed on
-            mask = batch['mask'].squeeze(2)
+            mask = batch["mask"].squeeze(2)
             image[~mask] = 0
             rgb[~mask] = 0
             combined_rgb_masked = torch.cat([image, rgb], dim=1)
@@ -612,10 +609,12 @@ class NGPModel(Model):
         mse = self.rgb_loss(image, rgb)
 
         # all of these metrics will be logged as scalars
-        metrics_dict = {"psnr": float(psnr.item()),
-                        "ssim": float(ssim),
-                        "lpips": float(lpips),
-                        "mse": float(mse)}  # type: ignore
+        metrics_dict = {
+            "psnr": float(psnr.item()),
+            "ssim": float(ssim),
+            "lpips": float(lpips),
+            "mse": float(mse),
+        }  # type: ignore
         # TODO(ethan): return an image dictionary
 
         images_dict = {
@@ -635,16 +634,15 @@ class NGPModel(Model):
 
         return metrics_dict, images_dict
 
-    def _apply_background_network(self,
-                                  outputs: Dict[str, torch.Tensor],
-                                  batch: Dict[str, torch.Tensor]):
+    def _apply_background_network(self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]):
         if "background_images" in batch and not "rgb_without_bg" in outputs:
             background_images = batch["background_images"]  # [B, H, W, 3] or [H, W, 3] (eval)
 
             if self.training or "local_indices" in batch:
                 local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
                 background_pixels = background_images[
-                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]
+                ]  # [R, 3]
             else:
                 background_pixels = torch.tensor(background_images).to(self.device)  # [H, W, 3]
 
@@ -654,9 +652,9 @@ class NGPModel(Model):
                 # background_pixels = torch.sigmoid(background_pixels - 0.5 + 10 * outputs["background_adjustments"] - 5)
 
                 ba = outputs["background_adjustments"].mean(dim=-1)
-                alpha = (4 * ba.pow(2) - 4 * ba + 1)  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
+                alpha = 4 * ba.pow(2) - 4 * ba + 1  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
                 alpha = alpha.unsqueeze(-1)  # [R, 1]
-                background_pixels = ((1 - alpha) * background_pixels + alpha * outputs["background_adjustments"])
+                background_pixels = (1 - alpha) * background_pixels + alpha * outputs["background_adjustments"]
 
             rgb_without_bg = outputs["rgb"]
             rgb = outputs["rgb"] + (1 - outputs["accumulation"]) * background_pixels

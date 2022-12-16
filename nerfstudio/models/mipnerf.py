@@ -79,10 +79,13 @@ class MipNerfModel(Model):
         # background
         if self.config.use_background_network:
             background_color = None
-        elif self.config.randomize_background:
-            background_color = "random"
         else:
-            background_color = colors.BLACK
+            if self.config.background_color == "black":
+                background_color = colors.BLACK
+            elif self.config.background_color == "white":
+                background_color = colors.WHITE
+            else:
+                background_color = self.config.background_color
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=background_color)
