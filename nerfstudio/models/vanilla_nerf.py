@@ -242,9 +242,9 @@ class NeRFModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        self._apply_background_network(batch, outputs)
+        rgb = self._apply_background_network(batch, outputs)
 
-        rgb = outputs["rgb_fine"]
+        # TODO: mask PSNR as well?
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(rgb, image)
@@ -349,7 +349,7 @@ class NeRFModel(Model):
     def _apply_background_network(self,
                                   batch: Dict[str, torch.Tensor],
                                   outputs: Dict[str, torch.Tensor],
-                                  overwrite_outputs: bool = False):
+                                  overwrite_outputs: bool = False) -> torch.Tensor:
 
         if self.config.use_backgrounds:
 
@@ -363,3 +363,8 @@ class NeRFModel(Model):
             if overwrite_outputs:
                 outputs["rgb_fine_without_bg"] = outputs["rgb_fine"]
                 outputs["rgb_fine"] = rgb
+
+        else:
+            rgb = outputs["rgb_fine"]
+
+        return rgb

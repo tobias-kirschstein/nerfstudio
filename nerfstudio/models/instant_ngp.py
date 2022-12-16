@@ -241,7 +241,7 @@ class NGPModel(Model):
         return super().train(mode)
 
     def get_training_callbacks(
-        self, training_callback_attributes: TrainingCallbackAttributes
+            self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         callbacks = []
 
@@ -385,8 +385,7 @@ class NGPModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        self._apply_background_network(batch, outputs)
-        rgb = outputs["rgb"]
+        rgb = self._apply_background_network(batch, outputs)
 
         image = batch["image"].to(self.device)
         metrics_dict = {}
@@ -507,13 +506,13 @@ class NGPModel(Model):
         # TODO: L1 regularization for hash table (Is inside mlp_base)
         if self.config.lambda_l1_field_regularization > 0:
             loss_dict["l1_field_regularization"] = (
-                self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+                    self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
             )
 
         return loss_dict
 
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
@@ -571,7 +570,7 @@ class NGPModel(Model):
     def _apply_background_network(self,
                                   batch: Dict[str, torch.Tensor],
                                   outputs: Dict[str, torch.Tensor],
-                                  overwrite_outputs: bool = False):
+                                  overwrite_outputs: bool = False) -> torch.Tensor:
         if self.config.use_backgrounds:
             background_adjustments = outputs["background_adjustments"] if "background_adjustments" in outputs else None
             rgb = self.apply_background_network(batch,
@@ -582,3 +581,7 @@ class NGPModel(Model):
             if overwrite_outputs:
                 outputs["rgb_without_bg"] = outputs["rgb"]
                 outputs["rgb"] = rgb
+        else:
+            rgb = outputs["rgb"]
+
+        return rgb
