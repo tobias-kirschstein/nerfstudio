@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
+import torch
 from torch import nn
 from torch.nn import init
 from torchmetrics import PeakSignalNoiseRatio
@@ -263,15 +264,16 @@ class HyperNeRFModel(Model):
         if self.field_coarse is None or self.field_fine is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+        param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
-            param_groups["embeddings"] = list(self.warp_embeddings.parameters())
+            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
 
         if self.appearance_embeddings is not None:
-            param_groups["embeddings"] = list(self.appearance_embeddings.parameters())
+            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
 
         if self.camera_embeddings is not None:
-            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
+            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
 
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())

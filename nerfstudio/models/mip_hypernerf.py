@@ -254,15 +254,16 @@ class MipHyperNerfModel(Model):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field.parameters())
+        param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
-            param_groups["embeddings"] = list(self.warp_embeddings.parameters())
+            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
 
         if self.appearance_embeddings is not None:
-            param_groups["embeddings"] = list(self.appearance_embeddings.parameters())
+            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
 
         if self.camera_embeddings is not None:
-            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
+            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
 
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
