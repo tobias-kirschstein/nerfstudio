@@ -271,28 +271,66 @@ class HyperNeRFField(Field):
         window_alpha: Optional[float] = None,
         window_beta: Optional[float] = None,
     ):
-        positions = ray_samples.frustums.get_positions()
-        if self.spatial_distortion is not None:
-            positions = self.spatial_distortion(positions)
+        # if self.use_integrated_encoding:
+        #     gaussian_samples = ray_samples.frustums.get_gaussian_blob()
+        #     if self.spatial_distortion is not None:
+        #         gaussian_samples = self.spatial_distortion(gaussian_samples)
+        #     encoded_xyz = self.position_encoding(gaussian_samples.mean, covs=gaussian_samples.cov)
+        # else:
+        #     positions = ray_samples.frustums.get_positions()
+        #     if self.spatial_distortion is not None:
+        #         positions = self.spatial_distortion(positions)
+        #     encoded_xyz = self.position_encoding(positions)
 
-        if warp_field is None and slice_field is None:
-            encoded_xyz = self.position_encoding(positions)
-            base_inputs = [encoded_xyz]
-            if warp_code is not None:
-                base_inputs.append(warp_code)
+        if self.use_integrated_encoding:
+            gaussian_samples = ray_samples.frustums.get_gaussian_blob()
+            if self.spatial_distortion is not None:
+                gaussian_samples = self.spatial_distortion(gaussian_samples)
+            # encoded_xyz = self.position_encoding(gaussian_samples.mean, covs=gaussian_samples.cov)
+
+            if warp_field is None and slice_field is None:
+                pass
+                # encoded_xyz = self.position_encoding(positions)
+                # base_inputs = [encoded_xyz]
+                # if warp_code is not None:
+                #     base_inputs.append(warp_code)
+            else:
+                base_inputs = []
+
+            if warp_field is not None:
+                warped_positions = warp_field(gaussian_samples, warp_code, window_alpha)
+
+                encoded_xyz = self.position_encoding(warped_positions)
+                base_inputs.append(encoded_xyz)
+            if slice_field is not None:
+                w = slice_field(positions, warp_code)
+
+                encoded_w = self.slicing_encoding(w, windows_param=window_beta)
+                base_inputs.append(encoded_w)
         else:
-            base_inputs = []
 
-        if warp_field is not None:
-            warped_positions = warp_field(positions, warp_code, window_alpha)
+            positions = ray_samples.frustums.get_positions()
+            if self.spatial_distortion is not None:
+                positions = self.spatial_distortion(positions)
 
-            encoded_xyz = self.position_encoding(warped_positions)
-            base_inputs.append(encoded_xyz)
-        if slice_field is not None:
-            w = slice_field(positions, warp_code)
+            if warp_field is None and slice_field is None:
+                encoded_xyz = self.position_encoding(positions)
+                base_inputs = [encoded_xyz]
+                if warp_code is not None:
+                    base_inputs.append(warp_code)
+            else:
+                base_inputs = []
 
-            encoded_w = self.slicing_encoding(w, windows_param=window_beta)
-            base_inputs.append(encoded_w)
+            if warp_field is not None:
+                warped_positions = warp_field(positions, warp_code, window_alpha)
+
+                encoded_xyz = self.position_encoding(warped_positions)
+                base_inputs.append(encoded_xyz)
+            if slice_field is not None:
+                w = slice_field(positions, warp_code)
+
+                encoded_w = self.slicing_encoding(w, windows_param=window_beta)
+                base_inputs.append(encoded_w)
 
         base_inputs = torch.concat(base_inputs, dim=2)
         base_mlp_out = self.mlp_base(base_inputs)

@@ -13,16 +13,16 @@
 # limitations under the License.
 
 """
-Implementation of hypernerf.
+Implementation of mip-NeRF.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
+import torch
 from torch import nn
-from torch.nn import init
+from torch.nn import Parameter, init
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -49,20 +49,31 @@ from nerfstudio.model_components.renderers import (
     RGBRenderer,
 )
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
-from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
-from nerfstudio.utils import colors, writer
+from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.utils import colormaps, colors, misc, writer
 
 
 @dataclass
-class HyperNeRFModelConfig(VanillaModelConfig):
+class MipHyperNeRFModelConfig(ModelConfig):
     """HyperNeRF Model Config"""
 
-    _target: Type = field(default_factory=lambda: HyperNeRFModel)
+    _target: Type = field(default_factory=lambda: MipHyperNerfModel)
+
+    loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
 
     collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
     collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.01, "far_plane": 2.0})
 
-    n_freq_pos: int = 9
+    num_coarse_samples: int = 64
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
+
+    randomize_background: bool = False
+    use_background_network: bool = False
+
+    use_integrated_encoding: bool = True
+    n_freq_pos: int = 17
     n_freq_dir: int = 5
     n_freq_slice: int = 2
     n_layers: int = 8
@@ -75,33 +86,32 @@ class HyperNeRFModelConfig(VanillaModelConfig):
     camera_code_dim: int = 8
 
     use_se3_warping: bool = True
-    n_freq_pos_warping: int = 7
+    n_freq_pos_warping: int = 15
     window_alpha_begin: int = 0  # the number of steps window_alpha is set to 0
     window_alpha_end: int = 80000  # the number of steps when window_alpha reaches its maximum
 
     use_hyper_slicing: bool = True
-    n_freq_pos_slicing: int = 7
+    n_freq_pos_slicing: int = 15
     hyper_slice_dim: int = 2
     window_beta_begin: int = 1000  # the number of steps window_beta is set to 0
     window_beta_end: int = 10000  # the number of steps when window_beta reaches its maximum
 
 
-class HyperNeRFModel(NeRFModel):
-    """HyperNeRF model
+class MipHyperNerfModel(Model):
+    """mip-NeRF model
 
     Args:
-        config: Basic NeRF configuration to instantiate model
+        config: MipNerf configuration to instantiate model
     """
 
-    config: HyperNeRFModelConfig
+    config: MipHyperNeRFModelConfig
 
     def __init__(
         self,
-        config: HyperNeRFModelConfig,
+        config: MipHyperNeRFModelConfig,
         **kwargs,
     ) -> None:
-        self.field_coarse = None
-        self.field_fine = None
+        self.field = None
         self.warp_field = None
         self.slice_field = None
         self.sched_alpha = None
@@ -110,6 +120,11 @@ class HyperNeRFModel(NeRFModel):
 
     def populate_modules(self):
         """Set the fields and modules"""
+        # super().populate_modules()
+
+        # self.field = NeRFField(
+        #     position_encoding=position_encoding, direction_encoding=direction_encoding, use_integrated_encoding=True
+        # )
 
         base_extra_dim = 0
         head_extra_dim = 0
@@ -173,7 +188,7 @@ class HyperNeRFModel(NeRFModel):
                     end_step=self.config.window_beta_end,
                 )
 
-        self.field_coarse = HyperNeRFField(
+        self.field = HyperNeRFField(
             n_freq_pos=self.config.n_freq_pos,
             n_freq_dir=self.config.n_freq_dir,
             use_hyper_slicing=self.config.use_hyper_slicing,
@@ -183,23 +198,12 @@ class HyperNeRFModel(NeRFModel):
             head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
-        )
-
-        self.field_fine = HyperNeRFField(
-            n_freq_pos=self.config.n_freq_pos,
-            n_freq_dir=self.config.n_freq_dir,
-            use_hyper_slicing=self.config.use_hyper_slicing,
-            n_freq_slice=self.config.n_freq_slice,
-            hyper_slice_dim=self.config.hyper_slice_dim,
-            base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
-            base_mlp_num_layers=self.config.n_layers,
-            base_mlp_layer_width=self.config.hidden_dim,
+            use_integrated_encoding=self.config.use_integrated_encoding,
         )
 
         # samplers
         self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples, include_original=False)
 
         # background
         if self.config.use_background_network:
@@ -267,9 +271,9 @@ class HyperNeRFModel(NeRFModel):
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
-        if self.field_coarse is None or self.field_fine is None:
+        if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+        param_groups["fields"] = list(self.field.parameters())
 
         if self.warp_embeddings is not None:
             param_groups["embeddings"] = list(self.warp_embeddings.parameters())
@@ -286,11 +290,9 @@ class HyperNeRFModel(NeRFModel):
         if self.slice_field is not None:
             param_groups["fields"] += list(self.slice_field.parameters())
 
-        return param_groups
-
     def get_outputs(self, ray_bundle: RayBundle):
 
-        if self.field_coarse is None or self.field_fine is None:
+        if self.field is None:
             raise ValueError("populate_fields() must be called before get_outputs")
 
         # window parameters
@@ -307,8 +309,8 @@ class HyperNeRFModel(NeRFModel):
         # uniform sampling
         ray_samples_uniform = self.sampler_uniform(ray_bundle)
 
-        # coarse field:
-        field_outputs_coarse = self.field_coarse.forward(
+        # First pass:
+        field_outputs_coarse = self.field.forward(
             ray_samples_uniform,
             warp_embeddings=self.warp_embeddings,
             appearance_embeddings=self.appearance_embeddings,
@@ -329,8 +331,8 @@ class HyperNeRFModel(NeRFModel):
         # pdf sampling
         ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
 
-        # fine field:
-        field_outputs_fine = self.field_fine.forward(
+        # Second pass:
+        field_outputs_fine = self.field.forward(
             ray_samples_pdf,
             warp_embeddings=self.warp_embeddings,
             appearance_embeddings=self.appearance_embeddings,
@@ -356,9 +358,59 @@ class HyperNeRFModel(NeRFModel):
             "depth_coarse": depth_coarse,
             "depth_fine": depth_fine,
         }
-
-        if self.training:
-            outputs["ray_samples_fine"] = ray_samples_pdf
-            outputs["weights_fine"] = weights_fine
-
         return outputs
+
+    def get_loss_dict(self, outputs, batch, metrics_dict=None):
+        image = batch["image"].to(self.device)
+        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
+        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
+        loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
+        return loss_dict
+
+    def get_image_metrics_and_images(
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+    ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        image = batch["image"].to(outputs["rgb_coarse"].device)
+        rgb_coarse = outputs["rgb_coarse"]
+        rgb_fine = outputs["rgb_fine"]
+        acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
+        acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
+        depth_coarse = colormaps.apply_depth_colormap(
+            outputs["depth_coarse"],
+            accumulation=outputs["accumulation_coarse"],
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
+        )
+        depth_fine = colormaps.apply_depth_colormap(
+            outputs["depth_fine"],
+            accumulation=outputs["accumulation_fine"],
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
+        )
+
+        combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
+        combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
+        combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
+
+        # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
+        image = torch.moveaxis(image, -1, 0)[None, ...]
+        rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
+        rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
+        rgb_coarse = torch.clip(rgb_coarse, min=-1, max=1)
+        rgb_fine = torch.clip(rgb_fine, min=-1, max=1)
+
+        coarse_psnr = self.psnr(image, rgb_coarse)
+        fine_psnr = self.psnr(image, rgb_fine)
+        fine_ssim = self.ssim(image, rgb_fine)
+        fine_lpips = self.lpips(image, rgb_fine)
+
+        metrics_dict = {
+            "psnr": float(fine_psnr.item()),
+            "coarse_psnr": float(coarse_psnr.item()),
+            "fine_psnr": float(fine_psnr.item()),
+            "fine_ssim": float(fine_ssim.item()),
+            "fine_lpips": float(fine_lpips.item()),
+        }
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
+        return metrics_dict, images_dict
