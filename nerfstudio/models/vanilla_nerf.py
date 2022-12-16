@@ -40,7 +40,6 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
@@ -59,8 +58,6 @@ class VanillaModelConfig(ModelConfig):
     """Specifies whether or not to include ray warping based on time."""
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
-
-    use_background_network: bool = False
 
     n_layers: int = 8
     hidden_dim: int = 256
@@ -94,7 +91,7 @@ class NeRFModel(Model):
 
     def populate_modules(self):
         """Set the fields and modules"""
-        # super().populate_modules()
+        super().populate_modules()
 
         # fields
         position_encoding = NeRFEncoding(
@@ -165,10 +162,6 @@ class NeRFModel(Model):
             params = self.config.temporal_distortion_params
             kind = params.pop("kind")
             self.temporal_distortion = kind.to_temporal_distortion(params)
-
-        # colliders
-        if self.config.enable_collider:
-            self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}

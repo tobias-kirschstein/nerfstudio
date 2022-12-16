@@ -44,6 +44,7 @@ class ModelConfig(InstantiateConfig):
     _target: Type = field(default_factory=lambda: Model)
     """target class to instantiate"""
     enable_collider: bool = True
+    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
     """Whether to create a scene collider to filter rays."""
     collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 2.0, "far_plane": 6.0})
     """parameters to instantiate scene collider with"""
@@ -53,6 +54,7 @@ class ModelConfig(InstantiateConfig):
     """specifies number of rays per chunk during eval"""
     eval_scene_box_scale: Optional[float] = None
     """scene box that should be used for inference rendering. Should be smaller than train scene box"""
+    use_background_network: bool = False
     background_color: Literal["random", "last_sample", "white", "black"] = "random"
 
 
@@ -106,9 +108,16 @@ class Model(nn.Module):
         # NOTE: call `super().populate_modules()` in subclasses
 
         if self.config.enable_collider:
-            self.collider = NearFarCollider(
-                near_plane=self.config.collider_params["near_plane"], far_plane=self.config.collider_params["far_plane"]
-            )
+            if self.config.collider_type == "AABBBox":
+                self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            elif self.config.collider_type == "NearFar":
+                assert self.config.collider_params is not None
+                self.collider = NearFarCollider(
+                    near_plane=self.config.collider_params["near_plane"],
+                    far_plane=self.config.collider_params["far_plane"],
+                )
+            else:
+                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
 
     @abstractmethod
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
