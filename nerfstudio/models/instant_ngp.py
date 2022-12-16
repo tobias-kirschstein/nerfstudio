@@ -10,17 +10,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type
 
 import nerfacc
+import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from nerfacc import ContractionType
-from nerfstudio.engine.generic_scheduler import GenericScheduler
 from torch.nn import Parameter
 from torch.nn.modules.module import T
+from torch_efficient_distloss import flatten_eff_distloss
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from torch_efficient_distloss import flatten_eff_distloss
-import tinycudann as tcnn
 
 from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.engine.callbacks import (
@@ -28,6 +27,7 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
+from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.instant_ngp_field import TCNNInstantNGPField
 from nerfstudio.model_components.losses import MSELoss
@@ -69,8 +69,6 @@ class InstantNGPModelConfig(ModelConfig):
     """How far along ray to stop sampling."""
     use_appearance_embedding: bool = False
     """Whether to use an appearance embedding."""
-    randomize_background: bool = True
-    """Whether to randomize the background color."""
 
     num_layers_base: int = 2  # Number of layers of the first MLP (both density and RGB)
     hidden_dim_base: int = 64  # Hidden dimensions of first MLP
@@ -152,7 +150,7 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
-            disable_view_dependency=self.config.disable_view_dependency
+            disable_view_dependency=self.config.disable_view_dependency,
         )
 
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
@@ -183,7 +181,7 @@ class NGPModel(Model):
             scene_aabb=vol_sampler_aabb_eval,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
-            camera_frustums=self.camera_frustums
+            camera_frustums=self.camera_frustums,
         )
         self.sampler = self.sampler_train
 
@@ -197,14 +195,18 @@ class NGPModel(Model):
         else:
             self.sched_window_deform = None
 
-        # renderers
+        # background
         if self.config.use_backgrounds:
             background_color = None
-        elif self.config.randomize_background:
-            background_color = 'random'
         else:
-            background_color = colors.BLACK
+            if self.config.background_color == "black":
+                background_color = colors.BLACK
+            elif self.config.background_color == "white":
+                background_color = colors.WHITE
+            else:
+                background_color = self.config.background_color
 
+        # renderers
         self.renderer_rgb_train = RGBRenderer(background_color=background_color)
         self.renderer_rgb_eval = RGBRenderer(background_color=colors.BLACK)
         self.renderer_rgb = self.renderer_rgb_train
@@ -239,7 +241,7 @@ class NGPModel(Model):
         return super().train(mode)
 
     def get_training_callbacks(
-            self, training_callback_attributes: TrainingCallbackAttributes
+        self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         callbacks = []
 
@@ -253,11 +255,13 @@ class NGPModel(Model):
                 # occ_eval_fn=lambda x: torch.ones_like(x)[..., 0],
             )
 
-        callbacks.append(TrainingCallback(
-            where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-            update_every_num_iters=1,
-            func=update_occupancy_grid,
-        ))
+        callbacks.append(
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                update_every_num_iters=1,
+                func=update_occupancy_grid,
+            )
+        )
 
         # Window scheduling for deformation field
         def update_window_param(sched: GenericScheduler, name: str, step: int):
@@ -313,7 +317,7 @@ class NGPModel(Model):
                 render_step_size=self.config.render_step_size,
                 cone_angle=self.config.cone_angle,
                 early_stop_eps=self.config.early_stop_eps,
-                alpha_thre=self.config.alpha_thre
+                alpha_thre=self.config.alpha_thre,
             )
 
         # window parameters
@@ -351,7 +355,7 @@ class NGPModel(Model):
             "accumulation": accumulation,
             "depth": depth,
             "alive_ray_mask": alive_ray_mask,  # the rays we kept from sampler
-            "num_samples_per_ray": packed_info[:, 1]
+            "num_samples_per_ray": packed_info[:, 1],
         }
 
         if self.config.use_background_network:
@@ -431,7 +435,8 @@ class NGPModel(Model):
 
             max_samples = 10000
             indices = sorted(
-                random.sample(range(len(weights)), min(max_samples, len(weights))))  # Sorting is important!
+                random.sample(range(len(weights)), min(max_samples, len(weights)))
+            )  # Sorting is important!
             ray_indices_small = ray_indices[indices]
             weights_small = weights[indices]
             ends_rays = ray_samples.frustums.ends[indices]
@@ -444,10 +449,9 @@ class NGPModel(Model):
             midpoint_distances = (ends + starts) * 0.5
             intervals = ends - starts
             # Need ray_indices for flatten_eff_distloss
-            dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(weights_small,
-                                                                            midpoint_distances.squeeze(0),
-                                                                            intervals.squeeze(0),
-                                                                            ray_indices_small)
+            dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
+                weights_small, midpoint_distances.squeeze(0), intervals.squeeze(0), ray_indices_small
+            )
             #
             # n_samples = ray_indices_small.shape[0]
             # different_ray_indices = ray_indices_small.bincount()
@@ -502,13 +506,14 @@ class NGPModel(Model):
 
         # TODO: L1 regularization for hash table (Is inside mlp_base)
         if self.config.lambda_l1_field_regularization > 0:
-            loss_dict[
-                "l1_field_regularization"] = self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+            loss_dict["l1_field_regularization"] = (
+                self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
+            )
 
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
@@ -538,10 +543,12 @@ class NGPModel(Model):
         mse = self.rgb_loss(image, rgb)
 
         # all of these metrics will be logged as scalars
-        metrics_dict = {"psnr": float(psnr.item()),
-                        "ssim": float(ssim),
-                        "lpips": float(lpips),
-                        "mse": float(mse)}  # type: ignore
+        metrics_dict = {
+            "psnr": float(psnr.item()),
+            "ssim": float(ssim),
+            "lpips": float(lpips),
+            "mse": float(mse),
+        }  # type: ignore
         # TODO(ethan): return an image dictionary
 
         images_dict = {

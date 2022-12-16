@@ -61,7 +61,6 @@ class VanillaModelConfig(ModelConfig):
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
 
-    randomize_background: bool = False
     use_backgrounds: bool = implicit(False)
 
     n_layers: int = 8
@@ -142,10 +141,13 @@ class NeRFModel(Model):
         # background
         if self.config.use_backgrounds:
             background_color = None
-        elif self.config.randomize_background:
-            background_color = "random"
         else:
-            background_color = colors.BLACK
+            if self.config.background_color == "black":
+                background_color = colors.BLACK
+            elif self.config.background_color == "white":
+                background_color = colors.WHITE
+            else:
+                background_color = self.config.background_color
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=background_color)
