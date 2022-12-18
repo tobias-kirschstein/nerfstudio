@@ -388,8 +388,11 @@ class HyperNeRFField(Field):
             appearance_code = None
 
         if camera_embeddings is not None:
-            camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
-            camera_code = camera_embeddings(camera_indices)  # [R, S, D]
+            if self.training:
+                camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
+                camera_code = camera_embeddings(camera_indices)  # [R, S, D]
+            else:
+                camera_code = camera_embeddings.weight.mean(0)[None, None, :].repeat(*ray_samples.shape, 1)
         else:
             camera_code = None
 
