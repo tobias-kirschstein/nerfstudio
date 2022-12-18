@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Type
 
 import torch
+from elias.config import implicit
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -58,6 +59,8 @@ class VanillaModelConfig(ModelConfig):
     """Specifies whether or not to include ray warping based on time."""
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
+
+    use_backgrounds: bool = implicit(False)
 
     n_layers: int = 8
     hidden_dim: int = 256
@@ -135,7 +138,7 @@ class NeRFModel(Model):
         self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # background
-        if self.config.use_background_network:
+        if self.config.use_backgrounds:
             background_color = None
         else:
             if self.config.background_color == "black":
@@ -164,12 +167,16 @@ class NeRFModel(Model):
             self.temporal_distortion = kind.to_temporal_distortion(params)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
+        param_groups = super(NeRFModel, self).get_param_groups()
+
         if self.field_coarse is None or self.field_fine is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+        param_groups["fields"].extend(self.field_coarse.parameters())
+        param_groups["fields"].extend(self.field_fine.parameters())
+
         if self.temporal_distortion is not None:
             param_groups["temporal_distortion"] = list(self.temporal_distortion.parameters())
+
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -218,6 +225,11 @@ class NeRFModel(Model):
             "depth_fine": depth_fine,
         }
 
+        if self.config.use_background_network:
+            # background network
+            t_fars = ray_samples_pdf.frustums.ends[:, -1]
+            self.apply_background_adjustment(ray_bundle, t_fars, outputs)
+
         if self.training:
             outputs["ray_samples_fine"] = ray_samples_pdf
             outputs["weights_fine"] = weights_fine
@@ -225,30 +237,46 @@ class NeRFModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+        rgb = self._apply_background_network(batch, outputs)
 
-        rgb = outputs["rgb_fine"]
+        # TODO: mask PSNR as well?
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(rgb, image)
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
+        loss_dict = {}
+
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
+
+        background_adjustment_loss = self.get_background_adjustment_loss(outputs)
+        if background_adjustment_loss is not None:
+            loss_dict["background_adjustment_displacement"] = background_adjustment_loss
+
         # Scaling metrics by coefficients to create the losses.
         device = outputs["rgb_coarse"].device
         image = batch["image"].to(device)
 
         rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+        rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
+        mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
 
-        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
+        loss_dict["rgb_loss_coarse"] = rgb_loss_coarse
+        loss_dict["rgb_loss_fine"] = rgb_loss_fine
+        if mask_loss is not None:
+            loss_dict["mask_loss"] = mask_loss
+
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
+
         return loss_dict
 
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        image = batch["image"].to(outputs["rgb_coarse"].device)
+
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
+
         rgb_coarse = outputs["rgb_coarse"]
         rgb_fine = outputs["rgb_fine"]
         acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
@@ -268,6 +296,10 @@ class NeRFModel(Model):
             accumulation=outputs["accumulation_fine"],
             near_plane=near_plane,
             far_plane=far_plane,
+        )
+
+        image, combined_rgb, combined_rgb_masked, floaters = self.apply_mask_and_combine_images(
+            batch, rgb_fine, acc_fine, outputs["rgb_fine_without_bg"] if "rgb_fine_without_bg" in outputs else None
         )
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
@@ -294,4 +326,35 @@ class NeRFModel(Model):
             "mse": float(mse),
         }
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
+
+        if "rgb_fine_without_bg" in outputs:
+            images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
+
+        if combined_rgb_masked is not None:
+            images_dict["img_masked"] = combined_rgb_masked
+
+        if floaters is not None:
+            metrics_dict["floaters"] = float(floaters)
+
         return metrics_dict, images_dict
+
+    def _apply_background_network(
+        self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
+    ) -> torch.Tensor:
+
+        if self.config.use_backgrounds:
+
+            background_adjustments = outputs["background_adjustments"] if "background_adjustments" in outputs else None
+
+            rgb = self.apply_background_network(
+                batch, outputs["rgb_fine"], outputs["accumulation_fine"], background_adjustments
+            )
+
+            if overwrite_outputs:
+                outputs["rgb_fine_without_bg"] = outputs["rgb_fine"]
+                outputs["rgb_fine"] = rgb
+
+        else:
+            rgb = outputs["rgb_fine"]
+
+        return rgb

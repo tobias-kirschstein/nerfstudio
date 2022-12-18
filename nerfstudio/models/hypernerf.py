@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
 import torch
 from torch import nn
-from torch.nn import init
+from torch.nn import init, Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
