@@ -17,6 +17,7 @@ Implementation of mip-NeRF.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 import torch
@@ -41,6 +42,25 @@ from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
 
+@dataclass
+class MipNeRFModelConfig(ModelConfig):
+    """Vanilla Model Config"""
+
+    _target: Type = field(default_factory=lambda: NeRFModel)
+    num_coarse_samples: int = 64
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
+
+    n_freq_pos: int = 16
+
+    n_layers: int = 8
+    hidden_dim: int = 256
+
+    n_timesteps: int = 1
+    latent_dim_time: int = 0
+
+
 class MipNerfModel(Model):
     """mip-NeRF model
 
@@ -48,9 +68,11 @@ class MipNerfModel(Model):
         config: MipNerf configuration to instantiate model
     """
 
+    config: MipNeRFModelConfig
+
     def __init__(
         self,
-        config: ModelConfig,
+        config: MipNeRFModelConfig,
         **kwargs,
     ) -> None:
         self.field = None
@@ -62,7 +84,11 @@ class MipNerfModel(Model):
 
         # setting up fields
         position_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=16, min_freq_exp=0.0, max_freq_exp=16.0, include_input=True
+            in_dim=3,
+            num_frequencies=self.config.n_freq_pos,
+            min_freq_exp=0.0,
+            max_freq_exp=self.config.n_freq_pos,
+            include_input=True,
         )
         direction_encoding = NeRFEncoding(
             in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
@@ -99,10 +125,6 @@ class MipNerfModel(Model):
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
-
-        # colliders
-        if self.config.enable_collider:
-            self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -151,6 +173,15 @@ class MipNerfModel(Model):
             "depth_fine": depth_fine,
         }
         return outputs
+
+    def get_metrics_dict(self, outputs, batch):
+        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+
+        rgb = outputs["rgb_fine"]
+        image = batch["image"].to(self.device)
+        metrics_dict = {}
+        metrics_dict["psnr"] = self.psnr(rgb, image)
+        return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         image = batch["image"].to(self.device)

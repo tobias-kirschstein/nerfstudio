@@ -21,12 +21,13 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type, Literal
+from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
+import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from torch import nn
-from torch.nn import Parameter, MSELoss
+from torch.nn import MSELoss, Parameter
 
 from nerfstudio.cameras.frustum import Frustum
 from nerfstudio.cameras.rays import RayBundle
@@ -35,8 +36,6 @@ from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.model_components.scene_colliders import NearFarCollider
-
-import tinycudann as tcnn
 
 
 # Model related configs
@@ -47,6 +46,7 @@ class ModelConfig(InstantiateConfig):
     _target: Type = field(default_factory=lambda: Model)
     """target class to instantiate"""
     enable_collider: bool = True
+    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
     """Whether to create a scene collider to filter rays."""
     collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 2.0, "far_plane": 6.0})
     """parameters to instantiate scene collider with"""
@@ -56,6 +56,7 @@ class ModelConfig(InstantiateConfig):
     """specifies number of rays per chunk during eval"""
     eval_scene_box_scale: Optional[float] = None
     """scene box that should be used for inference rendering. Should be smaller than train scene box"""
+    use_background_network: bool = False
     background_color: Literal["random", "last_sample", "white", "black"] = "random"
 
     # Background model
@@ -81,12 +82,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-            self,
-            config: ModelConfig,
-            scene_box: SceneBox,
-            num_train_data: int,
-            camera_frustums: Optional[List[Frustum]] = None,
-            **kwargs,
+        self,
+        config: ModelConfig,
+        scene_box: SceneBox,
+        num_train_data: int,
+        camera_frustums: Optional[List[Frustum]] = None,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -107,7 +108,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -116,6 +117,23 @@ class Model(nn.Module):
         """Set the necessary modules to get the network working."""
         # default instantiates optional modules that are common among many networks
         # NOTE: call `super().populate_modules()` in subclasses
+
+        if (
+            self.config.enable_collider
+            and self.config.collider_params is not None
+            and "near_plane" in self.config.collider_params
+            and "far_plane" in self.config.collider_params
+        ):
+            if self.config.collider_type == "AABBBox":
+                self.collider = AABBBoxCollider(scene_box=self.scene_box)
+            elif self.config.collider_type == "NearFar":
+                assert self.config.collider_params is not None
+                self.collider = NearFarCollider(
+                    near_plane=self.config.collider_params["near_plane"],
+                    far_plane=self.config.collider_params["far_plane"],
+                )
+            else:
+                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
 
         # TODO: Try Huber-Loss?
         self.rgb_loss = MSELoss()
@@ -127,18 +145,9 @@ class Model(nn.Module):
                 encoding_config={
                     "otype": "Composite",
                     "nested": [
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "Frequency",
-                            "n_frequencies": 12
-                        },
-                        {
-                            "n_dims_to_encode": 3,
-                            "otype": "SphericalHarmonics",
-                            "degree": 6
-                        }
-                    ]
-
+                        {"n_dims_to_encode": 3, "otype": "Frequency", "n_frequencies": 12},
+                        {"n_dims_to_encode": 3, "otype": "SphericalHarmonics", "degree": 6},
+                    ],
                 },
                 network_config={
                     "otype": "FullyFusedMLP",
@@ -149,12 +158,6 @@ class Model(nn.Module):
                 },
             )
 
-        if self.config.enable_collider and self.config.collider_params is not None \
-                and "near_plane" in self.config.collider_params and "far_plane" in self.config.collider_params:
-            self.collider = NearFarCollider(
-                near_plane=self.config.collider_params["near_plane"], far_plane=self.config.collider_params["far_plane"]
-            )
-
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         """Obtain the parameter groups for the optimizers
 
@@ -162,9 +165,7 @@ class Model(nn.Module):
             Mapping of different parameter groups
         """
 
-        param_groups = {
-            "fields": []
-        }
+        param_groups = {"fields": []}
         if self.config.use_background_network:
             param_groups["fields"].extend(self.mlp_background.parameters())
 
@@ -250,7 +251,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -274,11 +275,13 @@ class Model(nn.Module):
         state = {key.replace("module.", ""): value for key, value in loaded_state["model"].items()}
         self.load_state_dict(state)  # type: ignore
 
-    def apply_background_network(self,
-                                 batch: Dict[str, torch.Tensor],
-                                 rgb: torch.Tensor,
-                                 accumulation: torch.Tensor,
-                                 background_adjustments: Optional[torch.Tensor] = None):
+    def apply_background_network(
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        background_adjustments: Optional[torch.Tensor] = None,
+    ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
         Additionally, if 'background_adjustments' is present in `outputs` the original background pixels will
@@ -304,7 +307,8 @@ class Model(nn.Module):
             if self.training or "local_indices" in batch:
                 local_indices = batch["local_indices"]  # [R, 3] with 3 -> (B, H, W)
                 background_pixels = background_images[
-                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]]  # [R, 3]
+                    local_indices[:, 0], local_indices[:, 1], local_indices[:, 2]
+                ]  # [R, 3]
             else:
                 background_pixels = torch.tensor(background_images).to(self.device)  # [H, W, 3]
 
@@ -314,18 +318,17 @@ class Model(nn.Module):
                 # background_pixels = torch.sigmoid(background_pixels - 0.5 + 10 * outputs["background_adjustments"] - 5)
 
                 ba = background_adjustments.mean(dim=-1)
-                alpha = (4 * ba.pow(2) - 4 * ba + 1)  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
+                alpha = 4 * ba.pow(2) - 4 * ba + 1  # alpha(ba=0|1) -> 1, alpha(ba=0.5) -> 0
                 alpha = alpha.unsqueeze(-1)  # [R, 1]
-                background_pixels = ((1 - alpha) * background_pixels + alpha * background_adjustments)
+                background_pixels = (1 - alpha) * background_pixels + alpha * background_adjustments
 
             rgb = rgb + (1 - accumulation) * background_pixels
 
         return rgb
 
-    def apply_background_adjustment(self,
-                                    ray_bundle: RayBundle,
-                                    t_fars: torch.Tensor,
-                                    outputs: Dict[str, torch.Tensor]):
+    def apply_background_adjustment(
+        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+    ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
         `outputs` dictionary.
@@ -344,9 +347,8 @@ class Model(nn.Module):
             # background network
 
             background_adjustments = self.mlp_background(
-                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions,
-                              ray_bundle.directions],
-                             dim=1))  # [R, 3]
+                torch.concat([ray_bundle.origins + t_fars * ray_bundle.directions, ray_bundle.directions], dim=1)
+            )  # [R, 3]
 
             outputs["background_adjustments"] = background_adjustments
 
@@ -365,10 +367,10 @@ class Model(nn.Module):
 
         image = batch["image"].to(self.device)
 
-        if 'mask' in batch:
+        if "mask" in batch:
             # Only compute RGB loss on non-masked pixels
-            pixel_indices_per_ray = batch['local_indices']  # [R, [c, y, x]]
-            masks = batch['mask'].squeeze(3)  # [B, H, W]
+            pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
+            masks = batch["mask"].squeeze(3)  # [B, H, W]
             mask = masks[
                 pixel_indices_per_ray[:, 0],
                 pixel_indices_per_ray[:, 1],
@@ -384,7 +386,9 @@ class Model(nn.Module):
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
         if self.config.use_background_network and "background_adjustments" in outputs:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
-            background_adjustment_displacement = self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+            background_adjustment_displacement = (
+                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+            )
 
             if background_adjustment_displacement.isnan().any():
                 print("WARNING! BACKGRUOND ADJUSTMENT REGULARIZATION IS NAN!")
@@ -396,10 +400,10 @@ class Model(nn.Module):
     def get_mask_loss(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
         # Mask loss
         mask_loss = None
-        if self.config.lambda_mask_loss > 0 and 'mask' in batch:
+        if self.config.lambda_mask_loss > 0 and "mask" in batch:
             accumulation_per_ray = accumulation.squeeze(1)  # [R]
-            pixel_indices_per_ray = batch['local_indices']  # [R, 3] with 3 = C,y,x
-            masks = batch['mask'].squeeze(3)  # [C, H, W]
+            pixel_indices_per_ray = batch["local_indices"]  # [R, 3] with 3 = C,y,x
+            masks = batch["mask"].squeeze(3)  # [C, H, W]
 
             mask_value_per_ray = masks[
                 pixel_indices_per_ray[:, 0],
@@ -407,26 +411,29 @@ class Model(nn.Module):
                 pixel_indices_per_ray[:, 2],
             ]
 
-            mask_loss = ((1 - accumulation_per_ray[mask_value_per_ray]).sum() + (accumulation_per_ray[~mask_value_per_ray]).sum()) / accumulation_per_ray.shape[0]
+            mask_loss = (
+                (1 - accumulation_per_ray[mask_value_per_ray]).sum() + (accumulation_per_ray[~mask_value_per_ray]).sum()
+            ) / accumulation_per_ray.shape[0]
             mask_loss = self.config.lambda_mask_loss * mask_loss
 
         return mask_loss
 
-    def apply_mask_and_combine_images(self,
-                                      batch: Dict[str, torch.Tensor],
-                                      rgb: torch.Tensor,
-                                      accumulation: torch.Tensor,
-                                      rgb_without_bg: Optional[torch.Tensor]):
+    def apply_mask_and_combine_images(
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        rgb_without_bg: Optional[torch.Tensor],
+    ):
 
         image = batch["image"].to(self.device)
 
-        if 'mask' in batch:
+        if "mask" in batch:
             # Log GT image + full model prediction
-            combined_rgb = torch.cat([image.clone(),
-                                      rgb if rgb_without_bg is None else rgb_without_bg], dim=1)
+            combined_rgb = torch.cat([image.clone(), rgb if rgb_without_bg is None else rgb_without_bg], dim=1)
 
             # Log masked GT image + masked model prediction which is what the evaluation is performed on
-            mask = batch['mask'].squeeze(2)
+            mask = batch["mask"].squeeze(2)
             image[~mask] = 0
             rgb[~mask] = 0
             combined_rgb_masked = torch.cat([image, rgb], dim=1)

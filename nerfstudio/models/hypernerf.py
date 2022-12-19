@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
+import torch
 from torch import nn
 from torch.nn import init, Parameter
 from torchmetrics import PeakSignalNoiseRatio
@@ -28,7 +29,6 @@ from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
-from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -48,19 +48,22 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
-from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
-from nerfstudio.utils import colors, writer
+from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.utils import colormaps, colors, misc, writer
 
 
 @dataclass
-class HyperNeRFModelConfig(VanillaModelConfig):
+class HyperNeRFModelConfig(ModelConfig):
     """HyperNeRF Model Config"""
 
     _target: Type = field(default_factory=lambda: HyperNeRFModel)
 
-    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
-    collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.01, "far_plane": 2.0})
+    num_coarse_samples: int = 128
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
+
+    n_timesteps: int = 1
 
     n_freq_pos: int = 9
     n_freq_dir: int = 5
@@ -86,7 +89,7 @@ class HyperNeRFModelConfig(VanillaModelConfig):
     window_beta_end: int = 10000  # the number of steps when window_beta reaches its maximum
 
 
-class HyperNeRFModel(NeRFModel):
+class HyperNeRFModel(Model):
     """HyperNeRF model
 
     Args:
@@ -110,6 +113,7 @@ class HyperNeRFModel(NeRFModel):
 
     def populate_modules(self):
         """Set the fields and modules"""
+        super().populate_modules()
 
         base_extra_dim = 0
         head_extra_dim = 0
@@ -225,19 +229,6 @@ class HyperNeRFModel(NeRFModel):
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
 
-        # colliders
-        if self.config.enable_collider:
-            if self.config.collider_type == "AABBBox":
-                self.collider = AABBBoxCollider(scene_box=self.scene_box)
-            elif self.config.collider_type == "NearFar":
-                assert self.config.collider_params is not None
-                self.collider = NearFarCollider(
-                    near_plane=self.config.collider_params["near_plane"],
-                    far_plane=self.config.collider_params["far_plane"],
-                )
-            else:
-                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
-
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -273,15 +264,16 @@ class HyperNeRFModel(NeRFModel):
         if self.field_coarse is None or self.field_fine is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+        param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
-            param_groups["embeddings"] = list(self.warp_embeddings.parameters())
+            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
 
         if self.appearance_embeddings is not None:
-            param_groups["embeddings"] = list(self.appearance_embeddings.parameters())
+            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
 
         if self.camera_embeddings is not None:
-            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
+            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
 
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
@@ -365,3 +357,75 @@ class HyperNeRFModel(NeRFModel):
             outputs["weights_fine"] = weights_fine
 
         return outputs
+
+    def get_metrics_dict(self, outputs, batch):
+        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+
+        rgb = outputs["rgb_fine"]
+        image = batch["image"].to(self.device)
+        metrics_dict = {}
+        metrics_dict["psnr"] = self.psnr(rgb, image)
+        return metrics_dict
+
+    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
+        # Scaling metrics by coefficients to create the losses.
+        device = outputs["rgb_coarse"].device
+        image = batch["image"].to(device)
+
+        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
+        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+
+        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
+        loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
+        return loss_dict
+
+    def get_image_metrics_and_images(
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+    ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        image = batch["image"].to(outputs["rgb_coarse"].device)
+        rgb_coarse = outputs["rgb_coarse"]
+        rgb_fine = outputs["rgb_fine"]
+        acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
+        acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
+
+        near_plane = None if self.config.collider_params is None else self.config.collider_params["near_plane"]
+        far_plane = None if self.config.collider_params is None else self.config.collider_params["far_plane"]
+
+        depth_coarse = colormaps.apply_depth_colormap(
+            outputs["depth_coarse"],
+            accumulation=outputs["accumulation_coarse"],
+            near_plane=near_plane,
+            far_plane=far_plane,
+        )
+        depth_fine = colormaps.apply_depth_colormap(
+            outputs["depth_fine"],
+            accumulation=outputs["accumulation_fine"],
+            near_plane=near_plane,
+            far_plane=far_plane,
+        )
+
+        combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
+        combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
+        combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
+
+        # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
+        image = torch.moveaxis(image, -1, 0)[None, ...]
+        rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
+        rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
+
+        coarse_psnr = self.psnr(image, rgb_coarse)
+        fine_psnr = self.psnr(image, rgb_fine)
+        fine_ssim = self.ssim(image, rgb_fine)
+        fine_lpips = self.lpips(image, rgb_fine)
+        mse = self.rgb_loss(image, rgb_fine)
+
+        metrics_dict = {
+            "psnr": float(fine_psnr.item()),
+            "coarse_psnr": float(coarse_psnr),
+            "fine_psnr": float(fine_psnr),
+            "fine_ssim": float(fine_ssim),
+            "fine_lpips": float(fine_lpips),
+            "mse": float(mse),
+        }
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
+        return metrics_dict, images_dict

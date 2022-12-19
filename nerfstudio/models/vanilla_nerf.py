@@ -41,7 +41,6 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
@@ -78,9 +77,9 @@ class NeRFModel(Model):
     config: VanillaModelConfig
 
     def __init__(
-            self,
-            config: VanillaModelConfig,
-            **kwargs,
+        self,
+        config: VanillaModelConfig,
+        **kwargs,
     ) -> None:
         self.field_coarse = None
         self.field_fine = None
@@ -164,10 +163,6 @@ class NeRFModel(Model):
             params = self.config.temporal_distortion_params
             kind = params.pop("kind")
             self.temporal_distortion = kind.to_temporal_distortion(params)
-
-        # colliders
-        if self.config.enable_collider:
-            self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = super(NeRFModel, self).get_param_groups()
@@ -275,7 +270,7 @@ class NeRFModel(Model):
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
@@ -302,7 +297,8 @@ class NeRFModel(Model):
         )
 
         image, combined_rgb, combined_rgb_masked, floaters = self.apply_mask_and_combine_images(
-            batch, rgb_fine, acc_fine, outputs["rgb_fine_without_bg"] if "rgb_fine_without_bg" in outputs else None)
+            batch, rgb_fine, acc_fine, outputs["rgb_fine_without_bg"] if "rgb_fine_without_bg" in outputs else None
+        )
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
         combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
@@ -327,11 +323,7 @@ class NeRFModel(Model):
             "fine_lpips": float(fine_lpips),
             "mse": float(mse),
         }
-        images_dict = {
-            "img": combined_rgb,
-            "accumulation": combined_acc,
-            "depth": combined_depth
-        }
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
 
         if "rgb_fine_without_bg" in outputs:
             images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
@@ -344,19 +336,17 @@ class NeRFModel(Model):
 
         return metrics_dict, images_dict
 
-    def _apply_background_network(self,
-                                  batch: Dict[str, torch.Tensor],
-                                  outputs: Dict[str, torch.Tensor],
-                                  overwrite_outputs: bool = False) -> torch.Tensor:
+    def _apply_background_network(
+        self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
+    ) -> torch.Tensor:
 
         if self.config.use_backgrounds:
 
             background_adjustments = outputs["background_adjustments"] if "background_adjustments" in outputs else None
 
-            rgb = self.apply_background_network(batch,
-                                                outputs["rgb_fine"],
-                                                outputs["accumulation_fine"],
-                                                background_adjustments)
+            rgb = self.apply_background_network(
+                batch, outputs["rgb_fine"], outputs["accumulation_fine"], background_adjustments
+            )
 
             if overwrite_outputs:
                 outputs["rgb_fine_without_bg"] = outputs["rgb_fine"]

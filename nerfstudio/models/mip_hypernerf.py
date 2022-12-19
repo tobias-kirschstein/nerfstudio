@@ -61,15 +61,10 @@ class MipHyperNeRFModelConfig(ModelConfig):
 
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
 
-    collider_type: Literal["AABBBox", "NearFar"] = "NearFar"
-    collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.01, "far_plane": 2.0})
-
     num_coarse_samples: int = 64
     """Number of samples in coarse field evaluation"""
     num_importance_samples: int = 128
     """Number of samples in fine field evaluation"""
-
-    use_background_network: bool = False
 
     use_integrated_encoding: bool = True
     n_freq_pos: int = 17
@@ -119,11 +114,7 @@ class MipHyperNerfModel(Model):
 
     def populate_modules(self):
         """Set the fields and modules"""
-        # super().populate_modules()
-
-        # self.field = NeRFField(
-        #     position_encoding=position_encoding, direction_encoding=direction_encoding, use_integrated_encoding=True
-        # )
+        super().populate_modules()
 
         base_extra_dim = 0
         head_extra_dim = 0
@@ -228,19 +219,6 @@ class MipHyperNerfModel(Model):
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
 
-        # colliders
-        if self.config.enable_collider:
-            if self.config.collider_type == "AABBBox":
-                self.collider = AABBBoxCollider(scene_box=self.scene_box)
-            elif self.config.collider_type == "NearFar":
-                assert self.config.collider_params is not None
-                self.collider = NearFarCollider(
-                    near_plane=self.config.collider_params["near_plane"],
-                    far_plane=self.config.collider_params["far_plane"],
-                )
-            else:
-                raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
-
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -276,15 +254,16 @@ class MipHyperNerfModel(Model):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field.parameters())
+        param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
-            param_groups["embeddings"] = list(self.warp_embeddings.parameters())
+            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
 
         if self.appearance_embeddings is not None:
-            param_groups["embeddings"] = list(self.appearance_embeddings.parameters())
+            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
 
         if self.camera_embeddings is not None:
-            param_groups["embeddings"] = list(self.camera_embeddings.parameters())
+            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
 
         if self.warp_field is not None:
             param_groups["fields"] += list(self.warp_field.parameters())
