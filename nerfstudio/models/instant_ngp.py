@@ -85,8 +85,6 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_beta_loss: float = 0
     lambda_l1_field_regularization: float = 0
 
-    use_backgrounds: bool = implicit(False)
-
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
     latent_dim_time: int = 0

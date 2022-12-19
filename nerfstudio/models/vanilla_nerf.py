@@ -61,8 +61,6 @@ class VanillaModelConfig(ModelConfig):
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
 
-    use_backgrounds: bool = implicit(False)
-
     n_layers: int = 8
     hidden_dim: int = 256
 

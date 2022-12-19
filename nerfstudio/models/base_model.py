@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Type, Literal
 
 import torch
+from elias.config import implicit
 from torch import nn
 from torch.nn import Parameter, MSELoss
 
@@ -58,6 +59,8 @@ class ModelConfig(InstantiateConfig):
     background_color: Literal["random", "last_sample", "white", "black"] = "random"
 
     # Background model
+    use_backgrounds: bool = implicit(False)
+    """Information from dataparser whether backgrounds are available. Only then the bg network can be used"""
     use_background_network: bool = False
     lambda_background_adjustment_regularization: float = 1
     num_layers_background: int = 3
