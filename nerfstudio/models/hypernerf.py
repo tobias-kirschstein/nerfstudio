@@ -206,7 +206,7 @@ class HyperNeRFModel(Model):
         self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # background
-        if self.config.use_background_network:
+        if self.config.use_backgrounds:
             background_color = None
         else:
             if self.config.background_color == "black":
@@ -220,9 +220,6 @@ class HyperNeRFModel(Model):
         self.renderer_rgb = RGBRenderer(background_color=background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
-
-        # losses
-        self.rgb_loss = MSELoss()
 
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -260,10 +257,12 @@ class HyperNeRFModel(Model):
         return callbacks
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
+        param_groups = super(HyperNeRFModel, self).get_param_groups()
+
         if self.field_coarse is None or self.field_fine is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
+        param_groups["fields"].extend(self.field_coarse.parameters())
+        param_groups["fields"].extend(self.field_fine.parameters())
         param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
@@ -352,6 +351,13 @@ class HyperNeRFModel(Model):
             "depth_fine": depth_fine,
         }
 
+        if self.config.use_background_network:
+            # background network
+            # TODO: this might be problematic if we evaluate with a different scene box size as t_fars will be different
+            #   from training
+            t_fars = ray_samples_pdf.frustums.ends[:, -1]
+            self.apply_background_adjustment(ray_bundle, t_fars, outputs)
+
         if self.training:
             outputs["ray_samples_fine"] = ray_samples_pdf
             outputs["weights_fine"] = weights_fine
@@ -359,30 +365,46 @@ class HyperNeRFModel(Model):
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
-        # rgb, rgb_without_bg = self._apply_background_network(outputs, batch)
+        rgb = self._apply_background_network(batch, outputs)
 
-        rgb = outputs["rgb_fine"]
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(rgb, image)
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
+        loss_dict = {}
+
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
+
+        background_adjustment_loss = self.get_background_adjustment_loss(outputs)
+        if background_adjustment_loss is not None:
+            loss_dict["background_adjustment_displacement"] = background_adjustment_loss
+
         # Scaling metrics by coefficients to create the losses.
         device = outputs["rgb_coarse"].device
         image = batch["image"].to(device)
 
         rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+        rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
+        mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
 
-        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
+        loss_dict["rgb_loss_coarse"] = rgb_loss_coarse
+        loss_dict["rgb_loss_fine"] = rgb_loss_fine
+        if mask_loss is not None:
+            loss_dict["mask_loss"] = mask_loss
+
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
+
         return loss_dict
 
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        image = batch["image"].to(outputs["rgb_coarse"].device)
+
+        self._apply_background_network(batch, outputs, overwrite_outputs=True)
+
+        image = batch["image"].to(self.device)
         rgb_coarse = outputs["rgb_coarse"]
         rgb_fine = outputs["rgb_fine"]
         acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
@@ -404,16 +426,27 @@ class HyperNeRFModel(Model):
             far_plane=far_plane,
         )
 
+        image_masked, rgb_masked, floaters = self.apply_mask(batch, rgb_fine, acc_fine)
+
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
         combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
         combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
 
+        if image_masked is not None:
+            # Only compute metrics in non-masked region
+            image_coarse = image
+            image = image_masked
+            rgb_fine = rgb_masked
+        else:
+            image_coarse = image
+
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
+        image_coarse = torch.moveaxis(image_coarse, -1, 0)[None, ...]
         rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
         rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
 
-        coarse_psnr = self.psnr(image, rgb_coarse)
+        coarse_psnr = self.psnr(image_coarse, rgb_coarse)
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
         fine_lpips = self.lpips(image, rgb_fine)
@@ -427,5 +460,38 @@ class HyperNeRFModel(Model):
             "fine_lpips": float(fine_lpips),
             "mse": float(mse),
         }
+
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
+
+        if "rgb_fine_without_bg" in outputs:
+            images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
+
+        if image_masked is not None:
+            combined_rgb_masked = torch.cat([image_masked, rgb_masked], dim=1)
+            images_dict["img_masked"] = combined_rgb_masked
+
+        if floaters is not None:
+            metrics_dict["floaters"] = float(floaters)
+
         return metrics_dict, images_dict
+
+    def _apply_background_network(
+        self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
+    ) -> torch.Tensor:
+
+        if self.config.use_backgrounds:
+
+            background_adjustments = outputs["background_adjustments"] if "background_adjustments" in outputs else None
+
+            rgb = self.apply_background_network(
+                batch, outputs["rgb_fine"], outputs["accumulation_fine"], background_adjustments
+            )
+
+            if overwrite_outputs:
+                outputs["rgb_fine_without_bg"] = outputs["rgb_fine"]
+                outputs["rgb_fine"] = rgb
+
+        else:
+            rgb = outputs["rgb_fine"]
+
+        return rgb

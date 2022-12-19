@@ -35,7 +35,7 @@ from nerfstudio.configs.base_config import InstantiateConfig
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
-from nerfstudio.model_components.scene_colliders import NearFarCollider
+from nerfstudio.model_components.scene_colliders import NearFarCollider, AABBBoxCollider
 
 
 # Model related configs
@@ -62,11 +62,12 @@ class ModelConfig(InstantiateConfig):
     # Background model
     use_backgrounds: bool = implicit(False)
     """Information from dataparser whether backgrounds are available. Only then the bg network can be used"""
-    use_background_network: bool = False
     lambda_background_adjustment_regularization: float = 1
     num_layers_background: int = 3
 
     lambda_mask_loss: float = 0
+    enforce_non_masked_density: bool = False
+    """Whether the mask loss should enforce density in non-masked regions to be high"""
 
 
 class Model(nn.Module):
@@ -82,12 +83,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-        self,
-        config: ModelConfig,
-        scene_box: SceneBox,
-        num_train_data: int,
-        camera_frustums: Optional[List[Frustum]] = None,
-        **kwargs,
+            self,
+            config: ModelConfig,
+            scene_box: SceneBox,
+            num_train_data: int,
+            camera_frustums: Optional[List[Frustum]] = None,
+            **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -108,7 +109,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -119,10 +120,10 @@ class Model(nn.Module):
         # NOTE: call `super().populate_modules()` in subclasses
 
         if (
-            self.config.enable_collider
-            and self.config.collider_params is not None
-            and "near_plane" in self.config.collider_params
-            and "far_plane" in self.config.collider_params
+                self.config.enable_collider
+                and self.config.collider_params is not None
+                and "near_plane" in self.config.collider_params
+                and "far_plane" in self.config.collider_params
         ):
             if self.config.collider_type == "AABBBox":
                 self.collider = AABBBoxCollider(scene_box=self.scene_box)
@@ -251,7 +252,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -276,11 +277,11 @@ class Model(nn.Module):
         self.load_state_dict(state)  # type: ignore
 
     def apply_background_network(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        background_adjustments: Optional[torch.Tensor] = None,
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            background_adjustments: Optional[torch.Tensor] = None,
     ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
@@ -327,7 +328,7 @@ class Model(nn.Module):
         return rgb
 
     def apply_background_adjustment(
-        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+            self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
     ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
@@ -384,10 +385,11 @@ class Model(nn.Module):
         return rgb_loss
 
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
-        if self.config.use_background_network and "background_adjustments" in outputs:
+        if self.config.use_background_network and "background_adjustments" in outputs \
+                and self.config.lambda_background_adjustment_regularization > 0:
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = (
-                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                    self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
             )
 
             if background_adjustment_displacement.isnan().any():
@@ -411,19 +413,52 @@ class Model(nn.Module):
                 pixel_indices_per_ray[:, 2],
             ]
 
-            mask_loss = (
-                (1 - accumulation_per_ray[mask_value_per_ray]).sum() + (accumulation_per_ray[~mask_value_per_ray]).sum()
-            ) / accumulation_per_ray.shape[0]
+            # Accumulation in masked regions should be low
+            mask_loss = accumulation_per_ray[~mask_value_per_ray].sum()
+
+            if self.config.enforce_non_masked_density:
+                # Accumulation in non-masked regions should be high
+                mask_loss += (1 - accumulation_per_ray[mask_value_per_ray]).sum()
+                mask_loss /= accumulation_per_ray.shape[0]  # Compute mask loss per ray
+            else:
+                n_masked_rays = (~mask_value_per_ray).sum()
+                if n_masked_rays > 0:
+                    mask_loss /= n_masked_rays  # Compute mask loss per ray
+
             mask_loss = self.config.lambda_mask_loss * mask_loss
 
         return mask_loss
 
+    def apply_mask(self,
+                   batch: Dict[str, torch.Tensor],
+                   rgb: torch.Tensor,
+                   accumulation: torch.Tensor) -> Tuple[
+        Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+
+        if "mask" in batch:
+            # Log masked GT image + masked model prediction which is what the evaluation is performed on
+            mask = batch["mask"].squeeze(2)
+
+            image_masked = batch["image"].clone().to(self.device)
+            rgb_masked = rgb.clone()
+
+            image_masked[~mask] = 0
+            rgb_masked[~mask] = 0
+
+            # Density that is in the masked-out area will be summarized in a "floaters" metric
+            # "floaters" is high when there is a lot of density in the masked-out region
+            floaters = accumulation[~mask].mean()
+
+            return image_masked, rgb_masked, floaters
+
+        return None, None, None
+
     def apply_mask_and_combine_images(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        rgb_without_bg: Optional[torch.Tensor],
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            rgb_without_bg: Optional[torch.Tensor],
     ):
 
         image = batch["image"].to(self.device)

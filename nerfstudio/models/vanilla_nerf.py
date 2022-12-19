@@ -275,6 +275,7 @@ class NeRFModel(Model):
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
 
+        image = batch["image"].to(self.device)
         rgb_coarse = outputs["rgb_coarse"]
         rgb_fine = outputs["rgb_fine"]
         acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
@@ -296,20 +297,27 @@ class NeRFModel(Model):
             far_plane=far_plane,
         )
 
-        image, combined_rgb, combined_rgb_masked, floaters = self.apply_mask_and_combine_images(
-            batch, rgb_fine, acc_fine, outputs["rgb_fine_without_bg"] if "rgb_fine_without_bg" in outputs else None
-        )
+        image_masked, rgb_masked, floaters = self.apply_mask(batch, rgb_fine, acc_fine)
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
         combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
         combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
 
+        if image_masked is not None:
+            # Only computed metrics in non-masked region
+            image_coarse = image
+            image = image_masked
+            rgb_fine = rgb_masked
+        else:
+            image_coarse = image
+
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
+        image_coarse = torch.moveaxis(image_coarse, -1, 0)[None, ...]
         rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
         rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
 
-        coarse_psnr = self.psnr(image, rgb_coarse)
+        coarse_psnr = self.psnr(image_coarse, rgb_coarse)
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
         fine_lpips = self.lpips(image, rgb_fine)
@@ -328,7 +336,8 @@ class NeRFModel(Model):
         if "rgb_fine_without_bg" in outputs:
             images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
 
-        if combined_rgb_masked is not None:
+        if image_masked is not None:
+            combined_rgb_masked = torch.cat([image_masked, rgb_masked], dim=1)
             images_dict["img_masked"] = combined_rgb_masked
 
         if floaters is not None:

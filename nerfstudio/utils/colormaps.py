@@ -65,7 +65,7 @@ def apply_depth_colormap(
         Colored depth image
     """
 
-    if accumulation is not None:
+    if accumulation is not None and (accumulation >= acc_threshold).sum() > 0:
         # Only use relevant part of depth to estimate min/max values for coloring.
         # Otherwise, a single outlier in a low accumulation region might spread the colormap out too much
         max_depth = depth[accumulation >= acc_threshold].max()
