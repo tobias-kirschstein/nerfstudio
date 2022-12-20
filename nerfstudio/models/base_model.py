@@ -69,6 +69,9 @@ class ModelConfig(InstantiateConfig):
     enforce_non_masked_density: bool = False
     """Whether the mask loss should enforce density in non-masked regions to be high"""
 
+    lambda_beta_loss: float = 0
+    """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
+
 
 class Model(nn.Module):
     """Model class
@@ -436,6 +439,15 @@ class Model(nn.Module):
                 mask_loss = 0
 
         return mask_loss
+
+    def get_beta_loss(self, accumulation: torch.Tensor) -> Optional[torch.Tensor]:
+        beta_loss = None
+        if self.config.lambda_beta_loss > 0 and self.training:
+            accumulation_per_ray = accumulation.squeeze(1)  # [R]
+            beta_loss = ((0.1 + accumulation_per_ray).log() + (1.1 - accumulation_per_ray).log() + 2.20727).mean()
+            beta_loss = self.config.lambda_beta_loss * beta_loss
+
+        return beta_loss
 
     def apply_mask(self,
                    batch: Dict[str, torch.Tensor],

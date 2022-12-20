@@ -82,7 +82,6 @@ class InstantNGPModelConfig(ModelConfig):
 
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
-    lambda_beta_loss: float = 0
     lambda_l1_field_regularization: float = 0
 
     use_spherical_harmonics: bool = True
@@ -419,15 +418,9 @@ class NGPModel(Model):
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
 
-        # print(f"RGB Loss: {rgb_loss.item():0.4f}")
-
-        if self.config.lambda_beta_loss > 0 and self.training:
-            # TODO: Make this scheduling more sophisticated, but in principle seems to work
-            lambda_beta_loss = self.config.lambda_beta_loss
-
-            accumulation_per_ray = outputs["accumulation"]  # [R]
-            beta_loss = ((0.1 + accumulation_per_ray).log() + (1.1 - accumulation_per_ray).log() + 2.20727).mean()
-            loss_dict["beta_loss"] = lambda_beta_loss * beta_loss
+        beta_loss =self.get_beta_loss(outputs["accumulation"])
+        if beta_loss is not None:
+            loss_dict["beta_loss"] = beta_loss
 
         if self.config.lambda_dist_loss > 0 and self.training:
             # distloss

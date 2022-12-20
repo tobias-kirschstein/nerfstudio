@@ -77,9 +77,9 @@ class NeRFModel(Model):
     config: VanillaModelConfig
 
     def __init__(
-        self,
-        config: VanillaModelConfig,
-        **kwargs,
+            self,
+            config: VanillaModelConfig,
+            **kwargs,
     ) -> None:
         self.field_coarse = None
         self.field_fine = None
@@ -264,18 +264,21 @@ class NeRFModel(Model):
         rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
         rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
         mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
+        beta_loss = self.get_beta_loss(outputs["accumulation_fine"])
 
         loss_dict["rgb_loss_coarse"] = rgb_loss_coarse
         loss_dict["rgb_loss_fine"] = rgb_loss_fine
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
+        if beta_loss is not None:
+            loss_dict["beta_loss"] = beta_loss
 
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
 
         return loss_dict
 
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
@@ -358,11 +361,10 @@ class NeRFModel(Model):
         if "rgb_fine_without_bg" in outputs:
             images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
 
-
         return metrics_dict, images_dict
 
     def _apply_background_network(
-        self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
+            self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
     ) -> torch.Tensor:
 
         if self.config.use_backgrounds:

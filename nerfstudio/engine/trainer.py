@@ -329,6 +329,10 @@ class Trainer:
                     writer.put_scalar(f"{n} (max)", grad.max(), step)
                     writer.put_scalar(f"{n} (mean)", grad.mean(), step)
 
+        for n, p in self.pipeline.model.named_parameters():
+            if p.grad is not None and p.grad.isnan().any():
+                print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}")
+
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
 
