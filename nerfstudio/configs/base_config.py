@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import yaml
+from elias.config import implicit
 from rich.console import Console
 from typing_extensions import Literal
 
@@ -131,6 +132,7 @@ class LoggingConfig(PrintableConfig):
     project: str = 'nerfstudio-project'  # Name of project in wandb to log to
     tags: Optional[List[str]] = None  # Tags for organizing the logged experiment in wandb
     # group: str = ''  # Optionally, can log experiments into a group in wandb
+    wandb_run_id: Optional[str] = implicit(None)  # Run id of run in wandb
 
 
 # Trainer related configs

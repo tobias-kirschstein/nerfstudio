@@ -388,6 +388,11 @@ class NGPModel(Model):
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(rgb, image)
+
+        mask = self.get_mask_per_ray(batch)
+        if mask is not None:
+            metrics_dict["psnr_masked"] = self.psnr(rgb[mask], image[mask])
+
         metrics_dict["num_samples_per_batch"] = outputs["num_samples_per_ray"].sum()
         return metrics_dict
 
@@ -515,6 +520,7 @@ class NGPModel(Model):
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
 
+        image = batch["image"].to(self.device)
         rgb = outputs["rgb"]
         acc = colormaps.apply_colormap(outputs["accumulation"])
         depth = colormaps.apply_depth_colormap(
@@ -523,9 +529,9 @@ class NGPModel(Model):
         )
         alive_ray_mask = colormaps.apply_colormap(outputs["alive_ray_mask"])
 
-        image, combined_rgb, combined_rgb_masked, floaters = self.apply_mask_and_combine_images(
-            batch, rgb, acc, outputs["rgb_without_bg"] if "rgb_without_bg" in outputs else None)
+        image_masked, rgb_masked, floaters = self.apply_mask(batch, rgb, acc)
 
+        combined_rgb = torch.cat([image, rgb], dim=1)
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
         combined_alive_ray_mask = torch.cat([alive_ray_mask], dim=1)
@@ -554,14 +560,30 @@ class NGPModel(Model):
             "depth": combined_depth,
             "alive_ray_mask": combined_alive_ray_mask,
         }
-        if "rgb_without_bg" in outputs:
-            images_dict["img_without_bg"] = outputs["rgb_without_bg"]
 
-        if combined_rgb_masked is not None:
+        if image_masked is not None:
+            mask = torch.from_numpy(batch["mask"]).squeeze(2)
+
+            combined_rgb_masked = torch.cat([image_masked, rgb_masked], dim=1)
+
+            image_masked = torch.moveaxis(image_masked, -1, 0)[None, ...]
+            rgb_masked = torch.moveaxis(rgb_masked, -1, 0)[None, ...]
+
+            psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
+            ssim_masked = self.ssim(image_masked, rgb_masked)
+            lpips_masked = self.lpips(image_masked, rgb_masked)
+            mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
+
+            metrics_dict["psnr_masked"] = psnr_masked
+            metrics_dict["ssim_masked"] = ssim_masked
+            metrics_dict["lpips_masked"] = lpips_masked
+            metrics_dict["mse_masked"] = mse_masked
+            metrics_dict["floaters"] = float(floaters)
+
             images_dict["img_masked"] = combined_rgb_masked
 
-        if floaters is not None:
-            metrics_dict["floaters"] = float(floaters)
+        if "rgb_without_bg" in outputs:
+            images_dict["img_without_bg"] = outputs["rgb_without_bg"]
 
         return metrics_dict, images_dict
 

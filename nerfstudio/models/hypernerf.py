@@ -370,6 +370,11 @@ class HyperNeRFModel(Model):
         image = batch["image"].to(self.device)
         metrics_dict = {}
         metrics_dict["psnr"] = self.psnr(rgb, image)
+
+        mask = self.get_mask_per_ray(batch)
+        if mask is not None:
+            metrics_dict["psnr_masked"] = self.psnr(rgb[mask], image[mask])
+
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
@@ -432,21 +437,12 @@ class HyperNeRFModel(Model):
         combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
         combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
 
-        if image_masked is not None:
-            # Only compute metrics in non-masked region
-            image_coarse = image
-            image = image_masked
-            rgb_fine = rgb_masked
-        else:
-            image_coarse = image
-
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
-        image_coarse = torch.moveaxis(image_coarse, -1, 0)[None, ...]
         rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
         rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
 
-        coarse_psnr = self.psnr(image_coarse, rgb_coarse)
+        coarse_psnr = self.psnr(image, rgb_coarse)
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
         fine_lpips = self.lpips(image, rgb_fine)
@@ -463,15 +459,29 @@ class HyperNeRFModel(Model):
 
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
 
-        if "rgb_fine_without_bg" in outputs:
-            images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
-
         if image_masked is not None:
+            mask = torch.from_numpy(batch["mask"]).squeeze(2)
+
             combined_rgb_masked = torch.cat([image_masked, rgb_masked], dim=1)
+
+            image_masked = torch.moveaxis(image_masked, -1, 0)[None, ...]
+            rgb_masked = torch.moveaxis(rgb_masked, -1, 0)[None, ...]
+
+            psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
+            ssim_masked = self.ssim(image_masked, rgb_masked)
+            lpips_masked = self.lpips(image_masked, rgb_masked)
+            mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
+
+            metrics_dict["psnr_masked"] = psnr_masked
+            metrics_dict["ssim_masked"] = ssim_masked
+            metrics_dict["lpips_masked"] = lpips_masked
+            metrics_dict["mse_masked"] = mse_masked
+            metrics_dict["floaters"] = float(floaters)
+
             images_dict["img_masked"] = combined_rgb_masked
 
-        if floaters is not None:
-            metrics_dict["floaters"] = float(floaters)
+        if "rgb_fine_without_bg" in outputs:
+            images_dict["img_without_bg"] = outputs["rgb_fine_without_bg"]
 
         return metrics_dict, images_dict
 

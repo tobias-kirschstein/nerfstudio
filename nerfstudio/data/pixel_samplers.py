@@ -25,7 +25,10 @@ from torchvision.transforms import Resize, InterpolationMode
 
 debug_sample_probabilities = None
 
-def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_image: bool = False):
+def collate_image_dataset_batch(batch: Dict,
+                                num_rays_per_batch: int,
+                                keep_full_image: bool = False,
+                                sample_masked_pixels: bool = True):
     """
     Operates on a batch of images and samples pixels to use for generating rays.
     Returns a collated batch which is input to the Graph.
@@ -44,7 +47,7 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
     if "pixel_sample_probabilities" in batch:
         pixel_sample_probabilities = batch["pixel_sample_probabilities"]  # [C, H, W]
 
-        if 'mask' in batch and not torch.is_grad_enabled():
+        if 'mask' in batch and not sample_masked_pixels:
             mask = batch['mask']
             pixel_sample_probabilities[~mask.squeeze(-1)] = 0  # Do not sample masked out areas
 
@@ -71,7 +74,7 @@ def collate_image_dataset_batch(batch: Dict, num_rays_per_batch: int, keep_full_
                                                  replacement=True)
         grid = torch.stack([grid_b, grid_y, grid_x], dim=-1)
         indices = grid.view(-1, 3)[pixel_sample_indices]
-    elif "mask" in batch and not torch.is_grad_enabled():
+    elif "mask" in batch and not sample_masked_pixels:
         nonzero_indices = torch.nonzero(batch["mask"][..., 0], as_tuple=False)
         chosen_indices = random.sample(range(len(nonzero_indices)), k=num_rays_per_batch)
         indices = nonzero_indices[chosen_indices]
@@ -198,9 +201,12 @@ class PixelSampler:  # pylint: disable=too-few-public-methods
         keep_full_image: whether or not to include a reference to the full image in returned batch
     """
 
-    def __init__(self, num_rays_per_batch: int, keep_full_image: bool = False) -> None:
+    def __init__(self, num_rays_per_batch: int,
+                 keep_full_image: bool = False,
+                 sample_masked_pixels: bool = True) -> None:
         self.num_rays_per_batch = num_rays_per_batch
         self.keep_full_image = keep_full_image
+        self.sample_masked_pixels = sample_masked_pixels
 
     def set_num_rays_per_batch(self, num_rays_per_batch: int):
         """Set the number of rays to sample per batch.
@@ -223,7 +229,10 @@ class PixelSampler:  # pylint: disable=too-few-public-methods
             )
         elif isinstance(image_batch["image"], torch.Tensor):
             pixel_batch = collate_image_dataset_batch(
-                image_batch, self.num_rays_per_batch, keep_full_image=self.keep_full_image
+                image_batch,
+                self.num_rays_per_batch,
+                keep_full_image=self.keep_full_image,
+                sample_masked_pixels=self.sample_masked_pixels
             )
         else:
             raise ValueError("image_batch['image'] must be a list or torch.Tensor")

@@ -260,6 +260,10 @@ class VanillaDataManagerConfig(InstantiateConfig):
     train_num_times_to_repeat_images: int = -1
     """When not training on all images, number of iterations before picking new
     images. If -1, never pick new images."""
+    train_sample_masked_pixels: bool = True
+    """Whether to sample pixels whose mask value is 'False' during training. 
+    Only relevant when dataparser returns a mask."""
+
     eval_num_rays_per_batch: int = 1024
     """Number of rays per batch to use per eval iteration."""
     eval_num_images_to_sample_from: int = -1
@@ -269,6 +273,10 @@ class VanillaDataManagerConfig(InstantiateConfig):
     new images. If -1, never pick new images."""
     eval_image_indices: Optional[Tuple[int, ...]] = (0,)
     """Specifies the image indices to use during eval; if None, uses all."""
+    eval_sample_masked_pixels: bool = True
+    """Whether to sample pixels whose mask value is 'False' during evaluation. 
+    Only relevant when dataparser returns a mask."""
+
     train_image_indices: Optional[Tuple[int, ...]] = (0,)  # Which train images should be logged to wandb
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
@@ -351,7 +359,8 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             collate_fn=self.config.collate_fn,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
-        self.train_pixel_sampler = PixelSampler(self.config.train_num_rays_per_batch)
+        self.train_pixel_sampler = PixelSampler(self.config.train_num_rays_per_batch,
+                                                sample_masked_pixels=self.config.train_sample_masked_pixels)
         self.train_camera_optimizer = self.config.camera_optimizer.setup(
             num_cameras=self.train_dataset.cameras.size, device=self.device
         )
@@ -381,7 +390,8 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             collate_fn=self.config.collate_fn,
         )
         self.iter_eval_image_dataloader = iter(self.eval_image_dataloader)
-        self.eval_pixel_sampler = PixelSampler(self.config.eval_num_rays_per_batch)
+        self.eval_pixel_sampler = PixelSampler(self.config.eval_num_rays_per_batch,
+                                               sample_masked_pixels=self.config.eval_sample_masked_pixels)
         self.eval_ray_generator = RayGenerator(
             self.eval_dataset.cameras.to(self.device),
             self.train_camera_optimizer,  # should be shared between train and eval.

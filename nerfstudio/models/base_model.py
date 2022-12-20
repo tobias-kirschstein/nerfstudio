@@ -119,20 +119,21 @@ class Model(nn.Module):
         # default instantiates optional modules that are common among many networks
         # NOTE: call `super().populate_modules()` in subclasses
 
-        if (
-                self.config.enable_collider
-                and self.config.collider_params is not None
-                and "near_plane" in self.config.collider_params
-                and "far_plane" in self.config.collider_params
-        ):
-            if self.config.collider_type == "AABBBox":
+        if self.config.enable_collider:
+
+            if self.config.collider_type == 'AABBBox':
                 self.collider = AABBBoxCollider(scene_box=self.scene_box)
+
             elif self.config.collider_type == "NearFar":
                 assert self.config.collider_params is not None
+                assert "near_plane" in self.config.collider_params
+                assert "far_plane" in self.config.collider_params
+
                 self.collider = NearFarCollider(
                     near_plane=self.config.collider_params["near_plane"],
                     far_plane=self.config.collider_params["far_plane"],
                 )
+
             else:
                 raise NotImplementedError(f"Unkown collider_type: {self.config.collider_type}")
 
@@ -353,6 +354,20 @@ class Model(nn.Module):
 
             outputs["background_adjustments"] = background_adjustments
 
+    def get_mask_per_ray(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        if "mask" in batch:
+            pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
+            masks = batch["mask"].squeeze(3)  # [B, H, W]
+            mask = masks[
+                pixel_indices_per_ray[:, 0],
+                pixel_indices_per_ray[:, 1],
+                pixel_indices_per_ray[:, 2],
+            ]
+
+            return mask
+        else:
+            return None
+
     def get_masked_rgb_loss(self, batch: Dict[str, torch.Tensor], rgb_pred: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -370,13 +385,7 @@ class Model(nn.Module):
 
         if "mask" in batch:
             # Only compute RGB loss on non-masked pixels
-            pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
-            masks = batch["mask"].squeeze(3)  # [B, H, W]
-            mask = masks[
-                pixel_indices_per_ray[:, 0],
-                pixel_indices_per_ray[:, 1],
-                pixel_indices_per_ray[:, 2],
-            ]
+            mask = self.get_mask_per_ray(batch)
 
             rgb_loss = self.rgb_loss(image[mask], rgb_pred[mask])
         else:
@@ -404,14 +413,7 @@ class Model(nn.Module):
         mask_loss = None
         if self.config.lambda_mask_loss > 0 and "mask" in batch:
             accumulation_per_ray = accumulation.squeeze(1)  # [R]
-            pixel_indices_per_ray = batch["local_indices"]  # [R, 3] with 3 = C,y,x
-            masks = batch["mask"].squeeze(3)  # [C, H, W]
-
-            mask_value_per_ray = masks[
-                pixel_indices_per_ray[:, 0],
-                pixel_indices_per_ray[:, 1],
-                pixel_indices_per_ray[:, 2],
-            ]
+            mask_value_per_ray = self.get_mask_per_ray(batch)
 
             # Accumulation in masked regions should be low
             mask_loss = accumulation_per_ray[~mask_value_per_ray].sum()
@@ -419,13 +421,19 @@ class Model(nn.Module):
             if self.config.enforce_non_masked_density:
                 # Accumulation in non-masked regions should be high
                 mask_loss += (1 - accumulation_per_ray[mask_value_per_ray]).sum()
-                mask_loss /= accumulation_per_ray.shape[0]  # Compute mask loss per ray
+                if accumulation_per_ray.shape[0] > 0:
+                    mask_loss /= accumulation_per_ray.shape[0]  # Compute mask loss per ray
             else:
                 n_masked_rays = (~mask_value_per_ray).sum()
                 if n_masked_rays > 0:
                     mask_loss /= n_masked_rays  # Compute mask loss per ray
 
             mask_loss = self.config.lambda_mask_loss * mask_loss
+
+            if mask_loss.isnan():
+                print(
+                    f"WARNING! MASK LOSS IS NAN! accumulation_per_ray: {accumulation_per_ray}, mask_value_per_ray: {mask_value_per_ray}")
+                mask_loss = 0
 
         return mask_loss
 

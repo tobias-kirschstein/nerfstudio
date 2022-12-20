@@ -203,6 +203,7 @@ def setup_event_writer(config: cfg.Config, log_dir: Path) -> None:
                                   project=config.logging.project,
                                   group=config.method_name,
                                   tags=config.logging.tags)
+        config.logging.wandb_run_id = wandb.run.id
         EVENT_WRITERS.append(curr_writer)
         using_event_writer = True
     if config.is_tensorboard_enabled():
