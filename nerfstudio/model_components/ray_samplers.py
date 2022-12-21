@@ -93,7 +93,7 @@ class SpacedSampler(Sampler):
             Positions and deltas for samples along a ray
         """
         assert ray_bundle is not None
-        assert ray_bundle.nears is not None, "Check enable_collider and collider_type!"
+        assert ray_bundle.nears is not None, "SpacedSampler requires rays to have nears and fars! Check enable_collider and collider_params!"
         assert ray_bundle.fars is not None
 
         num_samples = num_samples or self.num_samples

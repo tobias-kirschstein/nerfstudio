@@ -77,7 +77,10 @@ class TCNNInstantNGPField(Field):
             use_deformation_field: bool = False,
             fix_canonical_space: bool = False,
             n_freq_pos_warping: int = 7,
-            num_layers_deformation_field: int = 3,
+            n_layers_deformation_field: int = 6,
+            hidden_dim_deformation_field: int = 128,
+            timestep_canonical: Optional[int] = 0,
+
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
             density_threshold: Optional[float] = None,
@@ -93,6 +96,7 @@ class TCNNInstantNGPField(Field):
         self.density_threshold = density_threshold
         self.use_4d_hashing = use_4d_hashing
         self.fix_canonical_space = fix_canonical_space
+        self.timestep_canonical = timestep_canonical
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -147,14 +151,15 @@ class TCNNInstantNGPField(Field):
 
                 # self.deformation_network = SE3Field(latent_dim_time, hidden_dim)
 
-                self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
+                # self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
 
-                # self.deformation_network = SE3WarpingField(
-                #     n_freq_pos=n_freq_pos_warping,
-                #     time_embed_dim=latent_dim_time,
-                #     mlp_num_layers=6,
-                #     mlp_layer_width=128,
-                # )
+                self.deformation_network = SE3WarpingField(
+                    n_freq_pos=n_freq_pos_warping,
+                    warp_code_dim=latent_dim_time,
+                    mlp_num_layers=n_layers_deformation_field,
+                    mlp_layer_width=hidden_dim_deformation_field,
+                )
+                self._previous_window_deform = None
 
                 # self.bullshit_deformer = nn.Linear(3, 3)
                 # self.bullshit_deformer.weight.register_hook(lambda grad: print(f"GRADIENT: ", grad))
@@ -226,6 +231,12 @@ class TCNNInstantNGPField(Field):
                     ray_samples: RaySamples,
                     window_deform: Optional[float] = None):
 
+        if window_deform is None:
+            window_deform = self._previous_window_deform
+        else:
+            # Cache window_deform
+            self._previous_window_deform = window_deform
+
         densities = []
         base_mlp_outs = []
 
@@ -259,7 +270,12 @@ class TCNNInstantNGPField(Field):
                 else:
                     time_embeddings = self.time_embedding(timesteps)
                     if self.deformation_network is not None:
-                        idx_timesteps_deform = timesteps > 0  # Only deform points for other timesteps than canonical
+                        if self.timestep_canonical is not None:
+                            # Only deform points for other timesteps than canonical
+                            idx_timesteps_deform = timesteps != self.timestep_canonical
+                        else:
+                            # All timesteps will be deformed into a latent canonical space
+                            idx_timesteps_deform = torch.ones_like(timesteps).bool()
 
                         if idx_timesteps_deform.any():
                             positions_to_deform = positions_flat[idx_timesteps_deform]
@@ -282,37 +298,10 @@ class TCNNInstantNGPField(Field):
                             #                                            time_embeddings[idx_timesteps_deform])
 
                             # Deformation network has to learn identity in beginning
+
                             deformed_points = self.deformation_network(positions_to_deform,
-                                                                       time_embeddings[
-                                                                           idx_timesteps_deform])
-
-                            # deformed_points = deformed_points + self.bullshit_deformer(deformed_points)
-                            # deformed_points = deformed_points + self.bullshit_deformer_2[timesteps[idx_timesteps_deform]] + self.bullshit_deformer_3(deformed_points)
-
-                            # if torch.is_grad_enabled():
-                            #     with torch.enable_grad():
-                            #         deformed_points = self.deformation_network(positions_to_deform,
-                            #                                                    warp_code=time_embeddings[idx_timesteps_deform],
-                            #                                                    windows_param=window_deform)
-                            # else:
-                            #     deformed_points = self.deformation_network(positions_to_deform,
-                            #                                                warp_code=time_embeddings[
-                            #                                                    idx_timesteps_deform],
-                            #                                                windows_param=window_deform)
-
-                            # deformed_points = self.deformation_network(positions_to_deform,
-                            #                                            time_embeddings[idx_timesteps_deform])
-
-                            # hypernerf_field = SE3WarpingField(time_embed_dim=128).cuda()
-                            # ps = torch.randn((5, 11, 3)).cuda()
-                            # te = torch.randn((5, 11, 8)).cuda()
-                            # deformed_points = hypernerf_field(positions_to_deform, warp_code=time_embeddings[idx_timesteps_deform])
-
-                            # with torch.enable_grad():
-                            #     if deformed_points.grad_fn is not None:
-                            #         (deformed_points ** 2).sum().backward()
-                            #         for p in self.parameters():
-                            #             p.grad = None
+                                                                       warp_code=time_embeddings[idx_timesteps_deform],
+                                                                       windows_param=window_deform)
 
                             positions_flat[idx_timesteps_deform] = deformed_points
                             # positions_flat[idx_timesteps_deform] = positions_to_deform
@@ -334,14 +323,18 @@ class TCNNInstantNGPField(Field):
                 # TODO: Experimental
                 # Only accumulate gradients for mlp_base for canonical space rays.
                 # All other timesteps should only update the deformation field
-                idx_timesteps_deform = timesteps > 0
+                assert self.timestep_canonical is not None
+                idx_timesteps_deform = timesteps != self.timestep_canonical
+
                 h_canonical = self.mlp_base(base_inputs[~idx_timesteps_deform])
 
                 # TODO: Double check that we get gradients for the time embeddings and MLP...
                 h = torch.zeros((base_inputs.shape[0], *h_canonical.shape[1:]),
                                 dtype=h_canonical.dtype,
                                 device=h_canonical.device)
-                h[~idx_timesteps_deform] = h_canonical
+
+                if (~idx_timesteps_deform).any():
+                    h[~idx_timesteps_deform] = h_canonical
 
                 if idx_timesteps_deform.any():
                     with disable_gradients_for(self.mlp_base):
@@ -411,15 +404,18 @@ class TCNNInstantNGPField(Field):
 
         if ray_samples.timesteps is not None and self.fix_canonical_space and self.deformation_network is not None:
             # Ensure that only canonical space rays accumulate gradients
-            idx_timesteps_deform = ray_samples.timesteps.squeeze(-1) > 0
+            assert self.timestep_canonical is not None
+            idx_timesteps_deform = ray_samples.timesteps.squeeze(-1) != self.timestep_canonical
+
 
             rgb_canonical = self.mlp_head(h[~idx_timesteps_deform])
-
 
             rgb = torch.zeros((h.shape[0], *rgb_canonical.shape[1:]),
                               dtype=rgb_canonical.dtype,
                               device=rgb_canonical.device)
-            rgb[~idx_timesteps_deform] = rgb_canonical
+
+            if (~idx_timesteps_deform).any():
+                rgb[~idx_timesteps_deform] = rgb_canonical
 
             if idx_timesteps_deform.any():
                 with disable_gradients_for(self.mlp_head):

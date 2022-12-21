@@ -86,6 +86,8 @@ class SE3WarpingField(nn.Module):
         # diminish the last layer of SE3 Field to approximate an identity transformation
         nn.init.uniform_(self.mlp_r.layers[-1].weight, a=-1e-5, b=1e-5)
         nn.init.uniform_(self.mlp_v.layers[-1].weight, a=-1e-5, b=1e-5)
+        nn.init.zeros_(self.mlp_r.layers[-1].bias)
+        nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
     def forward(self, positions, warp_code=None, windows_param=None):
         if warp_code is None:
