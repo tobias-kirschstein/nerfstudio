@@ -92,11 +92,13 @@ class InstantNGPModelConfig(ModelConfig):
     max_ray_samples_chunk_size: int = -1
 
     use_deformation_field: bool = False
-    n_layers_deformation_field: int = 3
+    n_layers_deformation_field: int = 6
+    hidden_dim_deformation_field: int = 128
     n_freq_pos_warping: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
+    timestep_canonical: Optional[int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -140,9 +142,13 @@ class NGPModel(Model):
             latent_dim_time=self.config.latent_dim_time,
             n_timesteps=self.config.n_timesteps,
             max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
+
             use_deformation_field=self.config.use_deformation_field,
             fix_canonical_space=self.config.fix_canonical_space,
-            num_layers_deformation_field=self.config.n_layers_deformation_field,
+            n_layers_deformation_field=self.config.n_layers_deformation_field,
+            hidden_dim_deformation_field=self.config.hidden_dim_deformation_field,
+            timestep_canonical=self.config.timestep_canonical,
+
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
@@ -283,9 +289,12 @@ class NGPModel(Model):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
 
-        parameters = list(self.field.parameters())
+        param_groups["fields"].extend(self.field.mlp_base.parameters())
+        param_groups["fields"].extend(self.field.mlp_head.parameters())
 
-        param_groups["fields"].extend(parameters)
+        param_groups["deformation_field"] = []
+        param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
+        param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
 
         # parameters = list(self.field.get_head_parameters())
         # parameters.extend(self.field.get_base_parameters())

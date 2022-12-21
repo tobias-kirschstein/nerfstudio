@@ -143,7 +143,7 @@ class Model(nn.Module):
         # TODO: Try Huber-Loss?
         self.rgb_loss = MSELoss()
 
-        if self.config.use_background_network:
+        if self.config.use_backgrounds and self.config.use_background_network:
             self.mlp_background = tcnn.NetworkWithInputEncoding(
                 n_input_dims=6,
                 n_output_dims=3,
@@ -171,7 +171,7 @@ class Model(nn.Module):
         """
 
         param_groups = {"fields": []}
-        if self.config.use_background_network:
+        if self.config.use_backgrounds and self.config.use_background_network:
             param_groups["fields"].extend(self.mlp_background.parameters())
 
         return param_groups
@@ -348,7 +348,7 @@ class Model(nn.Module):
                 dictionary to which the 'background_adjustments' will be added to
         """
 
-        if self.config.use_background_network:
+        if self.config.use_backgrounds and self.config.use_background_network:
             # background network
 
             background_adjustments = self.mlp_background(

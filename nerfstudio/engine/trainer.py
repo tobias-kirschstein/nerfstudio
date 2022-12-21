@@ -313,7 +313,7 @@ class Trainer:
         """
         self.optimizers.zero_grad_all()
         cpu_or_cuda_str = self.device.split(":")[0]
-        with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
+        with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision, cache_enabled=False):
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
