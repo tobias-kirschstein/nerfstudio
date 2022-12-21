@@ -50,19 +50,20 @@ class NeRFField(Field):
     """
 
     def __init__(
-            self,
-            position_encoding: Encoding = Identity(in_dim=3),
-            direction_encoding: Encoding = Identity(in_dim=3),
-            base_mlp_num_layers: int = 8,
-            base_mlp_layer_width: int = 256,
-            head_mlp_num_layers: int = 2,
-            head_mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
-            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-            use_integrated_encoding: bool = False,
-            spatial_distortion: Optional[SpatialDistortion] = None,
-            latent_dim_time: int = 0,
-            n_timesteps: int = 1,
+        self,
+        position_encoding: Encoding = Identity(in_dim=3),
+        direction_encoding: Encoding = Identity(in_dim=3),
+        base_mlp_num_layers: int = 8,
+        base_mlp_layer_width: int = 256,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+        use_integrated_encoding: bool = False,
+        spatial_distortion: Optional[SpatialDistortion] = None,
+        latent_dim_time: int = 0,
+        n_timesteps: int = 1,
+        head_extra_dim: int = 0,
     ) -> None:
         super().__init__()
         self.position_encoding = position_encoding
@@ -76,7 +77,7 @@ class NeRFField(Field):
             n_additional_inputs = latent_dim_time
 
             self.time_embedding = nn.Embedding(n_timesteps, latent_dim_time)
-            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(latent_dim_time))
+            init.normal_(self.time_embedding.weight, mean=0.0, std=0.01 / sqrt(latent_dim_time))
         else:
             self.time_embedding = None
 
@@ -89,7 +90,7 @@ class NeRFField(Field):
         )
 
         self.mlp_head = MLP(
-            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim(),
+            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim() + head_extra_dim,
             num_layers=head_mlp_num_layers,
             layer_width=head_mlp_layer_width,
             out_activation=nn.ReLU(),
@@ -124,29 +125,37 @@ class NeRFField(Field):
         return density, base_mlp_out
 
     def get_outputs(
-            self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+        self,
+        ray_samples: RaySamples,
+        density_embedding: Optional[TensorType] = None,
+        camera_code: Optional[TensorType] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
             encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
-            mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding], dim=-1))  # type: ignore
+            head_inputs = [encoded_dir, density_embedding]
+
+            if camera_code is not None:
+                head_inputs.append(camera_code)
+
+            mlp_out = self.mlp_head(torch.cat(head_inputs, dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs
 
 
 class TCNNNeRFField(Field):
     def __init__(
-            self,
-            position_encoding: Encoding = Identity(in_dim=3),
-            direction_encoding: Encoding = Identity(in_dim=3),
-            base_mlp_num_layers: int = 8,
-            base_mlp_layer_width: int = 256,
-            head_mlp_num_layers: int = 2,
-            head_mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
-            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-            use_integrated_encoding: bool = False,
-            spatial_distortion: Optional[SpatialDistortion] = None,
+        self,
+        position_encoding: Encoding = Identity(in_dim=3),
+        direction_encoding: Encoding = Identity(in_dim=3),
+        base_mlp_num_layers: int = 8,
+        base_mlp_layer_width: int = 256,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+        use_integrated_encoding: bool = False,
+        spatial_distortion: Optional[SpatialDistortion] = None,
     ) -> None:
         super().__init__()
         self.position_encoding = position_encoding
@@ -161,7 +170,7 @@ class TCNNNeRFField(Field):
                 n_layers=base_mlp_num_layers,
                 layer_width=base_mlp_layer_width,
                 skip_connections=skip_connections,
-                out_activation='ReLU'
+                out_activation="ReLU",
             )
         )
 
@@ -171,7 +180,7 @@ class TCNNNeRFField(Field):
                 n_output_dims=head_mlp_layer_width,
                 n_layers=head_mlp_num_layers,
                 layer_width=head_mlp_layer_width,
-                out_activation='ReLU'
+                out_activation="ReLU",
             )
         )
 
@@ -196,7 +205,7 @@ class TCNNNeRFField(Field):
         return density, base_mlp_out
 
     def get_outputs(
-            self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+        self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:

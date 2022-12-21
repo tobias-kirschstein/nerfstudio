@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 import torch
-from torch.nn import Parameter
+from torch import nn
+from torch.nn import Parameter, init
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -37,7 +38,6 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
@@ -53,12 +53,14 @@ class MipNeRFModelConfig(ModelConfig):
     """Number of samples in fine field evaluation"""
 
     n_freq_pos: int = 16
+    n_freq_dir: int = 4
 
     n_layers: int = 8
     hidden_dim: int = 256
 
     n_timesteps: int = 1
-    latent_dim_time: int = 0
+    n_cameras: int = 1
+    camera_code_dim: int = 0
 
 
 class MipNerfModel(Model):
@@ -82,6 +84,15 @@ class MipNerfModel(Model):
         """Set the fields and modules"""
         super().populate_modules()
 
+        head_extra_dim = 0
+
+        # camera embeddings to model the difference of exposure, color, etc. between cameras
+        self.camera_embeddings = None
+        if self.config.camera_code_dim > 0:
+            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
+            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
+            head_extra_dim += self.config.camera_code_dim
+
         # setting up fields
         position_encoding = NeRFEncoding(
             in_dim=3,
@@ -91,11 +102,18 @@ class MipNerfModel(Model):
             include_input=True,
         )
         direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
+            in_dim=3,
+            num_frequencies=self.config.n_freq_dir,
+            min_freq_exp=0.0,
+            max_freq_exp=self.config.n_freq_dir,
+            include_input=True,
         )
 
         self.field = NeRFField(
-            position_encoding=position_encoding, direction_encoding=direction_encoding, use_integrated_encoding=True
+            position_encoding=position_encoding,
+            direction_encoding=direction_encoding,
+            use_integrated_encoding=True,
+            head_extra_dim=head_extra_dim,
         )
 
         # samplers
@@ -131,6 +149,11 @@ class MipNerfModel(Model):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
         param_groups["fields"] = list(self.field.parameters())
+
+        param_groups["embeddings"] = []
+        if self.camera_embeddings is not None:
+            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
+
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -142,7 +165,7 @@ class MipNerfModel(Model):
         ray_samples_uniform = self.sampler_uniform(ray_bundle)
 
         # First pass:
-        field_outputs_coarse = self.field.forward(ray_samples_uniform)
+        field_outputs_coarse = self.field.forward(ray_samples_uniform, camera_embeddings=self.camera_embeddings)
         weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
         rgb_coarse = self.renderer_rgb(
             rgb=field_outputs_coarse[FieldHeadNames.RGB],
@@ -155,7 +178,7 @@ class MipNerfModel(Model):
         ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
 
         # Second pass:
-        field_outputs_fine = self.field.forward(ray_samples_pdf)
+        field_outputs_fine = self.field.forward(ray_samples_pdf, camera_embeddings=self.camera_embeddings)
         weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
         rgb_fine = self.renderer_rgb(
             rgb=field_outputs_fine[FieldHeadNames.RGB],
