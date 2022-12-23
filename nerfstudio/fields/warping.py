@@ -1,5 +1,9 @@
 from typing import Optional, Iterable
 
+from nerfstudio.field_components import MLP
+from nerfstudio.field_components.encodings import WindowedNeRFEncoding
+from nerfstudio.fields.hypernerf_field import SE3WarpingField
+
 try:
     import pytorch3d
     import pytorch3d.transforms
@@ -113,26 +117,61 @@ def from_homogenous(v) -> torch.Tensor:
 
 
 class DeformationField(nn.Module):
-    def __init__(self, n_hidden_layers: int, hidden_dim: int, latent_dim_time: int):
+    def __init__(self, n_hidden_layers: int, hidden_dim: int, latent_dim_time: int, n_freq_pos=7):
         super(DeformationField, self).__init__()
-        self.deformation_network = tcnn.Network(
-            n_input_dims=3 + latent_dim_time,
-            n_output_dims=3,
-            network_config={
-                "otype": "FullyFusedMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": hidden_dim,
-                "n_hidden_layers": n_hidden_layers,
-            },
-        )
-        nn.init.uniform_(self.deformation_network.params, a=-1e-1, b=1e-1)  #1e-5 is too small for all layers. Needs to be at least 1e-1 (but then also sometimes creates inf)
-        # nn.init.normal_(self.deformation_network.params, 0, 1e-2)  # maybe use uniform initialization
+        # self.deformation_network = tcnn.Network(
+        #     n_input_dims=3 + latent_dim_time,
+        #     n_output_dims=3,
+        #     network_config={
+        #         "otype": "FullyFusedMLP",
+        #         "activation": "ReLU",
+        #         "output_activation": "None",
+        #         "n_neurons": hidden_dim,
+        #         "n_hidden_layers": n_hidden_layers,
+        #     },
+        # )
 
-    def forward(self, points: torch.Tensor, latent_codes: torch.Tensor) -> torch.Tensor:
-        network_input = torch.concat([points, latent_codes], dim=1)  # [B, 3 + D]
-        warped_points = self.deformation_network.forward(network_input).to(points)
-        # TODO: Catch nans?
+        self.position_encoding = WindowedNeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+        )
+        # self.deformation_network = MLP(self.position_encoding.get_out_dim() + latent_dim_time,
+        #                                n_hidden_layers,
+        #                                hidden_dim,
+        #                                3,
+        #                                activation=nn.ReLU())
+        self.deformation_network = SE3WarpingField(warp_code_dim=latent_dim_time)
+
+    def _backward_hook(self, module, grad_input, grad_output):
+        # Important if one wants to set a breakpoint inside the backward hook
+        try:
+            import pydevd
+            pydevd.settrace(suspend=False, trace_only_current_thread=True)
+        except ModuleNotFoundError:
+            pass
+
+        return grad_input
+
+    def _tensor_hook(self, g):
+        try:
+            import pydevd
+            pydevd.settrace(suspend=False, trace_only_current_thread=True)
+        except ModuleNotFoundError:
+            pass
+
+        print(f"Tensor hook: {g}")
+
+        # Downscale gradients
+        g = 0.1 * g
+
+        return g
+
+    def forward(self, points: torch.Tensor, latent_codes: torch.Tensor, windows_param: Optional[float] = None) -> torch.Tensor:
+
+        # encoded_xyz = self.position_encoding(points, windows_param=windows_param)  # [B, F]
+
+        # network_input = torch.concat([encoded_xyz, latent_codes], dim=1)  # [B, F + D]
+        warped_points = self.deformation_network(points, warp_code=latent_codes, windows_param=windows_param).to(points)
+
         return warped_points
 
 

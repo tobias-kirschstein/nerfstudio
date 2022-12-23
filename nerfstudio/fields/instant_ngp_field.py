@@ -105,8 +105,8 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
         # TODO: set this properly based on the aabb
-        # per_level_scale = 1.4472692012786865
-        per_level_scale = 2
+        per_level_scale = 1.4472692012786865
+        # per_level_scale = 2
 
         if disable_view_dependency:
             self.direction_encoding = None

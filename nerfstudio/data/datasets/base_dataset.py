@@ -60,11 +60,21 @@ class InputDataset(Dataset):
         """
         image_filename = self._dataparser_outputs.image_filenames[image_idx]
         pil_image = Image.open(image_filename)
+
         if self.scale_factor != 1.0:
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
             pil_image = pil_image.resize(newsize, resample=Image.BILINEAR)
         image = np.array(pil_image, dtype="uint8")  # shape is (h, w, 3 or 4)
+
+        if self._dataparser_outputs.alpha_channel_filenames is not None:
+            alpha_channel_filename = self._dataparser_outputs.alpha_channel_filenames[image_idx]
+            pil_alpha_image = Image.open(alpha_channel_filename)
+            pil_alpha_image = pil_alpha_image.resize(pil_image.size, resample=Image.BILINEAR)
+
+            alpha_image = np.asarray(pil_alpha_image, dtype="uint8")
+            image = np.concatenate([image, alpha_image[..., None]], axis=-1)
+
         assert len(image.shape) == 3
         assert image.dtype == np.uint8
         assert image.shape[2] in [3, 4], f"Image shape of {image.shape} is in correct."
