@@ -57,8 +57,11 @@ class SE3WarpingField(nn.Module):
         mlp_num_layers: int = 6,
         mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
+        warp_direction: bool = True,
     ) -> None:
         super().__init__()
+        self.warp_direction = warp_direction
+
         self.position_encoding = WindowedNeRFEncoding(
             in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
         )
@@ -106,23 +109,28 @@ class SE3WarpingField(nn.Module):
         rots = transforms[:, :3, :3]
 
         p = positions.reshape(-1, 3)
-        d = directions.reshape(-1, 3)
 
         warped_p = from_homogenous((transforms @ to_homogenous(p).unsqueeze(-1)).squeeze(-1))
         warped_p = warped_p.to(positions.dtype)
 
-        warped_d = (rots @ d.unsqueeze(-1)).squeeze(-1)
-        warped_d = warped_d.to(directions.dtype)
-
         idx_nan = warped_p.isnan()
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
-        idx_nan = warped_d.isnan()
-        warped_d[idx_nan] = d[idx_nan]  # if deformation is NaN, just use original point
-
         # Reshape to shape of input positions tensor
         warped_p = warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
-        warped_d = warped_d.reshape(*directions.shape[: len(directions.shape) - 1], 3)
+
+        if self.warp_direction:
+            d = directions.reshape(-1, 3)
+
+            warped_d = (rots @ d.unsqueeze(-1)).squeeze(-1)
+            warped_d = warped_d.to(directions.dtype)
+
+            idx_nan = warped_d.isnan()
+            warped_d[idx_nan] = d[idx_nan]  # if deformation is NaN, just use original point
+
+            warped_d = warped_d.reshape(*directions.shape[: len(directions.shape) - 1], 3)
+        else:
+            warped_d = directions
         return warped_p, warped_d
 
 
