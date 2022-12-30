@@ -69,6 +69,7 @@ class TCNNInstantNGPField(Field):
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
+            per_level_hashgrid_scale: float = 1.4472692012786865,
             use_spherical_harmonics: bool = True,
             disable_view_dependency: bool = False,
             latent_dim_time: int = 0,
@@ -105,7 +106,7 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
         # TODO: set this properly based on the aabb
-        per_level_scale = 1.4472692012786865
+        # per_level_scale = 1.4472692012786865
         # per_level_scale = 2
 
         if disable_view_dependency:
@@ -140,7 +141,7 @@ class TCNNInstantNGPField(Field):
                 "n_features_per_level": 2,
                 "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": 16,
-                "per_level_scale": per_level_scale,
+                "per_level_scale": per_level_hashgrid_scale,
             }
 
         self.deformation_network = None
@@ -231,12 +232,6 @@ class TCNNInstantNGPField(Field):
                     ray_samples: RaySamples,
                     window_deform: Optional[float] = None):
 
-        if window_deform is None:
-            window_deform = self._previous_window_deform
-        else:
-            # Cache window_deform
-            self._previous_window_deform = window_deform
-
         densities = []
         base_mlp_outs = []
 
@@ -298,6 +293,12 @@ class TCNNInstantNGPField(Field):
                             #                                            time_embeddings[idx_timesteps_deform])
 
                             # Deformation network has to learn identity in beginning
+
+                            if window_deform is None:
+                                window_deform = self._previous_window_deform
+                            else:
+                                # Cache window_deform
+                                self._previous_window_deform = window_deform
 
                             deformed_points = self.deformation_network(positions_to_deform,
                                                                        warp_code=time_embeddings[idx_timesteps_deform],

@@ -380,6 +380,7 @@ class VolumetricSampler(Sampler):
     occupancy_grid: Occupancy grid to sample from.
     density_fn: Function that evaluates density at a given point.
     scene_aabb: Axis-aligned bounding box of the scene, should be set to None if the scene is unbounded.
+    view_frustum_culling: Filters out points that are seen by less than the specified number of cameras
     """
 
     def __init__(
@@ -387,7 +388,8 @@ class VolumetricSampler(Sampler):
             occupancy_grid: Optional[OccupancyGrid] = None,
             density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
             scene_aabb: Optional[TensorType[2, 3]] = None,
-            camera_frustums: Optional[List[Frustum]] = None
+            camera_frustums: Optional[List[Frustum]] = None,
+            view_frustum_culling: Optional[int] = None
     ) -> None:
 
         super().__init__()
@@ -395,6 +397,7 @@ class VolumetricSampler(Sampler):
         self.density_fn = density_fn
         self.occupancy_grid = occupancy_grid
         self.camera_frustums = camera_frustums
+        self.view_frustum_culling = view_frustum_culling
         if self.scene_aabb is not None:
             self.scene_aabb = self.scene_aabb.to("cuda").flatten()
         print(self.scene_aabb)
@@ -505,7 +508,7 @@ class VolumetricSampler(Sampler):
         else:
             valid_timesteps = None
 
-        if self.camera_frustums is not None and not self.training and num_samples > 0:
+        if self.camera_frustums is not None and self.view_frustum_culling is not None and not self.training and num_samples > 0:
             # View Frustum Culling during inference:
             # Only keep ray samples that are seen by at least one train view
             # This is enabled automatically as soon as the dataparser provides the output for the corresponding
@@ -516,7 +519,8 @@ class VolumetricSampler(Sampler):
             # TODO: This is a Python loop, could be sped up more if done in PyTorch as well
             visibility_masks = [camera_frustum.contains_points(points) for camera_frustum in
                                 self.camera_frustums]
-            visibility_mask = torch.stack(visibility_masks).any(dim=0)
+            # visibility_mask = torch.stack(visibility_masks).any(dim=0)
+            visibility_mask = torch.stack(visibility_masks).sum(dim=0) >= self.view_frustum_culling
 
             if visibility_mask.sum() == 0:
                 # Create a single fake sample that starts at 1 and ends at 1

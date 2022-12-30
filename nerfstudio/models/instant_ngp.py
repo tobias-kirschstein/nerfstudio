@@ -79,6 +79,7 @@ class InstantNGPModelConfig(ModelConfig):
 
     n_hashgrid_levels: int = 16
     log2_hashmap_size: int = 19
+    per_level_hashgrid_scale: float = 1.4472692012786865
 
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
@@ -106,6 +107,7 @@ class InstantNGPModelConfig(ModelConfig):
     early_stop_eps: float = 1e-4
     alpha_thre: float = 1e-2
     density_threshold: Optional[float] = None  # if set, densities below the value will be ignored during inference
+    view_frustum_culling: Optional[int] = None  # Filters out points that are seen by less than the specified number of cameras
 
 
 class NGPModel(Model):
@@ -138,6 +140,7 @@ class NGPModel(Model):
             appearance_embedding_dim=self.config.appearance_embedding_dim,
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,
+            per_level_hashgrid_scale=self.config.per_level_hashgrid_scale,
             use_spherical_harmonics=self.config.use_spherical_harmonics,
             latent_dim_time=self.config.latent_dim_time,
             n_timesteps=self.config.n_timesteps,
@@ -171,7 +174,8 @@ class NGPModel(Model):
             scene_aabb=vol_sampler_aabb,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
-            # camera_frustums=self.camera_frustums
+            # camera_frustums=self.camera_frustums,
+            # view_frustum_culling=self.config.view_frustum_culling
         )
 
         vol_sampler_aabb_eval = None
@@ -185,6 +189,7 @@ class NGPModel(Model):
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
             camera_frustums=self.camera_frustums,
+            view_frustum_culling=self.config.view_frustum_culling
         )
         self.sampler = self.sampler_train
 
@@ -293,8 +298,11 @@ class NGPModel(Model):
         param_groups["fields"].extend(self.field.mlp_head.parameters())
 
         param_groups["deformation_field"] = []
-        param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
-        param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
+        if self.field.deformation_network is not None:
+            param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
+
+        if self.field.time_embedding is not None:
+            param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
 
         # parameters = list(self.field.get_head_parameters())
         # parameters.extend(self.field.get_base_parameters())
