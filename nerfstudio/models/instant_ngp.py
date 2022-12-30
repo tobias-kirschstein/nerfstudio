@@ -99,7 +99,8 @@ class InstantNGPModelConfig(ModelConfig):
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
-    timestep_canonical: Optional[int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
+    timestep_canonical: Optional[
+        int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -107,7 +108,9 @@ class InstantNGPModelConfig(ModelConfig):
     early_stop_eps: float = 1e-4
     alpha_thre: float = 1e-2
     density_threshold: Optional[float] = None  # if set, densities below the value will be ignored during inference
-    view_frustum_culling: Optional[int] = None  # Filters out points that are seen by less than the specified number of cameras
+    view_frustum_culling: Optional[
+        int] = None  # Filters out points that are seen by less than the specified number of cameras
+    use_view_frustum_culling_for_train: bool = False  # Whether to also filter points during training (slow)
 
 
 class NGPModel(Model):
@@ -174,8 +177,8 @@ class NGPModel(Model):
             scene_aabb=vol_sampler_aabb,
             occupancy_grid=self.occupancy_grid,
             density_fn=self.field.density_fn,
-            # camera_frustums=self.camera_frustums,
-            # view_frustum_culling=self.config.view_frustum_culling
+            camera_frustums=self.camera_frustums if self.config.use_view_frustum_culling_for_train else None,
+            view_frustum_culling=self.config.view_frustum_culling if self.config.use_view_frustum_culling_for_train else None
         )
 
         vol_sampler_aabb_eval = None
@@ -435,7 +438,7 @@ class NGPModel(Model):
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
 
-        beta_loss =self.get_beta_loss(outputs["accumulation"])
+        beta_loss = self.get_beta_loss(outputs["accumulation"])
         if beta_loss is not None:
             loss_dict["beta_loss"] = beta_loss
 

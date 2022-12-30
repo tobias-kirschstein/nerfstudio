@@ -159,6 +159,7 @@ class TCNNInstantNGPField(Field):
                     warp_code_dim=latent_dim_time,
                     mlp_num_layers=n_layers_deformation_field,
                     mlp_layer_width=hidden_dim_deformation_field,
+                    warp_direction=False,
                 )
                 self._previous_window_deform = None
 
@@ -300,9 +301,10 @@ class TCNNInstantNGPField(Field):
                                 # Cache window_deform
                                 self._previous_window_deform = window_deform
 
-                            deformed_points = self.deformation_network(positions_to_deform,
-                                                                       warp_code=time_embeddings[idx_timesteps_deform],
-                                                                       windows_param=window_deform)
+                            deformed_points, _ = self.deformation_network(positions_to_deform,
+                                                                          warp_code=time_embeddings[
+                                                                              idx_timesteps_deform],
+                                                                          windows_param=window_deform)
 
                             positions_flat[idx_timesteps_deform] = deformed_points
                             # positions_flat[idx_timesteps_deform] = positions_to_deform
@@ -407,7 +409,6 @@ class TCNNInstantNGPField(Field):
             # Ensure that only canonical space rays accumulate gradients
             assert self.timestep_canonical is not None
             idx_timesteps_deform = ray_samples.timesteps.squeeze(-1) != self.timestep_canonical
-
 
             rgb_canonical = self.mlp_head(h[~idx_timesteps_deform])
 
