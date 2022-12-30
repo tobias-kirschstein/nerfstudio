@@ -227,7 +227,7 @@ class DataManager(nn.Module):
         raise NotImplementedError
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks to be used during training."""
         return []
@@ -290,6 +290,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
 
     n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
     n_timesteps_warmup: int = -1  # How many keyframes will be used during warmup
+    seed: Optional[int] = None  # Seed for dataloader workers
 
 
 class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
@@ -310,13 +311,13 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     eval_dataset: InputDataset
 
     def __init__(
-        self,
-        config: VanillaDataManagerConfig,
-        device: Union[torch.device, str] = "cpu",
-        test_mode: Literal["test", "val", "inference"] = "val",
-        world_size: int = 1,
-        local_rank: int = 0,
-        **kwargs,  # pylint: disable=unused-argument
+            self,
+            config: VanillaDataManagerConfig,
+            device: Union[torch.device, str] = "cpu",
+            test_mode: Literal["test", "val", "inference"] = "val",
+            world_size: int = 1,
+            local_rank: int = 0,
+            **kwargs,  # pylint: disable=unused-argument
     ):
         self.config = config
         self.device = device
@@ -357,6 +358,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_workers=self.world_size * 4,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
+            seed=self.config.seed
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
         self.train_pixel_sampler = PixelSampler(self.config.train_num_rays_per_batch,
@@ -374,6 +376,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             image_indices=self.config.train_image_indices,
             device=self.device,
             num_workers=self.world_size * 4,
+            seed=self.config.seed
         )
 
     def setup_eval(self):
@@ -388,6 +391,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_workers=self.world_size * 4,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
+            seed=self.config.seed
         )
         self.iter_eval_image_dataloader = iter(self.eval_image_dataloader)
         self.eval_pixel_sampler = PixelSampler(self.config.eval_num_rays_per_batch,
@@ -401,12 +405,14 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             input_dataset=self.eval_dataset,
             device=self.device,
             num_workers=self.world_size * 4,
+            seed=self.config.seed
         )
         self.eval_dataloader = RandIndicesEvalDataloader(
             input_dataset=self.eval_dataset,
             image_indices=self.config.eval_image_indices,
             device=self.device,
             num_workers=self.world_size * 4,
+            seed=self.config.seed
         )
 
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:

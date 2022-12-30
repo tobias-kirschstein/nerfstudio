@@ -23,6 +23,7 @@ import random
 from abc import abstractmethod
 from typing import Dict, Optional, Tuple, Union, List
 
+import numpy as np
 import torch
 from rich.progress import Console, track
 from torch.utils.data import Dataset
@@ -35,6 +36,12 @@ from nerfstudio.data.utils.nerfstudio_collate import nerfstudio_collate
 from nerfstudio.utils.misc import get_dict_to_torch
 
 CONSOLE = Console(width=120)
+
+
+def _seed_worker(seed: int):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
 
 
 class CacheDataloader(DataLoader):
@@ -50,16 +57,19 @@ class CacheDataloader(DataLoader):
     """
 
     def __init__(
-        self,
-        dataset: Dataset,
-        num_images_to_sample_from: int = -1,
-        num_times_to_repeat_images: int = -1,
-        device: Union[torch.device, str] = "cpu",
-        collate_fn=nerfstudio_collate,
-        **kwargs,
+            self,
+            dataset: Dataset,
+            num_images_to_sample_from: int = -1,
+            num_times_to_repeat_images: int = -1,
+            device: Union[torch.device, str] = "cpu",
+            collate_fn=nerfstudio_collate,
+            seed: Optional[int] = None,
+            **kwargs,
     ):
         self.dataset = dataset
-        super().__init__(dataset=dataset, **kwargs)  # This will set self.dataset
+        super().__init__(dataset=dataset,
+                         worker_init_fn=None if seed is None else lambda worker_id: _seed_worker(seed + worker_id),
+                         **kwargs)  # This will set self.dataset
         self.num_times_to_repeat_images = num_times_to_repeat_images
         self.cache_all_images = (num_images_to_sample_from == -1) or (num_images_to_sample_from >= len(self.dataset))
         self.num_images_to_sample_from = len(self.dataset) if self.cache_all_images else num_images_to_sample_from
@@ -171,13 +181,15 @@ class EvalDataloader(DataLoader):
             self,
             input_dataset: InputDataset,
             device: Union[torch.device, str] = "cpu",
+            seed: Optional[int] = None,
             **kwargs,
     ):
         self.input_dataset = input_dataset
         self.cameras = input_dataset.cameras.to(device)
         self.device = device
         self.kwargs = kwargs
-        super().__init__(dataset=input_dataset)
+        super().__init__(dataset=input_dataset,
+                         worker_init_fn=None if seed is None else lambda worker_id: _seed_worker(seed + worker_id))
 
     @abstractmethod
     def __iter__(self):
@@ -228,9 +240,10 @@ class FixedIndicesEvalDataloader(EvalDataloader):
             input_dataset: InputDataset,
             image_indices: Optional[Tuple[int]] = None,
             device: Union[torch.device, str] = "cpu",
+            seed: Optional[int] = None,
             **kwargs,
     ):
-        super().__init__(input_dataset, device, **kwargs)
+        super().__init__(input_dataset, device, seed=seed, **kwargs)
         if image_indices is None:
             self.image_indices = list(range(len(input_dataset)))
         else:
@@ -262,9 +275,10 @@ class RandIndicesEvalDataloader(EvalDataloader):
             self,
             input_dataset: InputDataset,
             device: Union[torch.device, str] = "cpu",
+            seed: Optional[int] = None,
             **kwargs,
     ):
-        super().__init__(input_dataset, device, **kwargs)
+        super().__init__(input_dataset, device, seed=seed, **kwargs)
         self.count = 0
 
     def __iter__(self):

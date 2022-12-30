@@ -142,7 +142,12 @@ class Optimizers:
             grad_scaler: GradScaler to use
         """
         for _, optimizer in self.optimizers.items():
-            grad_scaler.step(optimizer)
+            try:
+                grad_scaler.step(optimizer)
+            except AssertionError:
+                # It can happen that an optimizer has no param groups with gradients.
+                # grad_scaler will raise an AssertionError "no inf checks performed" in this case
+                pass
 
     def optimizer_step_all(self):
         """Run step for all optimizers."""

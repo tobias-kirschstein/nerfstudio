@@ -219,7 +219,7 @@ class NGPModel(Model):
 
         # renderers
         self.renderer_rgb_train = RGBRenderer(background_color=background_color)
-        self.renderer_rgb_eval = RGBRenderer(background_color=colors.BLACK)
+        self.renderer_rgb_eval = RGBRenderer(background_color=background_color)
         self.renderer_rgb = self.renderer_rgb_train
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer(method="expected")
