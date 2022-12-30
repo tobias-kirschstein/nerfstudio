@@ -57,8 +57,11 @@ class SE3WarpingField(nn.Module):
         mlp_num_layers: int = 6,
         mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
+        warp_direction: bool = True,
     ) -> None:
         super().__init__()
+        self.warp_direction = warp_direction
+
         self.position_encoding = WindowedNeRFEncoding(
             in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
         )
@@ -89,7 +92,7 @@ class SE3WarpingField(nn.Module):
         nn.init.zeros_(self.mlp_r.layers[-1].bias)
         nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
-    def forward(self, positions, warp_code=None, windows_param=None):
+    def forward(self, positions, directions, warp_code=None, windows_param=None):
         if warp_code is None:
             return None
 
@@ -102,18 +105,33 @@ class SE3WarpingField(nn.Module):
         screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
         screw_axis = screw_axis.to(positions.dtype)
         transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
-        transformsT = transforms.permute(0, 2, 1)
+        transforms = transforms.permute(0, 2, 1)
+        rots = transforms[:, :3, :3]
 
         p = positions.reshape(-1, 3)
 
-        warped_p = from_homogenous((transformsT @ to_homogenous(p).unsqueeze(-1)).squeeze(-1))
+        warped_p = from_homogenous((transforms @ to_homogenous(p).unsqueeze(-1)).squeeze(-1))
         warped_p = warped_p.to(positions.dtype)
 
         idx_nan = warped_p.isnan()
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
         # Reshape to shape of input positions tensor
-        return warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
+        warped_p = warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
+
+        if self.warp_direction:
+            d = directions.reshape(-1, 3)
+
+            warped_d = (rots @ d.unsqueeze(-1)).squeeze(-1)
+            warped_d = warped_d.to(directions.dtype)
+
+            idx_nan = warped_d.isnan()
+            warped_d[idx_nan] = d[idx_nan]  # if deformation is NaN, just use original point
+
+            warped_d = warped_d.reshape(*directions.shape[: len(directions.shape) - 1], 3)
+        else:
+            warped_d = directions
+        return warped_p, warped_d
 
 
 class DeformationField(nn.Module):
@@ -284,6 +302,8 @@ class HyperNeRFField(Field):
         #         positions = self.spatial_distortion(positions)
         #     encoded_xyz = self.position_encoding(positions)
 
+        warped_directions = None
+
         if self.use_integrated_encoding:
             gaussian_samples = ray_samples.frustums.get_gaussian_blob()
             if self.spatial_distortion is not None:
@@ -312,6 +332,7 @@ class HyperNeRFField(Field):
         else:
 
             positions = ray_samples.frustums.get_positions()
+            directions = ray_samples.frustums.directions
             if self.spatial_distortion is not None:
                 positions = self.spatial_distortion(positions)
 
@@ -324,31 +345,36 @@ class HyperNeRFField(Field):
                 base_inputs = []
 
             if warp_field is not None:
-                warped_positions = warp_field(positions, warp_code, window_alpha)
+                warped_positions, warped_directions = warp_field(positions, directions, warp_code, window_alpha)
 
                 encoded_xyz = self.position_encoding(warped_positions)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
                 w = slice_field(positions, warp_code)
 
+                assert self.slicing_encoding is not None
                 encoded_w = self.slicing_encoding(w, windows_param=window_beta)
                 base_inputs.append(encoded_w)
 
         base_inputs = torch.concat(base_inputs, dim=2)
         base_mlp_out = self.mlp_base(base_inputs)
         density = self.field_output_density(base_mlp_out)
-        return density, base_mlp_out
+        return density, base_mlp_out, warped_directions
 
     def get_outputs(
         self,
         ray_samples: RaySamples,
+        warped_direction: Optional[TensorType] = None,
         density_embedding: Optional[TensorType] = None,
         appearance_code: Optional[torch.Tensor] = None,
         camera_code: Optional[torch.Tensor] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
-            encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
+            if warped_direction is not None:
+                encoded_dir = self.direction_encoding(warped_direction)
+            else:
+                encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
             head_inputs = [encoded_dir, density_embedding]
 
             if appearance_code is not None:
@@ -400,16 +426,20 @@ class HyperNeRFField(Field):
 
         if compute_normals:
             with torch.enable_grad():
-                density, density_embedding = self.get_density(
+                density, density_embedding, warped_directions = self.get_density(
                     ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta
                 )
         else:
-            density, density_embedding = self.get_density(
+            density, density_embedding, warped_directions = self.get_density(
                 ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta
             )
 
         field_outputs = self.get_outputs(
-            ray_samples, density_embedding=density_embedding, appearance_code=appearance_code, camera_code=camera_code
+            ray_samples,
+            warped_directions,
+            density_embedding=density_embedding,
+            appearance_code=appearance_code,
+            camera_code=camera_code,
         )
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 

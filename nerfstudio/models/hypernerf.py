@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Type
 
 import torch
 from torch import nn
-from torch.nn import init, Parameter
+from torch.nn import Parameter, init
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -79,6 +79,7 @@ class HyperNeRFModelConfig(ModelConfig):
 
     use_se3_warping: bool = True
     n_freq_pos_warping: int = 7
+    warp_direction: bool = True
     window_alpha_begin: int = 0  # the number of steps window_alpha is set to 0
     window_alpha_end: int = 80000  # the number of steps when window_alpha reaches its maximum
 
@@ -99,9 +100,9 @@ class HyperNeRFModel(Model):
     config: HyperNeRFModelConfig
 
     def __init__(
-            self,
-            config: HyperNeRFModelConfig,
-            **kwargs,
+        self,
+        config: HyperNeRFModelConfig,
+        **kwargs,
     ) -> None:
         self.field_coarse = None
         self.field_fine = None
@@ -149,6 +150,7 @@ class HyperNeRFModel(Model):
                 warp_code_dim=self.config.warp_code_dim,
                 mlp_num_layers=6,
                 mlp_layer_width=128,
+                warp_direction=self.config.warp_direction,
             )
             if self.config.window_alpha_end >= 1:
                 assert self.config.window_alpha_end > self.config.window_alpha_begin
@@ -227,7 +229,7 @@ class HyperNeRFModel(Model):
         self.lpips = LearnedPerceptualImagePatchSimilarity()
 
     def get_training_callbacks(
-            self, training_callback_attributes: TrainingCallbackAttributes
+        self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         def update_window_param(sched: GenericScheduler, name: str, step: int):
             sched.update(step)
@@ -407,7 +409,7 @@ class HyperNeRFModel(Model):
         return loss_dict
 
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
 
         self._apply_background_network(batch, outputs, overwrite_outputs=True)
@@ -489,7 +491,7 @@ class HyperNeRFModel(Model):
         return metrics_dict, images_dict
 
     def _apply_background_network(
-            self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
+        self, batch: Dict[str, torch.Tensor], outputs: Dict[str, torch.Tensor], overwrite_outputs: bool = False
     ) -> torch.Tensor:
 
         if self.config.use_backgrounds:
