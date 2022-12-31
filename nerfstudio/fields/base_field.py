@@ -17,7 +17,7 @@ Base class for the graphs.
 """
 
 from abc import abstractmethod
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Callable
 
 import torch
 from torch import nn
@@ -30,10 +30,12 @@ from nerfstudio.field_components.field_heads import FieldHeadNames
 class Field(nn.Module):
     """Base class for fields."""
 
-    def __init__(self) -> None:
+    def __init__(self,
+                 density_fn_ray_samples_transform: Callable[[RaySamples], RaySamples] = lambda x: x) -> None:
         super().__init__()
         self._sample_locations = None
         self._density_before_activation = None
+        self._density_fn_ray_samples_transform = density_fn_ray_samples_transform
 
     def density_fn(self, positions: TensorType["bs":..., 3]) -> TensorType["bs":..., 1]:
         """Returns only the density. Used primarily with the density grid.
@@ -52,6 +54,7 @@ class Field(nn.Module):
             ),
         )
 
+        ray_samples = self._density_fn_ray_samples_transform(ray_samples)
         density, _ = self.get_density(ray_samples)
         return density
 
@@ -72,7 +75,7 @@ class Field(nn.Module):
         assert self._sample_locations is not None, "Sample locations must be set before calling get_normals."
         assert self._density_before_activation is not None, "Density must be set before calling get_normals."
         assert (
-            self._sample_locations.shape[:-1] == self._density_before_activation.shape[:-1]
+                self._sample_locations.shape[:-1] == self._density_before_activation.shape[:-1]
         ), "Sample locations and density must have the same shape besides the last dimension."
 
         self._density_before_activation.backward(
@@ -83,7 +86,7 @@ class Field(nn.Module):
 
     @abstractmethod
     def get_outputs(
-        self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
+            self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None
     ) -> Dict[FieldHeadNames, TensorType]:
         """Computes and returns the colors. Returns output field values.
 
@@ -93,7 +96,7 @@ class Field(nn.Module):
         """
 
     def forward(
-        self, ray_samples: RaySamples, compute_normals: bool = False, camera_embeddings: Optional[TensorType] = None
+            self, ray_samples: RaySamples, compute_normals: bool = False, camera_embeddings: Optional[TensorType] = None
     ):
         """Evaluates the field at points along the ray.
 

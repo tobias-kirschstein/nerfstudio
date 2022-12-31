@@ -35,6 +35,7 @@ from aiortc import (
     RTCSessionDescription,
 )
 from cryptography.utils import CryptographyDeprecationWarning
+from nerfstudio.utils.colormaps import apply_offset_colormap
 from rich.console import Console
 
 from nerfstudio.cameras.cameras import Cameras
@@ -185,8 +186,8 @@ class CheckThread(threading.Thread):
             if data is not None:
                 camera_object = data["object"]
                 if self.state.prev_camera_matrix is None or (
-                    not np.allclose(camera_object["matrix"], self.state.prev_camera_matrix)
-                    and not self.state.prev_moving
+                        not np.allclose(camera_object["matrix"], self.state.prev_camera_matrix)
+                        and not self.state.prev_moving
                 ):
                     self.state.check_interrupt_vis = True
                     self.state.prev_moving = True
@@ -473,15 +474,21 @@ class ViewerState:
         if self.output_list:
             reformatted_output = self._process_invalid_output(self.prev_output_type)
 
+        if reformatted_output == 'deformation':
+            selected_output = outputs[reformatted_output]
+            selected_output *= 4  # Make colors more pronounced
+            selected_output = apply_offset_colormap(selected_output)
+            return selected_output
+
         # default for rgb images
         if self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].shape[-1] == 3:
             return outputs[reformatted_output]
 
         # rendering depth outputs
         if self.prev_colormap_type == ColormapTypes.DEPTH or (
-            self.prev_colormap_type == ColormapTypes.DEFAULT
-            and outputs[reformatted_output].dtype == torch.float
-            and (torch.max(outputs[reformatted_output]) - 1.0) > eps  # handle floating point arithmetic
+                self.prev_colormap_type == ColormapTypes.DEFAULT
+                and outputs[reformatted_output].dtype == torch.float
+                and (torch.max(outputs[reformatted_output]) - 1.0) > eps  # handle floating point arithmetic
         ):
             accumulation_str = (
                 OutputTypes.ACCUMULATION
@@ -492,13 +499,13 @@ class ViewerState:
 
         # rendering accumulation outputs
         if self.prev_colormap_type == ColormapTypes.TURBO or (
-            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.float
+                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.float
         ):
             return colormaps.apply_colormap(outputs[reformatted_output])
 
         # rendering semantic outputs
         if self.prev_colormap_type == ColormapTypes.SEMANTIC or (
-            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.int
+                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.int
         ):
             logits = outputs[reformatted_output]
             labels = torch.argmax(torch.nn.functional.softmax(logits, dim=-1), dim=-1)  # type: ignore
@@ -507,7 +514,7 @@ class ViewerState:
 
         # rendering boolean outputs
         if self.prev_colormap_type == ColormapTypes.BOOLEAN or (
-            self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.bool
+                self.prev_colormap_type == ColormapTypes.DEFAULT and outputs[reformatted_output].dtype == torch.bool
         ):
             return colormaps.apply_boolean_colormap(outputs[reformatted_output])
 
@@ -592,9 +599,9 @@ class ViewerState:
             self.prev_colormap_type = ColormapTypes.DEFAULT
             colormap_options = [ColormapTypes.DEFAULT]
             if (
-                outputs[reformatted_output].shape[-1] != 3
-                and outputs[reformatted_output].dtype == torch.float
-                and (torch.max(outputs[reformatted_output]) - 1.0) <= eps  # handle floating point arithmetic
+                    outputs[reformatted_output].shape[-1] != 3
+                    and outputs[reformatted_output].dtype == torch.float
+                    and (torch.max(outputs[reformatted_output]) - 1.0) <= eps  # handle floating point arithmetic
             ):
                 # accumulation can also include depth
                 colormap_options.extend(["depth"])
@@ -625,8 +632,8 @@ class ViewerState:
             self.vis["renderingState/train_eta"].write(GLOBAL_BUFFER["events"].get(EventName.ETA.value, "Starting"))
             # process ratio time spent on vis vs train
             if (
-                EventName.ITER_VIS_TIME.value in GLOBAL_BUFFER["events"]
-                and EventName.ITER_TRAIN_TIME.value in GLOBAL_BUFFER["events"]
+                    EventName.ITER_VIS_TIME.value in GLOBAL_BUFFER["events"]
+                    and EventName.ITER_TRAIN_TIME.value in GLOBAL_BUFFER["events"]
             ):
                 vis_time = GLOBAL_BUFFER["events"][EventName.ITER_VIS_TIME.value]["avg"]
                 train_time = GLOBAL_BUFFER["events"][EventName.ITER_TRAIN_TIME.value]["avg"]

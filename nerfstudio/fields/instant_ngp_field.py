@@ -3,7 +3,7 @@ Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
 from math import ceil, sqrt
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 import torch
 from nerfacc import ContractionType, contract
@@ -85,9 +85,11 @@ class TCNNInstantNGPField(Field):
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
             density_threshold: Optional[float] = None,
-            use_4d_hashing: bool = False
+            use_4d_hashing: bool = False,
+
+            density_fn_ray_samples_transform: Callable[[RaySamples], RaySamples] = lambda x: x
     ) -> None:
-        super().__init__()
+        super().__init__(density_fn_ray_samples_transform=density_fn_ray_samples_transform)
 
         self.aabb = Parameter(aabb, requires_grad=False)
         self.geo_feat_dim = geo_feat_dim
@@ -145,7 +147,7 @@ class TCNNInstantNGPField(Field):
             }
 
         self.deformation_network = None
-        if latent_dim_time > 0 and not use_4d_hashing:
+        if False and latent_dim_time > 0 and not use_4d_hashing:
             if use_deformation_field:
                 # If a deformation field is used, the time embeddings are not fed into the base MLP but into
                 # the deformation network instead
@@ -241,37 +243,40 @@ class TCNNInstantNGPField(Field):
         # To avoid being GPU memory upper-bounded by nerfacc's occupancy grid size, we resort to sequential chunking
         # This should not hurt performance too much as the occupancy grid is only updated periodically
         max_chunk_size = ray_samples.size if self.max_ray_samples_chunk_size == -1 else self.max_ray_samples_chunk_size
+        positions = ray_samples.frustums.get_positions()
+        timesteps = None if ray_samples.timesteps is None else ray_samples.timesteps.squeeze(-1)
+
         for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
-            ray_samples_chunk = ray_samples[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
+            positions_chunk = positions[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
+            positions_flat = positions_chunk.view(-1, 3)
+            # positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
+            positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
-            positions = ray_samples_chunk.frustums.get_positions()
-            positions_flat = positions.view(-1, 3)
-            positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
+            timesteps_chunk = None
+            if timesteps is not None:
+                timesteps_chunk = timesteps[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
 
-            timesteps = None
             if self.time_embedding is not None or self.use_4d_hashing:
-                timesteps = ray_samples_chunk.timesteps
+
                 if timesteps is None:
                     # Assume ray_samples come from occupancy grid.
                     # We only have one grid to model the whole scene accross time.
                     # Hence, we say, only grid cells that are empty for all timesteps should be really empty.
                     # Thus, we sample random timesteps for these ray samples
-                    timesteps = torch.randint(self.n_timesteps, (ray_samples_chunk.size,)).to(positions_flat.device)
-
-                timesteps = timesteps.squeeze(-1)
+                    timesteps_chunk = torch.randint(self.n_timesteps, (len(timesteps_chunk),)).to(positions_flat.device)
 
                 if self.use_4d_hashing:
-                    timesteps = timesteps.float() / self.n_timesteps
-                    base_inputs = [positions_flat, timesteps.unsqueeze(1)]
+                    timesteps_chunk = timesteps_chunk.float() / self.n_timesteps
+                    base_inputs = [positions_flat, timesteps_chunk.unsqueeze(1)]
                 else:
-                    time_embeddings = self.time_embedding(timesteps)
+                    time_embeddings = self.time_embedding(timesteps_chunk)
                     if self.deformation_network is not None:
                         if self.timestep_canonical is not None:
                             # Only deform points for other timesteps than canonical
-                            idx_timesteps_deform = timesteps != self.timestep_canonical
+                            idx_timesteps_deform = timesteps_chunk != self.timestep_canonical
                         else:
                             # All timesteps will be deformed into a latent canonical space
-                            idx_timesteps_deform = torch.ones_like(timesteps).bool()
+                            idx_timesteps_deform = torch.ones_like(timesteps_chunk).bool()
 
                         if idx_timesteps_deform.any():
                             positions_to_deform = positions_flat[idx_timesteps_deform]
@@ -322,12 +327,12 @@ class TCNNInstantNGPField(Field):
                 base_inputs = [positions_flat]
 
             base_inputs = torch.concat(base_inputs, dim=1)
-            if timesteps is not None and self.fix_canonical_space and self.deformation_network is not None:
+            if timesteps_chunk is not None and self.fix_canonical_space:
                 # TODO: Experimental
                 # Only accumulate gradients for mlp_base for canonical space rays.
                 # All other timesteps should only update the deformation field
                 assert self.timestep_canonical is not None
-                idx_timesteps_deform = timesteps != self.timestep_canonical
+                idx_timesteps_deform = timesteps_chunk != self.timestep_canonical
 
                 h_canonical = self.mlp_base(base_inputs[~idx_timesteps_deform])
 
@@ -344,9 +349,9 @@ class TCNNInstantNGPField(Field):
                         h_deform = self.mlp_base(base_inputs[idx_timesteps_deform])
                     h[idx_timesteps_deform] = h_deform
 
-                h = h.view(*ray_samples_chunk.frustums.shape, -1)
+                h = h.view(*positions_chunk.shape[:-1], -1)
             else:
-                h = self.mlp_base(base_inputs).view(*ray_samples_chunk.frustums.shape, -1)
+                h = self.mlp_base(base_inputs).view(*positions_chunk.shape[:-1], -1)
             density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
 
             # Rectifying the density with an exponential is much more stable than a ReLU or
@@ -405,7 +410,7 @@ class TCNNInstantNGPField(Field):
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
 
-        if ray_samples.timesteps is not None and self.fix_canonical_space and self.deformation_network is not None:
+        if ray_samples.timesteps is not None and self.fix_canonical_space:
             # Ensure that only canonical space rays accumulate gradients
             assert self.timestep_canonical is not None
             idx_timesteps_deform = ray_samples.timesteps.squeeze(-1) != self.timestep_canonical

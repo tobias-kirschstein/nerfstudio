@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from math import sqrt, ceil
 from typing import Dict, List, Optional, Tuple, Type
 
 import nerfacc
@@ -14,7 +15,9 @@ import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from nerfacc import ContractionType
-from torch.nn import Parameter
+from nerfstudio.field_components.temporal_distortions import SE3Distortion
+from torch import nn
+from torch.nn import Parameter, init
 from torch.nn.modules.module import T
 from torch_efficient_distloss import flatten_eff_distloss
 from torchmetrics import PeakSignalNoiseRatio
@@ -35,7 +38,7 @@ from nerfstudio.model_components.ray_samplers import VolumetricSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
-    RGBRenderer,
+    RGBRenderer, DeformationRenderer,
 )
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, writer
@@ -160,7 +163,23 @@ class NGPModel(Model):
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
             disable_view_dependency=self.config.disable_view_dependency,
+
+            density_fn_ray_samples_transform=self.warp_ray_samples
         )
+
+        if self.config.use_deformation_field:
+            self.temporal_distortion = SE3Distortion(
+                n_freq_pos=self.config.n_freq_pos_warping,
+                warp_code_dim=self.config.latent_dim_time,
+                mlp_num_layers=self.config.n_layers_deformation_field,
+                mlp_layer_width=self.config.hidden_dim_deformation_field,
+                warp_direction=False)
+
+            self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
+        else:
+            self.temporal_distortion = None
+            self.time_embedding = None
 
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
@@ -223,6 +242,7 @@ class NGPModel(Model):
         self.renderer_rgb = self.renderer_rgb_train
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer(method="expected")
+        self.renderer_deformation = DeformationRenderer()
 
         # losses
         self.rgb_loss = MSELoss()
@@ -301,6 +321,11 @@ class NGPModel(Model):
         param_groups["fields"].extend(self.field.mlp_head.parameters())
 
         param_groups["deformation_field"] = []
+
+        param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
+        param_groups["deformation_field"].extend(self.time_embedding.parameters())
+
+        # TODO: This is from old way of time conditioning
         if self.field.deformation_network is not None:
             param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
 
@@ -321,6 +346,56 @@ class NGPModel(Model):
         # param_groups["field_head"] = field_head_params
         # param_groups["field_base"] = self.field.get_base_parameters()
         return param_groups
+
+    def warp_ray_samples(self, ray_samples: RaySamples) -> RaySamples:
+        # window parameters
+        if self.sched_window_deform is not None:
+            # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
+            # window_deform = self.sched_window_deform.get_value() if self.sched_window_deform is not None else None
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+        else:
+            window_deform = None
+
+        if self.temporal_distortion is not None:
+
+            if ray_samples.timesteps is None:
+                # Assume ray_samples come from occupancy grid.
+                # We only have one grid to model the whole scene accross time.
+                # Hence, we say, only grid cells that are empty for all timesteps should be really empty.
+                # Thus, we sample random timesteps for these ray samples
+                ray_samples.timesteps = torch.randint(self.config.n_timesteps, (ray_samples.size, 1)).to(
+                    ray_samples.frustums.origins.device)
+
+            timesteps = ray_samples.timesteps.squeeze(-1)  # [S]
+
+            if self.config.timestep_canonical is not None:
+                idx_timesteps_deform = timesteps != self.config.timestep_canonical
+                offsets = torch.zeros_like(
+                    ray_samples.frustums.origins)  # Force 0 offset for canonical space to be consistent
+
+                if idx_timesteps_deform.any():
+                    # Compute offsets
+                    time_embeddings = self.time_embedding(timesteps[idx_timesteps_deform])
+                    ray_samples_deform = ray_samples[idx_timesteps_deform]
+                    self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings, windows_param=window_deform)
+
+                    offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
+
+                ray_samples.frustums.offsets = offsets
+            else:
+                time_embeddings = self.time_embedding(timesteps)
+                self.temporal_distortion(ray_samples, warp_code=time_embeddings, windows_param=window_deform)
+
+            # Temporal distortion has to modify ray_samples inplace. Otherwise get OOM
+
+            # max_chunk_size = ray_samples.size if self.config.max_ray_samples_chunk_size == -1 else self.config.max_ray_samples_chunk_size
+            # for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
+            #     ray_samples_chunk = ray_samples[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
+            #     time_embeddings = self.time_embedding(timesteps[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size])
+            #
+            #     self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings, windows_param=window_deform)
+
+        return ray_samples
 
     def get_outputs(self, ray_bundle: RayBundle):
         assert self.field is not None
@@ -344,6 +419,8 @@ class NGPModel(Model):
             window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
         else:
             window_deform = None
+
+        ray_samples = self.warp_ray_samples(ray_samples)
 
         field_outputs = self.field(ray_samples, window_deform=window_deform)
 
@@ -374,6 +451,11 @@ class NGPModel(Model):
             "alive_ray_mask": alive_ray_mask,  # the rays we kept from sampler
             "num_samples_per_ray": packed_info[:, 1],
         }
+
+        if ray_samples.frustums.offsets is not None:
+            deformation_per_ray = self.renderer_deformation(weights=weights, ray_samples=ray_samples,
+                                                            ray_indices=ray_indices, num_rays=num_rays)
+            outputs["deformation"] = deformation_per_ray
 
         if self.config.use_background_network:
             # background network
@@ -573,6 +655,10 @@ class NGPModel(Model):
             "depth": combined_depth,
             "alive_ray_mask": combined_alive_ray_mask,
         }
+
+        if "deformation" in outputs:
+            deformation_img = colormaps.apply_offset_colormap(outputs["deformation"])
+            images_dict["deformation"] = deformation_img
 
         if image_masked is not None:
             mask = torch.from_numpy(batch["mask"]).squeeze(2)

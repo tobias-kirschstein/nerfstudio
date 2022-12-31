@@ -94,11 +94,11 @@ class RGBRenderer(nn.Module):
         return comp_rgb
 
     def forward(
-        self,
-        rgb: TensorType["bs":..., "num_samples", 3],
-        weights: TensorType["bs":..., "num_samples", 1],
-        ray_indices: Optional[TensorType["num_samples"]] = None,
-        num_rays: Optional[int] = None,
+            self,
+            rgb: TensorType["bs":..., "num_samples", 3],
+            weights: TensorType["bs":..., "num_samples", 1],
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
     ) -> TensorType["bs":..., 3]:
         """Composite samples along ray and render color image
 
@@ -261,6 +261,28 @@ class DepthRenderer(nn.Module):
             return depth
 
         raise NotImplementedError(f"Method {self.method} not implemented")
+
+
+class DeformationRenderer(nn.Module):
+    def forward(
+            self,
+            weights: TensorType[..., "num_samples", 1],
+            ray_samples: RaySamples,
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
+    ) -> TensorType[..., 1]:
+        eps = 1e-10
+        offsets = ray_samples.frustums.offsets
+
+        if ray_indices is not None and num_rays is not None:
+            # Necessary for packed samples from volumetric ray sampler
+            deformation_per_ray = nerfacc.accumulate_along_rays(weights, ray_indices, offsets, num_rays)
+            # accumulation = nerfacc.accumulate_along_rays(weights, ray_indices, None, num_rays)
+            # deformation_per_ray = deformation_per_ray / (accumulation + eps)
+        else:
+            deformation_per_ray = torch.sum(weights * offsets, dim=-2) / (torch.sum(weights, -2) + eps)
+
+        return deformation_per_ray
 
 
 class UncertaintyRenderer(nn.Module):

@@ -18,6 +18,8 @@ from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from torch import nn
 from torchtyping import TensorType
 
@@ -62,16 +64,16 @@ class DNeRFDistortion(TemporalDistortion):
     """
 
     def __init__(
-        self,
-        position_encoding: Encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
-        ),
-        temporal_encoding: Encoding = NeRFEncoding(
-            in_dim=1, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
-        ),
-        mlp_num_layers: int = 4,
-        mlp_layer_width: int = 256,
-        skip_connections: Tuple[int] = (4,),
+            self,
+            position_encoding: Encoding = NeRFEncoding(
+                in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
+            ),
+            temporal_encoding: Encoding = NeRFEncoding(
+                in_dim=1, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
+            ),
+            mlp_num_layers: int = 4,
+            mlp_layer_width: int = 256,
+            skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
         self.position_encoding = position_encoding
@@ -90,3 +92,41 @@ class DNeRFDistortion(TemporalDistortion):
         p = self.position_encoding(positions)
         t = self.temporal_encoding(times)
         return self.mlp_deform(torch.cat([p, t], dim=-1))
+
+
+class SE3Distortion(nn.Module):
+
+    def __init__(self,
+                 n_freq_pos=7,
+                 warp_code_dim: int = 8,
+                 mlp_num_layers: int = 6,
+                 mlp_layer_width: int = 128,
+                 skip_connections: Tuple[int] = (4,),
+                 warp_direction: bool = True,
+                 ):
+        super(SE3Distortion, self).__init__()
+
+        self.se3_field = SE3WarpingField(
+            n_freq_pos=n_freq_pos,
+            warp_code_dim=warp_code_dim,
+            mlp_num_layers=mlp_num_layers,
+            mlp_layer_width=mlp_layer_width,
+            skip_connections=skip_connections,
+            warp_direction=warp_direction
+        )
+
+    def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
+        # assert ray_samples.timesteps is not None, "Cannot warp samples if no time is given"
+        assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
+
+        positions = ray_samples.frustums.get_positions()
+
+        warped_p, warped_d = self.se3_field(positions,
+                                            directions=None,
+                                            warp_code=warp_code,
+                                            windows_param=windows_param)
+
+        ray_samples.frustums.set_offsets(warped_p - positions)
+        # TODO: Update directions
+
+        return ray_samples

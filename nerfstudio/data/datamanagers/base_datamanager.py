@@ -290,6 +290,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
 
     n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
     n_timesteps_warmup: int = -1  # How many keyframes will be used during warmup
+    fix_keyframes_after_warmup: bool = False  # If true, keyframes won't be sampled anymore after warmup phase
     seed: Optional[int] = None  # Seed for dataloader workers
 
 
@@ -418,18 +419,25 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
-        if step < self.config.n_steps_warmup:
+        if step < self.config.n_steps_warmup or self.config.fix_keyframes_after_warmup:
             # Only sample key frames in the beginning
             # If n_steps_warmup == 1, only the first timestep will be used (canonical space)
             n_cameras = self.config.dataparser.n_cameras
             n_timesteps = self.config.dataparser.n_timesteps
 
             key_frames = np.linspace(0, n_timesteps - 1, num=self.config.n_timesteps_warmup).astype(int)
-            key_frame_image_indices = []
-            for key_frame in key_frames:
-                key_frame_image_indices.extend(range(key_frame * n_cameras, (key_frame + 1) * n_cameras))
 
-            self.train_image_dataloader.sample_only(key_frame_image_indices)
+            if step < self.config.n_steps_warmup:
+                timesteps_to_sample_from = key_frames
+            else:
+                # Fix keyframes after warmup
+                timesteps_to_sample_from = [timestep for timestep in range(n_timesteps) if timestep not in key_frames]
+
+            image_indices = []
+            for timestep in timesteps_to_sample_from:
+                image_indices.extend(range(timestep * n_cameras, (timestep + 1) * n_cameras))
+
+            self.train_image_dataloader.sample_only(image_indices)
         else:
             self.train_image_dataloader.sample_only(None)
 
