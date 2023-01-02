@@ -6,6 +6,7 @@ from typing import Dict
 
 import pytest
 import torch
+from nerfstudio.cameras.rays import RaySamples, Frustums
 
 from nerfstudio.utils.tensor_dataclass import TensorDataclass
 
@@ -173,6 +174,51 @@ def test_iter():
         assert batch.shape == (4,)
         assert batch.a.shape == (4, 5)
         assert batch.b.shape == (4, 5)
+
+
+def test_view():
+    """Test slicing a view from a tensor dataclass"""
+
+    a = torch.ones((4, 6, 3))
+    b = torch.ones((4, 6, 2))
+    c = DummyNestedClass(x=torch.ones(4, 6, 5))
+    tensor_dataclass = DummyTensorDataclass(a=a, b=b, c=c)
+
+    tensor_dataclass_view = tensor_dataclass.view(slice(0, 4), slice(0, 2))
+    assert tensor_dataclass_view.shape == (4, 2)
+    assert tensor_dataclass_view.a.shape == (4, 2, 3)
+    assert tensor_dataclass_view.b.shape == (4, 2, 2)
+    assert tensor_dataclass_view.c.shape == (4, 2)
+    assert tensor_dataclass_view.c.x.shape == (4, 2, 5)
+
+    # Updates to tensor dataclass view should change original tensors
+    tensor_dataclass_view.a += 1
+    tensor_dataclass_view.b += 1
+    tensor_dataclass_view.c.x += 1
+    assert (a[:4, :2] == 2).all()
+    assert a[-1, -1, -1] == 1
+    assert (b[:4, :2] == 2).all()
+    assert b[-1, -1, -1] == 1
+    assert (c.x[:4, :2] == 2).all()
+    assert c.x[-1, -1, -1] == 1
+
+
+def test_raysamples_view():
+    ray_samples = RaySamples(
+        Frustums(
+            torch.zeros(11, 3),
+            torch.zeros(11, 3),
+            torch.zeros(11, 3),
+            torch.zeros(11, 3),
+            torch.zeros(11, 3)
+        )
+    )
+
+    ray_samples.frustums.offsets = torch.zeros(11, 3)
+    ray_samples_view = ray_samples.view(slice(0, 4))
+    ray_samples_view.frustums.set_offsets(torch.ones(4, 3))
+
+    assert (ray_samples.frustums.offsets[:4] == 1).all()
 
 
 if __name__ == "__main__":
