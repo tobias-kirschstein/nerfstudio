@@ -86,6 +86,7 @@ class TCNNInstantNGPField(Field):
             use_time_conditioning_for_base_mlp: bool = False,
             use_time_conditioning_for_rgb_mlp: bool = False,
             use_deformation_skip_connection: bool = False,
+            use_smoothstep_hashgrid_interpolation: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -152,6 +153,7 @@ class TCNNInstantNGPField(Field):
                 "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": hashgrid_base_resolution,
                 "per_level_scale": per_level_hashgrid_scale,
+                "interpolation": "Smoothstep" if use_smoothstep_hashgrid_interpolation else "Linear"
             }
 
         self.deformation_network = None

@@ -110,6 +110,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_time_conditioning_for_base_mlp: bool = False
     use_time_conditioning_for_rgb_mlp: bool = False
     use_deformation_skip_connection: bool = False
+    use_smoothstep_hashgrid_interpolation: bool = False
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -170,6 +171,7 @@ class NGPModel(Model):
             use_time_conditioning_for_base_mlp=self.config.use_time_conditioning_for_base_mlp,
             use_time_conditioning_for_rgb_mlp=self.config.use_time_conditioning_for_rgb_mlp,
             use_deformation_skip_connection=self.config.use_deformation_skip_connection,
+            use_smoothstep_hashgrid_interpolation=self.config.use_smoothstep_hashgrid_interpolation,
 
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
