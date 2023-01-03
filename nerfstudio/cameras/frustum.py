@@ -136,7 +136,7 @@ class TorchFrustum:
     def contains(self, point: torch.tensor) -> bool:
         return self._half_space_collection.contains(point)
 
-    def contains_points(self, points: torch.tensor) -> np.ndarray:
+    def contains_points(self, points: torch.tensor) -> torch.Tensor:
         return self._half_space_collection.contains_points(points)
 
 class Frustum:

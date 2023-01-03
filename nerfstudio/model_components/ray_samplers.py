@@ -19,15 +19,13 @@ Collection of sampling strategies
 from abc import abstractmethod
 from typing import Callable, List, Optional, Tuple
 
-import numpy as np
 import nerfacc
 import torch
 from nerfacc import OccupancyGrid
+from nerfstudio.cameras.frustum import TorchFrustum
+from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
 from torch import nn
 from torchtyping import TensorType
-
-from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
-from nerfstudio.cameras.frustum import Frustum
 
 
 class Sampler(nn.Module):
@@ -388,7 +386,7 @@ class VolumetricSampler(Sampler):
             occupancy_grid: Optional[OccupancyGrid] = None,
             density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
             scene_aabb: Optional[TensorType[2, 3]] = None,
-            camera_frustums: Optional[List[Frustum]] = None,
+            camera_frustums: Optional[List[TorchFrustum]] = None,
             view_frustum_culling: Optional[int] = None
     ) -> None:
 
@@ -401,6 +399,25 @@ class VolumetricSampler(Sampler):
         if self.scene_aabb is not None:
             self.scene_aabb = self.scene_aabb.to("cuda").flatten()
         print(self.scene_aabb)
+
+        if camera_frustums is not None and view_frustum_culling is not None:
+            camera_frustum_grid_resolution = self.occupancy_grid.resolution
+            # self.camera_frustum_grid = torch.zeros(
+            #     (camera_frustum_grid_resolution, camera_frustum_grid_resolution, camera_frustum_grid_resolution),
+            #     dtype=torch.bool)
+            grid_xs, grid_ys, grid_zs = torch.meshgrid(
+                torch.linspace(scene_aabb[0][0], scene_aabb[1][0], steps=camera_frustum_grid_resolution[0]),
+                torch.linspace(scene_aabb[0][1], scene_aabb[1][1], steps=camera_frustum_grid_resolution[1]),
+                torch.linspace(scene_aabb[0][2], scene_aabb[1][2], steps=camera_frustum_grid_resolution[2])
+            )
+            grid_points = torch.stack([grid_xs, grid_ys, grid_zs], dim=-1).view(-1, 3).to(camera_frustums[0]._half_space_collection.offsets.device)
+            visibility_masks = [camera_frustum.contains_points(grid_points) for camera_frustum in
+                                self.camera_frustums]
+            visibility_mask = torch.stack(visibility_masks).sum(dim=0) >= self.view_frustum_culling
+            visibility_mask = visibility_mask.view(*camera_frustum_grid_resolution)
+            self.camera_frustum_grid = visibility_mask
+        else:
+            self.camera_frustum_grid = None
 
     def get_sigma_fn(self, origins, directions) -> Optional[Callable]:
         """Returns a function that returns the density of a point.
@@ -470,12 +487,18 @@ class VolumetricSampler(Sampler):
         else:
             timesteps = None
 
+        if self.camera_frustum_grid is not None:
+            occupancy_grid = OccupancyGrid(self.occupancy_grid.roi_aabb, self.occupancy_grid.resolution, self.occupancy_grid.contraction_type)
+            occupancy_grid._binary = self.occupancy_grid.binary & self.camera_frustum_grid
+        else:
+            occupancy_grid = self.occupancy_grid
+
         # TODO: In here, we also sample the occupancy grid. There it might be beneficial to have the timesteps as well
         packed_info, starts, ends = nerfacc.ray_marching(
             rays_o=rays_o,
             rays_d=rays_d,
             scene_aabb=self.scene_aabb,
-            grid=self.occupancy_grid,
+            grid=occupancy_grid,
             sigma_fn=self.get_sigma_fn(rays_o, rays_d),
             early_stop_eps=early_stop_eps,
             render_step_size=render_step_size,
@@ -508,58 +531,58 @@ class VolumetricSampler(Sampler):
         else:
             valid_timesteps = None
 
-        if self.camera_frustums is not None and self.view_frustum_culling is not None and not self.training and num_samples > 0:
-            # View Frustum Culling during inference:
-            # Only keep ray samples that are seen by at least one train view
-            # This is enabled automatically as soon as the dataparser provides the output for the corresponding
-            # camera frustums that are needed for the visibility tests
-
-            n_rays = packed_info.shape[0]
-            points = origins + starts * dirs
-            # TODO: This is a Python loop, could be sped up more if done in PyTorch as well
-            visibility_masks = [camera_frustum.contains_points(points) for camera_frustum in
-                                self.camera_frustums]
-            # visibility_mask = torch.stack(visibility_masks).any(dim=0)
-            visibility_mask = torch.stack(visibility_masks).sum(dim=0) >= self.view_frustum_culling
-
-            if visibility_mask.sum() == 0:
-                # Create a single fake sample that starts at 1 and ends at 1
-                # However, need to ensure that still all rays are listed in packed_info
-                # (otherwise the num_rays_per_sample will be off as suddenly rays are missing just because they
-                #   don't have samples)
-                # Hence, we keep all rays but set their samples cound to zero. Except for the last ray which contains
-                # the fake sample to facilitate downstream processing
-                packed_info[:, :] = 0
-                packed_info[-1, 1] = 1
-                starts = torch.ones((1, 1), dtype=starts.dtype, device=rays_o.device)
-                ends = torch.ones((1, 1), dtype=ends.dtype, device=rays_o.device)
-
-                ray_indices = nerfacc.unpack_info(packed_info)
-
-                origins = rays_o[ray_indices]
-                dirs = rays_d[ray_indices]
-                if camera_indices is not None:
-                    valid_camera_indices = camera_indices[ray_indices]
-
-                if timesteps is not None:
-                    valid_timesteps = timesteps[ray_indices]
-
-            else:
-                origins = origins[visibility_mask]
-                dirs = dirs[visibility_mask]
-                starts = starts[visibility_mask]
-                ends = ends[visibility_mask]
-                valid_camera_indices = valid_camera_indices[visibility_mask]
-
-                if valid_timesteps is not None:
-                    valid_timesteps = valid_timesteps[visibility_mask]
-
-                ray_indices = ray_indices[visibility_mask]
-
-                samples_per_ray = ray_indices.bincount(minlength=n_rays)
-                cumsum = torch.concat([torch.zeros(1, device=packed_info.device, dtype=packed_info.dtype
-                                                   ), samples_per_ray.cumsum(0)[:-1]])
-                packed_info = torch.stack([cumsum, samples_per_ray], dim=1).type(packed_info.dtype)
+        # if False and self.camera_frustums is not None and self.view_frustum_culling is not None and num_samples > 0:
+        #     # View Frustum Culling during inference:
+        #     # Only keep ray samples that are seen by at least one train view
+        #     # This is enabled automatically as soon as the dataparser provides the output for the corresponding
+        #     # camera frustums that are needed for the visibility tests
+        #
+        #     n_rays = packed_info.shape[0]
+        #     points = origins + starts * dirs
+        #     # TODO: This is a Python loop, could be sped up more if done in PyTorch as well
+        #     visibility_masks = [camera_frustum.contains_points(points) for camera_frustum in
+        #                         self.camera_frustums]
+        #     # visibility_mask = torch.stack(visibility_masks).any(dim=0)
+        #     visibility_mask = torch.stack(visibility_masks).sum(dim=0) >= self.view_frustum_culling
+        #
+        #     if visibility_mask.sum() == 0:
+        #         # Create a single fake sample that starts at 1 and ends at 1
+        #         # However, need to ensure that still all rays are listed in packed_info
+        #         # (otherwise the num_rays_per_sample will be off as suddenly rays are missing just because they
+        #         #   don't have samples)
+        #         # Hence, we keep all rays but set their samples cound to zero. Except for the last ray which contains
+        #         # the fake sample to facilitate downstream processing
+        #         packed_info[:, :] = 0
+        #         packed_info[-1, 1] = 1
+        #         starts = torch.ones((1, 1), dtype=starts.dtype, device=rays_o.device)
+        #         ends = torch.ones((1, 1), dtype=ends.dtype, device=rays_o.device)
+        #
+        #         ray_indices = nerfacc.unpack_info(packed_info)
+        #
+        #         origins = rays_o[ray_indices]
+        #         dirs = rays_d[ray_indices]
+        #         if camera_indices is not None:
+        #             valid_camera_indices = camera_indices[ray_indices]
+        #
+        #         if timesteps is not None:
+        #             valid_timesteps = timesteps[ray_indices]
+        #
+        #     else:
+        #         origins = origins[visibility_mask]
+        #         dirs = dirs[visibility_mask]
+        #         starts = starts[visibility_mask]
+        #         ends = ends[visibility_mask]
+        #         valid_camera_indices = valid_camera_indices[visibility_mask]
+        #
+        #         if valid_timesteps is not None:
+        #             valid_timesteps = valid_timesteps[visibility_mask]
+        #
+        #         ray_indices = ray_indices[visibility_mask]
+        #
+        #         samples_per_ray = ray_indices.bincount(minlength=n_rays)
+        #         cumsum = torch.concat([torch.zeros(1, device=packed_info.device, dtype=packed_info.dtype
+        #                                            ), samples_per_ray.cumsum(0)[:-1]])
+        #         packed_info = torch.stack([cumsum, samples_per_ray], dim=1).type(packed_info.dtype)
 
         zeros = torch.zeros_like(origins[:, :1])
         ray_samples = RaySamples(

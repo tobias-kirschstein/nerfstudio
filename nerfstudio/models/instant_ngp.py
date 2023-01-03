@@ -83,6 +83,8 @@ class InstantNGPModelConfig(ModelConfig):
     n_hashgrid_levels: int = 16
     log2_hashmap_size: int = 19
     per_level_hashgrid_scale: float = 1.4472692012786865
+    hashgrid_base_resolution: int = 16
+    hashgrid_n_features_per_level: int = 2
 
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
@@ -104,6 +106,7 @@ class InstantNGPModelConfig(ModelConfig):
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
     timestep_canonical: Optional[
         int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
+    lambda_deformation_loss: float = 0
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -144,9 +147,13 @@ class NGPModel(Model):
             num_layers_color=self.config.num_layers_color,
             hidden_dim_color=self.config.hidden_dim_color,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
+
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,
             per_level_hashgrid_scale=self.config.per_level_hashgrid_scale,
+            hashgrid_base_resolution=self.config.hashgrid_base_resolution,
+            hashgrid_n_features_per_level=self.config.hashgrid_n_features_per_level,
+
             use_spherical_harmonics=self.config.use_spherical_harmonics,
             latent_dim_time=self.config.latent_dim_time,
             n_timesteps=self.config.n_timesteps,
@@ -202,7 +209,7 @@ class NGPModel(Model):
             view_frustum_culling=self.config.view_frustum_culling if self.config.use_view_frustum_culling_for_train else None
         )
 
-        vol_sampler_aabb_eval = None
+        vol_sampler_aabb_eval = vol_sampler_aabb
         if self.config.contraction_type == ContractionType.AABB and self.config.eval_scene_box_scale is not None:
             aabb_scale = self.config.eval_scene_box_scale
             vol_sampler_aabb_eval = torch.tensor(
@@ -322,10 +329,15 @@ class NGPModel(Model):
         param_groups["fields"].extend(self.field.mlp_base.parameters())
         param_groups["fields"].extend(self.field.mlp_head.parameters())
 
-        param_groups["deformation_field"] = []
+        if self.temporal_distortion is not None:
+            param_groups["deformation_field"] = []
+            param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
 
-        param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
-        param_groups["deformation_field"].extend(self.time_embedding.parameters())
+        if self.time_embedding is not None:
+            if "deformation_field" not in param_groups:
+                param_groups["deformation_field"] = []
+
+            param_groups["deformation_field"].extend(self.time_embedding.parameters())
 
         # TODO: This is from old way of time conditioning
         if self.field.deformation_network is not None:
@@ -395,8 +407,8 @@ class NGPModel(Model):
 
                 else:
                     # Deform all samples into the latent canonical space
-                    time_embeddings = self.time_embedding(timesteps)
-                    self.temporal_distortion(ray_samples, warp_code=time_embeddings, windows_param=window_deform)
+                    time_embeddings = self.time_embedding(timesteps_chunk)
+                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings, windows_param=window_deform)
 
         return ray_samples
 
@@ -527,6 +539,10 @@ class NGPModel(Model):
         if beta_loss is not None:
             loss_dict["beta_loss"] = beta_loss
 
+        if 'deformation' in outputs and self.config.lambda_deformation_loss > 0:
+            deformation_loss = self.config.lambda_deformation_loss * (outputs['deformation'] ** 2).mean()
+            loss_dict["deformation_loss"] = deformation_loss
+
         if self.config.lambda_dist_loss > 0 and self.training:
             # distloss
             ray_samples = outputs["ray_samples"]
@@ -633,6 +649,8 @@ class NGPModel(Model):
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
         combined_alive_ray_mask = torch.cat([alive_ray_mask], dim=1)
+        error_image = ((rgb - image) ** 2).mean(dim=-1).unsqueeze(-1)
+        error_image = colormaps.apply_colormap(error_image, cmap="turbo")
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
@@ -657,6 +675,7 @@ class NGPModel(Model):
             "accumulation": combined_acc,
             "depth": combined_depth,
             "alive_ray_mask": combined_alive_ray_mask,
+            "error": error_image
         }
 
         if "deformation" in outputs:

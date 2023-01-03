@@ -70,6 +70,8 @@ class TCNNInstantNGPField(Field):
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
             per_level_hashgrid_scale: float = 1.4472692012786865,
+            hashgrid_base_resolution: int = 16,
+            hashgrid_n_features_per_level: int = 2,
             use_spherical_harmonics: bool = True,
             disable_view_dependency: bool = False,
             latent_dim_time: int = 0,
@@ -140,9 +142,9 @@ class TCNNInstantNGPField(Field):
                 "n_dims_to_encode": 4 if use_4d_hashing else 3,
                 "otype": "HashGrid",
                 "n_levels": n_hashgrid_levels,
-                "n_features_per_level": 2,
+                "n_features_per_level": hashgrid_n_features_per_level,
                 "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": 16,
+                "base_resolution": hashgrid_base_resolution,
                 "per_level_scale": per_level_hashgrid_scale,
             }
 
