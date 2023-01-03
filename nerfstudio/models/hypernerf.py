@@ -37,6 +37,7 @@ from nerfstudio.engine.callbacks import (
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.hypernerf_field import (
+    HashHyperNeRFField,
     HyperNeRFField,
     HyperSlicingField,
     SE3WarpingField,
@@ -510,3 +511,147 @@ class HyperNeRFModel(Model):
             rgb = outputs["rgb_fine"]
 
         return rgb
+
+
+@dataclass
+class HashHyperNeRFModelConfig(HyperNeRFModelConfig):
+    """HyperNeRF Model Config"""
+
+    _target: Type = field(default_factory=lambda: HashHyperNeRFModel)
+
+
+class HashHyperNeRFModel(HyperNeRFModel):
+    """HyperNeRF model
+
+    Args:
+        config: Basic NeRF configuration to instantiate model
+    """
+
+    config: HyperNeRFModelConfig
+
+    def __init__(
+        self,
+        config: HyperNeRFModelConfig,
+        **kwargs,
+    ) -> None:
+        self.field_coarse = None
+        self.field_fine = None
+        self.warp_field = None
+        self.slice_field = None
+        self.sched_alpha = None
+        self.sched_beta = None
+        super(HyperNeRFModel, self).__init__(config=config, **kwargs)
+
+    def populate_modules(self):
+        """Set the fields and modules"""
+        super(HyperNeRFModel, self).populate_modules()
+
+        base_extra_dim = 0
+        head_extra_dim = 0
+
+        # warp embeddings
+        self.warp_embeddings = None
+        if self.config.warp_code_dim > 0:
+            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
+            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
+
+        # appearance embeddings
+        self.appearance_embeddings = None
+        if self.config.appearance_code_dim > 0:
+            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
+            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
+            head_extra_dim += self.config.appearance_code_dim
+
+        # camera embeddings to model the difference of exposure, color, etc. between cameras
+        self.camera_embeddings = None
+        if self.config.camera_code_dim > 0:
+            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
+            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
+            head_extra_dim += self.config.camera_code_dim
+
+        # fields
+        if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
+            base_extra_dim = self.config.warp_code_dim
+
+        if self.config.use_se3_warping:
+            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
+            self.warp_field = SE3WarpingField(
+                n_freq_pos=self.config.n_freq_pos_warping,
+                warp_code_dim=self.config.warp_code_dim,
+                mlp_num_layers=6,
+                mlp_layer_width=128,
+                warp_direction=self.config.warp_direction,
+            )
+            if self.config.window_alpha_end >= 1:
+                assert self.config.window_alpha_end > self.config.window_alpha_begin
+                self.sched_alpha = GenericScheduler(
+                    init_value=0,
+                    final_value=self.config.n_freq_pos_warping,
+                    begin_step=self.config.window_alpha_begin,
+                    end_step=self.config.window_alpha_end,
+                )
+
+        if self.config.use_hyper_slicing:
+            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
+            self.slice_field = HyperSlicingField(
+                n_freq_pos=self.config.n_freq_pos_slicing,
+                out_dim=self.config.hyper_slice_dim,
+                warp_code_dim=self.config.warp_code_dim,
+                mlp_num_layers=6,
+                mlp_layer_width=64,
+            )
+            if self.config.window_beta_end >= 1:
+                assert self.config.window_beta_end > self.config.window_beta_begin
+                self.sched_beta = GenericScheduler(
+                    init_value=0,
+                    final_value=self.config.n_freq_slice,
+                    begin_step=self.config.window_beta_begin,
+                    end_step=self.config.window_beta_end,
+                )
+
+        self.field_coarse = HashHyperNeRFField(
+            aabb=self.scene_box.aabb,
+            use_hyper_slicing=self.config.use_hyper_slicing,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim,
+        )
+
+        self.field_fine = HashHyperNeRFField(
+            aabb=self.scene_box.aabb,
+            use_hyper_slicing=self.config.use_hyper_slicing,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
+            base_extra_dim=base_extra_dim,
+            head_extra_dim=head_extra_dim,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim,
+        )
+
+        # samplers
+        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
+
+        # background
+        if self.config.use_backgrounds:
+            background_color = None
+        else:
+            if self.config.background_color == "black":
+                background_color = colors.BLACK
+            elif self.config.background_color == "white":
+                background_color = colors.WHITE
+            else:
+                background_color = self.config.background_color
+
+        # renderers
+        self.renderer_rgb = RGBRenderer(background_color=background_color)
+        self.renderer_accumulation = AccumulationRenderer()
+        self.renderer_depth = DepthRenderer()
+
+        # metrics
+        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
+        self.ssim = structural_similarity_index_measure
+        self.lpips = LearnedPerceptualImagePatchSimilarity()

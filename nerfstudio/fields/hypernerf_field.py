@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pytorch3d
 import pytorch3d.transforms
+import tinycudann as tcnn
 import torch
 from torch import nn
 from torchtyping import TensorType
@@ -51,13 +52,13 @@ class SE3WarpingField(nn.Module):
     """
 
     def __init__(
-            self,
-            n_freq_pos=7,
-            warp_code_dim: int = 8,
-            mlp_num_layers: int = 6,
-            mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
-            warp_direction: bool = True,
+        self,
+        n_freq_pos=7,
+        warp_code_dim: int = 8,
+        mlp_num_layers: int = 6,
+        mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        warp_direction: bool = True,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
@@ -92,8 +93,9 @@ class SE3WarpingField(nn.Module):
         nn.init.zeros_(self.mlp_r.layers[-1].bias)
         nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
-    def forward(self, positions, directions=None, warp_code=None, windows_param=None) -> Tuple[
-        torch.Tensor, Optional[torch.Tensor]]:
+    def forward(
+        self, positions, directions=None, warp_code=None, windows_param=None
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if warp_code is None:
             return None
 
@@ -145,12 +147,12 @@ class DeformationField(nn.Module):
     """
 
     def __init__(
-            self,
-            n_freq_pos=7,
-            warp_code_dim: int = 8,
-            mlp_num_layers: int = 6,
-            mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
+        self,
+        n_freq_pos=7,
+        warp_code_dim: int = 8,
+        mlp_num_layers: int = 6,
+        mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
         self.position_encoding = WindowedNeRFEncoding(
@@ -182,13 +184,13 @@ class HyperSlicingField(nn.Module):
     """
 
     def __init__(
-            self,
-            n_freq_pos: int = 7,
-            out_dim: int = 2,
-            warp_code_dim: int = 8,
-            mlp_num_layers: int = 6,
-            mlp_layer_width: int = 64,
-            skip_connections: Tuple[int] = (4,),
+        self,
+        n_freq_pos: int = 7,
+        out_dim: int = 2,
+        warp_code_dim: int = 8,
+        mlp_num_layers: int = 6,
+        mlp_layer_width: int = 64,
+        skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
         self.position_encoding = NeRFEncoding(
@@ -212,7 +214,7 @@ class HyperSlicingField(nn.Module):
 
 
 class HyperNeRFField(Field):
-    """NeRF Field
+    """HyperNeRF Field
 
     Args:
         n_freq_pos: Number of frequencies for position in positional encoding.
@@ -227,22 +229,22 @@ class HyperNeRFField(Field):
     """
 
     def __init__(
-            self,
-            n_freq_pos: int = 9,
-            n_freq_dir: int = 5,
-            use_hyper_slicing: bool = True,
-            n_freq_slice: int = 2,
-            hyper_slice_dim: int = 2,
-            base_extra_dim: int = 0,
-            head_extra_dim: int = 0,
-            base_mlp_num_layers: int = 8,
-            base_mlp_layer_width: int = 256,
-            head_mlp_num_layers: int = 2,
-            head_mlp_layer_width: int = 128,
-            skip_connections: Tuple[int] = (4,),
-            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-            use_integrated_encoding: bool = False,
-            spatial_distortion: Optional[SpatialDistortion] = None,
+        self,
+        n_freq_pos: int = 9,
+        n_freq_dir: int = 5,
+        use_hyper_slicing: bool = True,
+        n_freq_slice: int = 2,
+        hyper_slice_dim: int = 2,
+        base_extra_dim: int = 0,
+        head_extra_dim: int = 0,
+        base_mlp_num_layers: int = 8,
+        base_mlp_layer_width: int = 256,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+        use_integrated_encoding: bool = False,
+        spatial_distortion: Optional[SpatialDistortion] = None,
     ) -> None:
         super().__init__()
 
@@ -285,13 +287,13 @@ class HyperNeRFField(Field):
             field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
 
     def get_density(
-            self,
-            ray_samples: RaySamples,
-            warp_code: Optional[torch.Tensor] = None,
-            warp_field: Optional[SE3WarpingField] = None,
-            slice_field: Optional[HyperSlicingField] = None,
-            window_alpha: Optional[float] = None,
-            window_beta: Optional[float] = None,
+        self,
+        ray_samples: RaySamples,
+        warp_code: Optional[torch.Tensor] = None,
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
+        window_alpha: Optional[float] = None,
+        window_beta: Optional[float] = None,
     ):
         # if self.use_integrated_encoding:
         #     gaussian_samples = ray_samples.frustums.get_gaussian_blob()
@@ -358,18 +360,18 @@ class HyperNeRFField(Field):
                 encoded_w = self.slicing_encoding(w, windows_param=window_beta)
                 base_inputs.append(encoded_w)
 
-        base_inputs = torch.concat(base_inputs, dim=2)
+        base_inputs = torch.concat(base_inputs, dim=-1)
         base_mlp_out = self.mlp_base(base_inputs)
         density = self.field_output_density(base_mlp_out)
         return density, base_mlp_out, warped_directions
 
     def get_outputs(
-            self,
-            ray_samples: RaySamples,
-            warped_direction: Optional[TensorType] = None,
-            density_embedding: Optional[TensorType] = None,
-            appearance_code: Optional[torch.Tensor] = None,
-            camera_code: Optional[torch.Tensor] = None,
+        self,
+        ray_samples: RaySamples,
+        warped_direction: Optional[TensorType] = None,
+        density_embedding: Optional[TensorType] = None,
+        appearance_code: Optional[torch.Tensor] = None,
+        camera_code: Optional[torch.Tensor] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
@@ -389,16 +391,16 @@ class HyperNeRFField(Field):
         return outputs
 
     def forward(
-            self,
-            ray_samples: RaySamples,
-            compute_normals: bool = False,
-            warp_embeddings: Optional[nn.Embedding] = None,
-            appearance_embeddings: Optional[nn.Embedding] = None,
-            camera_embeddings: Optional[nn.Embedding] = None,
-            warp_field: Optional[SE3WarpingField] = None,
-            slice_field: Optional[HyperSlicingField] = None,
-            window_alpha: Optional[float] = None,
-            window_beta: Optional[float] = None,
+        self,
+        ray_samples: RaySamples,
+        compute_normals: bool = False,
+        warp_embeddings: Optional[nn.Embedding] = None,
+        appearance_embeddings: Optional[nn.Embedding] = None,
+        camera_embeddings: Optional[nn.Embedding] = None,
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
+        window_alpha: Optional[float] = None,
+        window_beta: Optional[float] = None,
     ):
         """Evaluates the field at points along the ray.
 
@@ -450,3 +452,168 @@ class HyperNeRFField(Field):
                 normals = self.get_normals()
             field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
         return field_outputs
+
+
+class HashHyperNeRFField(HyperNeRFField):
+    """HyperNeRF Field with HashEncoding
+
+    Args:
+        n_freq_pos: Number of frequencies for position in positional encoding.
+        n_freq_dir: Number of frequencies for direction in positional encoding..
+        base_mlp_num_layers: Number of layers for base MLP.
+        base_mlp_layer_width: Width of base MLP layers.
+        head_mlp_num_layers: Number of layer for ourput head MLP.
+        head_mlp_layer_width: Width of output head MLP layers.
+        skip_connections: Where to add skip connection in base MLP.
+        use_integrated_encoding: Used integrated samples as encoding input.
+        spatial_distortion: Spatial distortion.
+    """
+
+    def __init__(
+        self,
+        aabb: TensorType,
+        use_hyper_slicing: bool = True,
+        n_freq_slice: int = 2,
+        hyper_slice_dim: int = 2,
+        base_extra_dim: int = 0,
+        head_extra_dim: int = 0,
+        base_mlp_num_layers: int = 2,
+        base_mlp_layer_width: int = 64,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+        use_integrated_encoding: bool = False,
+    ) -> None:
+        super(HyperNeRFField, self).__init__()
+
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+        self.use_integrated_encoding = use_integrated_encoding
+
+        # template NeRF
+        self.direction_encoding = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": 4,
+            },
+        )
+        if use_hyper_slicing and hyper_slice_dim > 0:
+            self.slicing_encoding = WindowedNeRFEncoding(
+                in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
+            )
+            base_extra_dim += self.slicing_encoding.get_out_dim()
+        else:
+            self.slicing_encoding = None
+
+        geo_feat_dim = 15
+        base_in_dim = 3
+        n_hashgrid_levels = 16
+        log2_hashmap_size = 19
+        per_level_hashgrid_scale = 1.4472692012786865
+
+        hash_grid_encoding_config = {
+            "n_dims_to_encode": base_in_dim,
+            "otype": "HashGrid",
+            "n_levels": n_hashgrid_levels,
+            "n_features_per_level": 2,
+            "log2_hashmap_size": log2_hashmap_size,
+            "base_resolution": 16,
+            "per_level_scale": per_level_hashgrid_scale,
+        }
+
+        self.mlp_base = tcnn.NetworkWithInputEncoding(
+            n_input_dims=base_in_dim,
+            n_output_dims=geo_feat_dim,
+            encoding_config=hash_grid_encoding_config,
+            network_config={
+                "otype": "FullyFusedMLP" if base_mlp_layer_width <= 128 else "CutlassMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": base_mlp_layer_width,
+                "n_hidden_layers": base_mlp_num_layers - 1,
+            },
+        )
+
+        head_in_dim = geo_feat_dim
+        if self.direction_encoding is not None:
+            head_in_dim += self.direction_encoding.n_output_dims
+
+        self.mlp_head = MLP(
+            in_dim=head_in_dim + head_extra_dim,
+            num_layers=head_mlp_num_layers,
+            layer_width=head_mlp_layer_width,
+            out_activation=nn.ReLU(),
+        )
+
+        self.field_output_density = DensityFieldHead(in_dim=self.mlp_base.n_output_dims)
+        self.field_heads = nn.ModuleList(field_heads)
+        for field_head in self.field_heads:
+            field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
+
+    def get_density(
+        self,
+        ray_samples: RaySamples,
+        warp_code: Optional[torch.Tensor] = None,
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
+        window_alpha: Optional[float] = None,
+        window_beta: Optional[float] = None,
+    ):
+        warped_directions = None
+
+        positions = ray_samples.frustums.get_positions()
+        directions = ray_samples.frustums.directions
+
+        if warp_field is None and slice_field is None:
+            encoded_xyz = self.position_encoding(positions)
+            base_inputs = [encoded_xyz]
+            if warp_code is not None:
+                base_inputs.append(warp_code)
+        else:
+            base_inputs = []
+
+        if warp_field is not None:
+            warped_positions, warped_directions = warp_field(positions, directions, warp_code, window_alpha)
+
+            warped_positions = warped_positions.view(-1, 3)
+            warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+
+            warped_directions = warped_directions.view(-1, 3)
+
+            base_inputs.append(warped_positions)
+        if slice_field is not None:
+            w = slice_field(positions, warp_code)
+
+            assert self.slicing_encoding is not None
+            encoded_w = self.slicing_encoding(w, windows_param=window_beta)
+            base_inputs.append(encoded_w)
+
+        base_inputs = torch.concat(base_inputs, dim=-1)
+        base_mlp_out = self.mlp_base(base_inputs).to(base_inputs)
+        density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
+        return density, base_mlp_out, warped_directions
+
+    def get_outputs(
+        self,
+        ray_samples: RaySamples,
+        warped_direction: Optional[TensorType] = None,
+        density_embedding: Optional[TensorType] = None,
+        appearance_code: Optional[torch.Tensor] = None,
+        camera_code: Optional[torch.Tensor] = None,
+    ) -> Dict[FieldHeadNames, TensorType]:
+        outputs = {}
+        for field_head in self.field_heads:
+            if warped_direction is not None:
+                encoded_dir = self.direction_encoding(warped_direction)
+            else:
+                encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
+            head_inputs = [encoded_dir, density_embedding]
+
+            if appearance_code is not None:
+                head_inputs.append(appearance_code)
+            if camera_code is not None:
+                head_inputs.append(camera_code.view(-1, camera_code.shape[-1]))
+
+            mlp_out = self.mlp_head(torch.cat(head_inputs, dim=-1))  # type: ignore
+            outputs[field_head.field_head_name] = field_head(mlp_out).reshape([*ray_samples.shape, -1])
+        return outputs
