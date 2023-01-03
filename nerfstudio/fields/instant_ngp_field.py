@@ -85,6 +85,7 @@ class TCNNInstantNGPField(Field):
             timestep_canonical: Optional[int] = 0,
             use_time_conditioning_for_base_mlp: bool = False,
             use_time_conditioning_for_rgb_mlp: bool = False,
+            use_deformation_skip_connection: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -106,6 +107,7 @@ class TCNNInstantNGPField(Field):
         self.timestep_canonical = timestep_canonical
         self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
         self.use_time_conditioning_for_rgb_mlp = use_time_conditioning_for_rgb_mlp
+        self.use_deformation_skip_connection = use_deformation_skip_connection
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -211,11 +213,24 @@ class TCNNInstantNGPField(Field):
                     "nested": [
                         base_network_encoding_config,
                         {
-                            "otype": "Identity"  # Number of remaining input dimensions is automatically derived
+                            "otype": "Identity",  # Number of remaining input dimensions is automatically derived
                         }
                     ]
                 }
                 n_base_inputs += latent_dim_time
+
+            if use_deformation_skip_connection:
+                if not base_network_encoding_config['otype'] == 'Composite':
+                    base_network_encoding_config = {
+                        "otype": "Composite",
+                        "nested": [
+                            base_network_encoding_config,
+                            {
+                                "otype": "Identity",  # Number of remaining input dimensions is automatically derived
+                            }
+                        ]
+                    }
+                n_base_inputs += 3 * 16  # For some reason the skip connection only works with a higher dimensionality
 
         self.mlp_base = tcnn.NetworkWithInputEncoding(
             n_input_dims=n_base_inputs,
@@ -355,6 +370,12 @@ class TCNNInstantNGPField(Field):
                     assert time_codes is not None, "If use_time_conditioning_for_base_mlp is set, time_codes have to be provided"
 
                     base_inputs.append(time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size])
+
+                if self.use_deformation_skip_connection:
+                    base_inputs.append(positions_flat)
+                    # For some reason the skip connection only works if we increase the dimensions.
+                    # Hence, we feed a bunch of zeros into the base MLP
+                    base_inputs.append(torch.zeros_like(positions_flat[:, [0 for _ in range(3 * 15)]]))
 
             base_inputs = torch.concat(base_inputs, dim=1)
             if timesteps_chunk is not None and self.fix_canonical_space:

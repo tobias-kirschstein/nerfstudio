@@ -109,6 +109,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_deformation_loss: float = 0
     use_time_conditioning_for_base_mlp: bool = False
     use_time_conditioning_for_rgb_mlp: bool = False
+    use_deformation_skip_connection: bool = False
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -168,6 +169,7 @@ class NGPModel(Model):
             timestep_canonical=self.config.timestep_canonical,
             use_time_conditioning_for_base_mlp=self.config.use_time_conditioning_for_base_mlp,
             use_time_conditioning_for_rgb_mlp=self.config.use_time_conditioning_for_rgb_mlp,
+            use_deformation_skip_connection=self.config.use_deformation_skip_connection,
 
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
