@@ -3,7 +3,7 @@ Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
 from math import ceil, sqrt
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 
 import torch
 from nerfacc import ContractionType, contract
@@ -83,13 +83,15 @@ class TCNNInstantNGPField(Field):
             n_layers_deformation_field: int = 6,
             hidden_dim_deformation_field: int = 128,
             timestep_canonical: Optional[int] = 0,
+            use_time_conditioning_for_base_mlp: bool = False,
+            use_time_conditioning_for_rgb_mlp: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
             density_threshold: Optional[float] = None,
             use_4d_hashing: bool = False,
 
-            density_fn_ray_samples_transform: Callable[[RaySamples], RaySamples] = lambda x: x
+            density_fn_ray_samples_transform: Callable[[RaySamples], Tuple[RaySamples, Optional[torch.TensorType]]] = lambda x: x
     ) -> None:
         super().__init__(density_fn_ray_samples_transform=density_fn_ray_samples_transform)
 
@@ -102,6 +104,8 @@ class TCNNInstantNGPField(Field):
         self.use_4d_hashing = use_4d_hashing
         self.fix_canonical_space = fix_canonical_space
         self.timestep_canonical = timestep_canonical
+        self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
+        self.use_time_conditioning_for_rgb_mlp = use_time_conditioning_for_rgb_mlp
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -201,6 +205,18 @@ class TCNNInstantNGPField(Field):
             self.time_embedding = None
             n_base_inputs = 4 if use_4d_hashing else 3
 
+            if use_time_conditioning_for_base_mlp:
+                base_network_encoding_config = {
+                    "otype": "Composite",
+                    "nested": [
+                        base_network_encoding_config,
+                        {
+                            "otype": "Identity"  # Number of remaining input dimensions is automatically derived
+                        }
+                    ]
+                }
+                n_base_inputs += latent_dim_time
+
         self.mlp_base = tcnn.NetworkWithInputEncoding(
             n_input_dims=n_base_inputs,
             n_output_dims=1 + self.geo_feat_dim,
@@ -221,6 +237,10 @@ class TCNNInstantNGPField(Field):
 
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
+
+        if use_time_conditioning_for_rgb_mlp:
+            in_dim += latent_dim_time
+
         self.mlp_head = tcnn.Network(
             n_input_dims=in_dim,
             n_output_dims=3,
@@ -235,7 +255,8 @@ class TCNNInstantNGPField(Field):
 
     def get_density(self,
                     ray_samples: RaySamples,
-                    window_deform: Optional[float] = None):
+                    window_deform: Optional[float] = None,
+                    time_codes: Optional[torch.Tensor] = None):
 
         densities = []
         base_mlp_outs = []
@@ -330,6 +351,11 @@ class TCNNInstantNGPField(Field):
             else:
                 base_inputs = [positions_flat]
 
+                if self.use_time_conditioning_for_base_mlp:
+                    assert time_codes is not None, "If use_time_conditioning_for_base_mlp is set, time_codes have to be provided"
+
+                    base_inputs.append(time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size])
+
             base_inputs = torch.concat(base_inputs, dim=1)
             if timesteps_chunk is not None and self.fix_canonical_space:
                 # TODO: Experimental
@@ -384,7 +410,10 @@ class TCNNInstantNGPField(Field):
 
         return density, base_mlp_out
 
-    def get_outputs(self, ray_samples: RaySamples, density_embedding: Optional[TensorType] = None):
+    def get_outputs(self,
+                    ray_samples: RaySamples,
+                    density_embedding: Optional[TensorType] = None,
+                    time_codes: Optional[TensorType] = None):
         directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
 
@@ -414,6 +443,10 @@ class TCNNInstantNGPField(Field):
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
 
+        if self.use_time_conditioning_for_rgb_mlp:
+            assert time_codes is not None, "If use_time_conditioning_for_rgb_mlp is set, time_codes have to be provided"
+            h = torch.cat([h, time_codes], dim=-1)
+
         if ray_samples.timesteps is not None and self.fix_canonical_space:
             # Ensure that only canonical space rays accumulate gradients
             assert self.timestep_canonical is not None
@@ -442,7 +475,8 @@ class TCNNInstantNGPField(Field):
     def forward(self,
                 ray_samples: RaySamples,
                 compute_normals: bool = False,
-                window_deform: Optional[float] = None):
+                window_deform: Optional[float] = None,
+                time_codes: Optional[TensorType] = None):
         """Evaluates the field at points along the ray.
 
         Args:
@@ -450,11 +484,13 @@ class TCNNInstantNGPField(Field):
         """
         if compute_normals:
             with torch.enable_grad():
-                density, density_embedding = self.get_density(ray_samples, window_deform=window_deform)
+                density, density_embedding = self.get_density(ray_samples, window_deform=window_deform,
+                                                              time_codes=time_codes)
         else:
-            density, density_embedding = self.get_density(ray_samples, window_deform=window_deform)
+            density, density_embedding = self.get_density(ray_samples, window_deform=window_deform,
+                                                          time_codes=time_codes)
 
-        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 
         if compute_normals:

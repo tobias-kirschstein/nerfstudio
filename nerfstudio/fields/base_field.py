@@ -31,7 +31,7 @@ class Field(nn.Module):
     """Base class for fields."""
 
     def __init__(self,
-                 density_fn_ray_samples_transform: Callable[[RaySamples], RaySamples] = lambda x: x) -> None:
+                 density_fn_ray_samples_transform: Callable[[RaySamples], Tuple[RaySamples, Optional[torch.TensorType]]] = lambda x: (x, None)) -> None:
         super().__init__()
         self._sample_locations = None
         self._density_before_activation = None
@@ -54,8 +54,8 @@ class Field(nn.Module):
             ),
         )
 
-        ray_samples = self._density_fn_ray_samples_transform(ray_samples)
-        density, _ = self.get_density(ray_samples)
+        ray_samples, time_codes = self._density_fn_ray_samples_transform(ray_samples)
+        density, _ = self.get_density(ray_samples, time_codes=time_codes)
         return density
 
     @abstractmethod

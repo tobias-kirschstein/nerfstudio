@@ -8,7 +8,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from math import sqrt, ceil
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import nerfacc
 import tinycudann as tcnn
@@ -107,6 +107,8 @@ class InstantNGPModelConfig(ModelConfig):
     timestep_canonical: Optional[
         int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
     lambda_deformation_loss: float = 0
+    use_time_conditioning_for_base_mlp: bool = False
+    use_time_conditioning_for_rgb_mlp: bool = False
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -164,6 +166,8 @@ class NGPModel(Model):
             n_layers_deformation_field=self.config.n_layers_deformation_field,
             hidden_dim_deformation_field=self.config.hidden_dim_deformation_field,
             timestep_canonical=self.config.timestep_canonical,
+            use_time_conditioning_for_base_mlp=self.config.use_time_conditioning_for_base_mlp,
+            use_time_conditioning_for_rgb_mlp=self.config.use_time_conditioning_for_rgb_mlp,
 
             no_hash_encoding=self.config.no_hash_encoding,
             n_frequencies=self.config.n_frequencies,
@@ -361,7 +365,7 @@ class NGPModel(Model):
         # param_groups["field_base"] = self.field.get_base_parameters()
         return param_groups
 
-    def warp_ray_samples(self, ray_samples: RaySamples) -> RaySamples:
+    def warp_ray_samples(self, ray_samples: RaySamples) -> Tuple[RaySamples, Optional[torch.TensorType]]:
         # window parameters
         if self.sched_window_deform is not None:
             # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
@@ -370,6 +374,7 @@ class NGPModel(Model):
         else:
             window_deform = None
 
+        time_embeddings = None
         if self.temporal_distortion is not None:
 
             if ray_samples.timesteps is None:
@@ -380,16 +385,18 @@ class NGPModel(Model):
                 ray_samples.timesteps = torch.randint(self.config.n_timesteps, (ray_samples.size, 1)).to(
                     ray_samples.frustums.origins.device)
 
-            timesteps = ray_samples.timesteps.squeeze(-1)  # [S]
             # Initialize all offsets with 0
             assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
             ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
 
             max_chunk_size = ray_samples.size if self.config.max_ray_samples_chunk_size == -1 else self.config.max_ray_samples_chunk_size
+            time_embeddings = []
 
             for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
                 ray_samples_chunk = ray_samples.view(slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size))
                 timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
+                time_embeddings_chunk = self.time_embedding(timesteps_chunk)
+                time_embeddings.append(time_embeddings_chunk)
 
                 if self.config.timestep_canonical is not None:
                     # Only deform samples that are not from the canonical timestep
@@ -397,20 +404,19 @@ class NGPModel(Model):
 
                     if idx_timesteps_deform.any():
                         # Compute offsets
-                        time_embeddings = self.time_embedding(timesteps_chunk[idx_timesteps_deform])
-
+                        time_embeddings_deform = time_embeddings_chunk[idx_timesteps_deform]
                         ray_samples_deform = ray_samples_chunk[idx_timesteps_deform]
-                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings, windows_param=window_deform)
+                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings_deform, windows_param=window_deform)
 
                         # Need to explicitly set offsets because ray_samples_deform contains a copy of the ray samples
                         ray_samples_chunk.frustums.offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
 
                 else:
                     # Deform all samples into the latent canonical space
-                    time_embeddings = self.time_embedding(timesteps_chunk)
-                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings, windows_param=window_deform)
+                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings_chunk, windows_param=window_deform)
 
-        return ray_samples
+            time_embeddings = torch.concat(time_embeddings, dim=0)
+        return ray_samples, time_embeddings
 
     def get_outputs(self, ray_bundle: RayBundle):
         assert self.field is not None
@@ -435,9 +441,9 @@ class NGPModel(Model):
         else:
             window_deform = None
 
-        ray_samples = self.warp_ray_samples(ray_samples)
+        ray_samples, time_codes = self.warp_ray_samples(ray_samples)
 
-        field_outputs = self.field(ray_samples, window_deform=window_deform)
+        field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(
