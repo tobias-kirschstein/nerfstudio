@@ -250,6 +250,8 @@ class TCNNInstantNGPField(Field):
             positions_chunk = positions[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
             positions_flat = positions_chunk.view(-1, 3)
             # positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
+            # Manually compute contraction here, as contract(..) is not differentiable wrt the position input
+            # TODO: Does that mean that the deformation field offsets are in world space, not normalized?
             positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
             timesteps_chunk = None

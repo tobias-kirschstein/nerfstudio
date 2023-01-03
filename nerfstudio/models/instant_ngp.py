@@ -24,7 +24,7 @@ from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
-from nerfstudio.cameras.rays import RayBundle, RaySamples
+from nerfstudio.cameras.rays import RayBundle, RaySamples, Frustums
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -169,6 +169,8 @@ class NGPModel(Model):
 
         if self.config.use_deformation_field:
             self.temporal_distortion = SE3Distortion(
+                self.scene_box.aabb,
+                contraction_type=self.config.contraction_type,
                 n_freq_pos=self.config.n_freq_pos_warping,
                 warp_code_dim=self.config.latent_dim_time,
                 mlp_num_layers=self.config.n_layers_deformation_field,
@@ -367,33 +369,34 @@ class NGPModel(Model):
                     ray_samples.frustums.origins.device)
 
             timesteps = ray_samples.timesteps.squeeze(-1)  # [S]
+            # Initialize all offsets with 0
+            assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
+            ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
 
-            if self.config.timestep_canonical is not None:
-                idx_timesteps_deform = timesteps != self.config.timestep_canonical
-                offsets = torch.zeros_like(
-                    ray_samples.frustums.origins)  # Force 0 offset for canonical space to be consistent
+            max_chunk_size = ray_samples.size if self.config.max_ray_samples_chunk_size == -1 else self.config.max_ray_samples_chunk_size
 
-                if idx_timesteps_deform.any():
-                    # Compute offsets
-                    time_embeddings = self.time_embedding(timesteps[idx_timesteps_deform])
-                    ray_samples_deform = ray_samples[idx_timesteps_deform]
-                    self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings, windows_param=window_deform)
+            for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
+                ray_samples_chunk = ray_samples.view(slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size))
+                timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
 
-                    offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
+                if self.config.timestep_canonical is not None:
+                    # Only deform samples that are not from the canonical timestep
+                    idx_timesteps_deform = timesteps_chunk != self.config.timestep_canonical
 
-                ray_samples.frustums.offsets = offsets
-            else:
-                time_embeddings = self.time_embedding(timesteps)
-                self.temporal_distortion(ray_samples, warp_code=time_embeddings, windows_param=window_deform)
+                    if idx_timesteps_deform.any():
+                        # Compute offsets
+                        time_embeddings = self.time_embedding(timesteps_chunk[idx_timesteps_deform])
 
-            # Temporal distortion has to modify ray_samples inplace. Otherwise get OOM
+                        ray_samples_deform = ray_samples_chunk[idx_timesteps_deform]
+                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings, windows_param=window_deform)
 
-            # max_chunk_size = ray_samples.size if self.config.max_ray_samples_chunk_size == -1 else self.config.max_ray_samples_chunk_size
-            # for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
-            #     ray_samples_chunk = ray_samples[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
-            #     time_embeddings = self.time_embedding(timesteps[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size])
-            #
-            #     self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings, windows_param=window_deform)
+                        # Need to explicitly set offsets because ray_samples_deform contains a copy of the ray samples
+                        ray_samples_chunk.frustums.offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
+
+                else:
+                    # Deform all samples into the latent canonical space
+                    time_embeddings = self.time_embedding(timesteps)
+                    self.temporal_distortion(ray_samples, warp_code=time_embeddings, windows_param=window_deform)
 
         return ray_samples
 

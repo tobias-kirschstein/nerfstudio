@@ -311,6 +311,7 @@ class VanillaPipeline(Pipeline):
     @profiler.time_function
     def get_train_image_metrics_and_images(self, step: int):
         self.eval()
+        torch.cuda.empty_cache()
         with torch.no_grad():
             image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
             outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
@@ -328,6 +329,7 @@ class VanillaPipeline(Pipeline):
             # These, we do not want to delete
             # Also, batch is not even on CUDA here
 
+        torch.cuda.empty_cache()
         self.train()
         return metrics_dict, images_dict
 
@@ -340,6 +342,7 @@ class VanillaPipeline(Pipeline):
             step: current iteration step
         """
         self.eval()
+        torch.cuda.empty_cache()
         with torch.no_grad():
             image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
             outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
@@ -356,6 +359,7 @@ class VanillaPipeline(Pipeline):
             for key in images_dict.keys():
                 images_dict[key] = images_dict[key].cpu()
 
+        torch.cuda.empty_cache()
         self.train()
         return metrics_dict, images_dict
 

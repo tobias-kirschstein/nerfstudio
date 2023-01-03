@@ -256,6 +256,40 @@ class TensorDataclass:
         """
         return self._apply_fn_to_fields(lambda x: x.to(device))
 
+    def view(self: TensorDataclassT, *indices):
+        """
+        Returns a TensorDataclass with a view of the original tensor values.
+
+        Args:
+            *indices: one or multiple dimensions of slices.
+            Note that PyTorch does not support views with arbitrary indices, but only with single indices or slices.
+
+        Returns:
+            A TensorDataclass that shares memory with the original dataclass but with the field shrunk to the desired
+            indices
+        """
+
+        for index in indices:
+            assert not isinstance(index, torch.Tensor), "Indexing with tensors does not return a view but a copy!"
+
+        dataclass_values = dict()
+        for field in dataclasses.fields(self):
+            field_name = field.name
+            field_value = getattr(self, field_name)
+
+            if isinstance(field_value, TensorDataclass):
+                field_value_view = field_value.view(*indices)
+            elif isinstance(field_value, torch.Tensor):
+                field_value_view = field_value[indices]
+            elif field_value is None:
+                field_value_view = None
+            else:
+                raise ValueError(f"TensorDataclass.view() is not supported for type {type(field_value)}")
+
+            dataclass_values[field_name] = field_value_view
+
+        return dataclasses.replace(self, **dataclass_values)
+
     def _apply_fn_to_fields(
         self: TensorDataclassT,
         fn: Callable,

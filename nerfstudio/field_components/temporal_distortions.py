@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+from nerfacc import contract, ContractionType
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from torch import nn
@@ -97,6 +98,8 @@ class DNeRFDistortion(TemporalDistortion):
 class SE3Distortion(nn.Module):
 
     def __init__(self,
+                 aabb: torch.Tensor,
+                 contraction_type: ContractionType.AABB,
                  n_freq_pos=7,
                  warp_code_dim: int = 8,
                  mlp_num_layers: int = 6,
@@ -105,6 +108,10 @@ class SE3Distortion(nn.Module):
                  warp_direction: bool = True,
                  ):
         super(SE3Distortion, self).__init__()
+
+        # Parameter(..., requires_grad=False) ensures that AABB is moved to correct device
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+        self.contraction_type = contraction_type
 
         self.se3_field = SE3WarpingField(
             n_freq_pos=n_freq_pos,
@@ -117,9 +124,11 @@ class SE3Distortion(nn.Module):
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
         # assert ray_samples.timesteps is not None, "Cannot warp samples if no time is given"
-        assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
+        assert ray_samples.frustums.offsets is None or (ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
 
         positions = ray_samples.frustums.get_positions()
+        # Note: contract does not propagate gradients to input positions!
+        positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
 
         warped_p, warped_d = self.se3_field(positions,
                                             directions=None,
