@@ -494,7 +494,7 @@ class HashHyperNeRFField(HyperNeRFField):
             n_input_dims=3,
             encoding_config={
                 "otype": "SphericalHarmonics",
-                "degree": 4,
+                "degree": 1,
             },
         )
         if use_hyper_slicing and hyper_slice_dim > 0:
