@@ -66,6 +66,7 @@ class ModelConfig(InstantiateConfig):
     num_layers_background: int = 3
 
     lambda_mask_loss: float = 0
+    mask_rgb_loss: bool = False  # Whether to only compute the RGB loss on foreground pixels if a mask is provided
     enforce_non_masked_density: bool = False
     """Whether the mask loss should enforce density in non-masked regions to be high"""
 
@@ -386,7 +387,7 @@ class Model(nn.Module):
 
         image = batch["image"].to(self.device)
 
-        if "mask" in batch:
+        if self.config.mask_rgb_loss and "mask" in batch:
             # Only compute RGB loss on non-masked pixels
             mask = self.get_mask_per_ray(batch)
 
