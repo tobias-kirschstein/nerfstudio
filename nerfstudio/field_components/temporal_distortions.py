@@ -15,7 +15,7 @@
 """Space distortions which occur as a function of time."""
 
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Literal
 
 import torch
 from nerfacc import contract, ContractionType
@@ -26,6 +26,8 @@ from torchtyping import TensorType
 
 from nerfstudio.field_components.encodings import Encoding, NeRFEncoding
 from nerfstudio.field_components.mlp import MLP
+
+ViewDirectionWarpType = Literal[None, 'rotation', 'samples']
 
 
 class TemporalDistortion(nn.Module):
@@ -105,13 +107,14 @@ class SE3Distortion(nn.Module):
                  mlp_num_layers: int = 6,
                  mlp_layer_width: int = 128,
                  skip_connections: Tuple[int] = (4,),
-                 warp_direction: bool = True,
+                 view_direction_warping: ViewDirectionWarpType = None,
                  ):
         super(SE3Distortion, self).__init__()
 
         # Parameter(..., requires_grad=False) ensures that AABB is moved to correct device
         self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.contraction_type = contraction_type
+        self.view_direction_warping = view_direction_warping
 
         self.se3_field = SE3WarpingField(
             n_freq_pos=n_freq_pos,
@@ -119,23 +122,62 @@ class SE3Distortion(nn.Module):
             mlp_num_layers=mlp_num_layers,
             mlp_layer_width=mlp_layer_width,
             skip_connections=skip_connections,
-            warp_direction=warp_direction
+            warp_direction=view_direction_warping == 'rotation'
         )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
         # assert ray_samples.timesteps is not None, "Cannot warp samples if no time is given"
-        assert ray_samples.frustums.offsets is None or (ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
+        assert ray_samples.frustums.offsets is None or (
+                    ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
 
         positions = ray_samples.frustums.get_positions()
         # Note: contract does not propagate gradients to input positions!
         positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
 
         warped_p, warped_d = self.se3_field(positions,
-                                            directions=None,
+                                            directions=ray_samples.frustums.directions,
                                             warp_code=warp_code,
                                             windows_param=windows_param)
 
         ray_samples.frustums.set_offsets(warped_p - positions)
-        # TODO: Update directions
+
+        if self.view_direction_warping == 'rotation':
+            warped_d = nn.functional.normalize(warped_d, dim=1, p=2)
+            ray_samples.frustums.set_directions(warped_d)
+        elif self.view_direction_warping == 'samples' and ray_samples.ray_indices is not None:
+            idx_no_previous_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts, 1)).squeeze(1).abs() > 0.011
+            idx_no_subsequent_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts, -1)).squeeze(1).abs() > 0.011
+
+            if ray_samples.ray_indices is not None:
+                ray_indices = ray_samples.ray_indices.squeeze()
+                idx_no_previous_sample |= ~(ray_indices == torch.roll(ray_indices, 1))
+                idx_no_subsequent_sample |= ~(ray_indices == torch.roll(ray_indices, -1))
+
+            positions = ray_samples.frustums.get_positions()
+            positions_shifted_right = torch.roll(positions, 1, dims=0)
+            positions_shifted_left = torch.roll(positions, -1, dims=0)
+            pos_diff_previous = positions - positions_shifted_right
+            pos_diff_next = positions_shifted_left - positions
+
+            # ... a - o - o - o - b ... a - b ... ->
+            # Samples which are the last samples of its group (b) will only use the direction from their previous sample
+            # Respectively, samples which are the first in their group (a) will only use the direction ot their next neighbour
+            # All other samples (o) will use the mean betwenn direction to previous and next neighbour
+            warped_d = ray_samples.frustums.directions
+            idx_only_next_sample = idx_no_previous_sample & ~idx_no_subsequent_sample
+            idx_only_previous_sample = ~idx_no_previous_sample & idx_no_subsequent_sample
+            idx_both_previous_and_next = ~idx_no_previous_sample & ~idx_no_subsequent_sample
+            warped_d[idx_only_next_sample] = pos_diff_next[idx_only_next_sample]
+            warped_d[idx_only_previous_sample] = pos_diff_previous[idx_only_previous_sample]
+            warped_d[idx_both_previous_and_next] = (pos_diff_next[idx_both_previous_and_next] + pos_diff_previous[idx_both_previous_and_next]) / 2
+
+            # Cloning is necessary here, otherwise we get the
+            # "cannot backpropagate because one of the variables was updated with an in-place operation"
+            # Somehow the division within the normalize() interfers with the index assignments before
+            # Also: have to use detach() here, as there are NaNs during training otherwise ...
+            warped_d = warped_d.clone().detach()
+            # warped_d = warped_d / warped_d.detach().norm(dim=1, p=2).unsqueeze(1)
+            warped_d = nn.functional.normalize(warped_d, p=2, dim=1)
+            ray_samples.frustums.set_directions(warped_d)
 
         return ray_samples

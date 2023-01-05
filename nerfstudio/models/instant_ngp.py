@@ -8,14 +8,14 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from math import sqrt, ceil
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union, Literal
 
 import nerfacc
 import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from nerfacc import ContractionType
-from nerfstudio.field_components.temporal_distortions import SE3Distortion
+from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
 from torch import nn
 from torch.nn import Parameter, init
 from torch.nn.modules.module import T
@@ -111,6 +111,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_time_conditioning_for_rgb_mlp: bool = False
     use_deformation_skip_connection: bool = False
     use_smoothstep_hashgrid_interpolation: bool = False
+    view_direction_warping: ViewDirectionWarpType = None
 
     no_hash_encoding: bool = False
     n_frequencies: int = 12
@@ -190,7 +191,7 @@ class NGPModel(Model):
                 warp_code_dim=self.config.latent_dim_time,
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
-                warp_direction=False)
+                view_direction_warping=self.config.view_direction_warping)
 
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
@@ -392,6 +393,8 @@ class NGPModel(Model):
             # Initialize all offsets with 0
             assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
             ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
+            # Need to clone here, as directions was created in a no_grad() block
+            ray_samples.frustums.directions = ray_samples.frustums.directions.clone()
 
             max_chunk_size = ray_samples.size if self.config.max_ray_samples_chunk_size == -1 else self.config.max_ray_samples_chunk_size
             time_embeddings = []
@@ -414,10 +417,12 @@ class NGPModel(Model):
 
                         # Need to explicitly set offsets because ray_samples_deform contains a copy of the ray samples
                         ray_samples_chunk.frustums.offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
+                        ray_samples_chunk.frustums.directions[idx_timesteps_deform] = ray_samples_deform.frustums.directions
 
                 else:
                     # Deform all samples into the latent canonical space
                     self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings_chunk, windows_param=window_deform)
+                    # ray_samples.frustums.directions[slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size)] = ray_samples_chunk.frustums.directions
 
             time_embeddings = torch.concat(time_embeddings, dim=0)
         return ray_samples, time_embeddings
@@ -445,6 +450,7 @@ class NGPModel(Model):
         else:
             window_deform = None
 
+        ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, time_codes = self.warp_ray_samples(ray_samples)
 
         field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)
