@@ -42,16 +42,22 @@ class Frustums(TensorDataclass):
     """Projected area of pixel a distance 1 away from origin."""
     offsets: Optional[TensorType["bs":..., 3]] = None
     """Offsets for each sample position"""
+    ambient_coordinates: Optional[TensorType["bs":..., "d_ambient"]] = None
+    """Additional ambient coordinates for each sample"""
 
-    def get_positions(self) -> TensorType[..., 3]:
+    def get_positions(self, omit_offsets: bool = False, omit_ambient_coordinates: bool = False) -> TensorType[..., 3]:
         """Calulates "center" position of frustum. Not weighted by mass.
 
         Returns:
             xyz positions.
         """
         pos = self.origins + self.directions * (self.starts + self.ends) / 2
-        if self.offsets is not None:
+        if not omit_offsets and self.offsets is not None:
             pos = pos + self.offsets
+
+        if not omit_ambient_coordinates and self.ambient_coordinates is not None:
+            pos = torch.concat([pos, self.ambient_coordinates], dim=-1)
+
         return pos
 
     def set_offsets(self, offsets):

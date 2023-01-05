@@ -16,6 +16,7 @@ import torch
 from elias.config import implicit
 from nerfacc import ContractionType
 from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
+from nerfstudio.fields.hypernerf_field import HyperSlicingField
 from torch import nn
 from torch.nn import Parameter, init
 from torch.nn.modules.module import T
@@ -95,6 +96,7 @@ class InstantNGPModelConfig(ModelConfig):
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
+    use_4d_canonical_space: bool = False  # Whether an additional ambient dimension should be used for the canonical space
     max_ray_samples_chunk_size: int = -1
 
     use_deformation_field: bool = False
@@ -178,6 +180,7 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
+            use_4d_canonical_space=self.config.use_4d_canonical_space,
             disable_view_dependency=self.config.disable_view_dependency,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
@@ -195,6 +198,13 @@ class NGPModel(Model):
 
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
+
+            if self.config.use_4d_canonical_space:
+                self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_warping,
+                                                               out_dim=1,
+                                                               warp_code_dim=self.config.latent_dim_time,
+                                                               mlp_num_layers=self.config.n_layers_deformation_field,
+                                                               mlp_layer_width=self.config.hidden_dim_deformation_field)
         else:
             self.temporal_distortion = None
             self.time_embedding = None
@@ -413,15 +423,18 @@ class NGPModel(Model):
                         # Compute offsets
                         time_embeddings_deform = time_embeddings_chunk[idx_timesteps_deform]
                         ray_samples_deform = ray_samples_chunk[idx_timesteps_deform]
-                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings_deform, windows_param=window_deform)
+                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings_deform,
+                                                 windows_param=window_deform)
 
                         # Need to explicitly set offsets because ray_samples_deform contains a copy of the ray samples
                         ray_samples_chunk.frustums.offsets[idx_timesteps_deform] = ray_samples_deform.frustums.offsets
-                        ray_samples_chunk.frustums.directions[idx_timesteps_deform] = ray_samples_deform.frustums.directions
+                        ray_samples_chunk.frustums.directions[
+                            idx_timesteps_deform] = ray_samples_deform.frustums.directions
 
                 else:
                     # Deform all samples into the latent canonical space
-                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings_chunk, windows_param=window_deform)
+                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings_chunk,
+                                             windows_param=window_deform)
                     # ray_samples.frustums.directions[slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size)] = ray_samples_chunk.frustums.directions
 
             time_embeddings = torch.concat(time_embeddings, dim=0)
@@ -452,6 +465,13 @@ class NGPModel(Model):
 
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, time_codes = self.warp_ray_samples(ray_samples)
+
+        if self.config.use_4d_canonical_space:
+            # TODO: maybe move this inside warp_samples?
+            positions_posed_space = ray_samples.frustums.get_positions(omit_offsets=True, omit_ambient_coordinates=True)
+            ambient_coordinates = self.hyper_slicing_network(positions_posed_space,
+                                                             warp_code=time_codes)
+            ray_samples.frustums.ambient_coordinates = ambient_coordinates
 
         field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)
 
