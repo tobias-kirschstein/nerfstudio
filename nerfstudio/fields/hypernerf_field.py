@@ -93,13 +93,16 @@ class SE3WarpingField(nn.Module):
         nn.init.zeros_(self.mlp_r.layers[-1].bias)
         nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
-    def forward(
-        self, positions, directions=None, warp_code=None, windows_param=None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(self, positions, directions=None, warp_code=None, windows_param=None, covs=None):
         if warp_code is None:
             return None
 
-        encoded_xyz = self.position_encoding(positions, windows_param=windows_param)  # (R, S, 3)
+        encoded_xyz = self.position_encoding(
+            positions,
+            windows_param=windows_param,
+            # covs=covs,
+            # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+        )  # (R, S, 3)
 
         feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
@@ -120,9 +123,10 @@ class SE3WarpingField(nn.Module):
         warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
 
         # Reshape to shape of input positions tensor
-        warped_p = warped_p.reshape(*positions.shape[: len(positions.shape) - 1], 3)
+        warped_p = warped_p.reshape(*positions.shape[: positions.ndim - 1], 3)
 
         if self.warp_direction:
+            assert directions is not None
             d = directions.reshape(-1, 3)
 
             warped_d = (rots @ d.unsqueeze(-1)).squeeze(-1)
@@ -131,11 +135,28 @@ class SE3WarpingField(nn.Module):
             idx_nan = warped_d.isnan()
             warped_d[idx_nan] = d[idx_nan]  # if deformation is NaN, just use original point
 
-            warped_d = warped_d.reshape(*directions.shape[: len(directions.shape) - 1], 3)
+            warped_d = warped_d.reshape(
+                *directions.shape[: directions.ndim - 1], 3
+            )  # .detach()  #TODO: further test its inluece to training stability
         else:
             warped_d = directions
 
-        return warped_p, warped_d
+        if covs is not None:
+            c = covs.reshape(-1, *covs.shape[-2:])
+
+            warped_c = rots @ c @ rots.transpose(-2, -1)
+            warped_c = warped_c.to(covs.dtype)
+
+            idx_nan = warped_c.isnan()
+            warped_c[idx_nan] = c[idx_nan]  # if deformation is NaN, just use original point
+
+            warped_c = warped_c.reshape(
+                covs.shape
+            ).detach()  # detach warped_c to avoid back-propagating to rot (necessary to avoid NaN)
+
+            return warped_p, warped_d, warped_c
+        else:
+            return warped_p, warped_d
 
 
 class DeformationField(nn.Module):
@@ -211,10 +232,11 @@ class HyperSlicingField(nn.Module):
 
         nn.init.normal_(self.mlp.layers[-1].weight, std=1e-5)
 
-    def forward(self, positions, warp_code=None, window_param: Optional[float] = None):
+    def forward(self, positions, warp_code=None, covs=None, window_param: Optional[float] = None):
         if warp_code is None:
             return None
-        p = self.position_encoding(positions, windows_param=window_param)
+        p = self.position_encoding(positions, windows_param=window_param, covs=covs)
+
         return self.mlp(torch.cat([p, warp_code], dim=-1))
 
 
@@ -257,7 +279,7 @@ class HyperNeRFField(Field):
         self.spatial_distortion = spatial_distortion
 
         # template NeRF
-        self.position_encoding = NeRFEncoding(
+        self.position_encoding = WindowedNeRFEncoding(
             in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
         )
         self.direction_encoding = NeRFEncoding(
@@ -299,64 +321,61 @@ class HyperNeRFField(Field):
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
         window_beta: Optional[float] = None,
+        window_gamma: Optional[float] = None,
     ):
-        # if self.use_integrated_encoding:
-        #     gaussian_samples = ray_samples.frustums.get_gaussian_blob()
-        #     if self.spatial_distortion is not None:
-        #         gaussian_samples = self.spatial_distortion(gaussian_samples)
-        #     encoded_xyz = self.position_encoding(gaussian_samples.mean, covs=gaussian_samples.cov)
-        # else:
-        #     positions = ray_samples.frustums.get_positions()
-        #     if self.spatial_distortion is not None:
-        #         positions = self.spatial_distortion(positions)
-        #     encoded_xyz = self.position_encoding(positions)
-
         warped_directions = None
+        base_inputs = []
+        directions = ray_samples.frustums.directions
 
         if self.use_integrated_encoding:
             gaussian_samples = ray_samples.frustums.get_gaussian_blob()
             if self.spatial_distortion is not None:
                 gaussian_samples = self.spatial_distortion(gaussian_samples)
-            # encoded_xyz = self.position_encoding(gaussian_samples.mean, covs=gaussian_samples.cov)
 
             if warp_field is None and slice_field is None:
-                pass
-                # encoded_xyz = self.position_encoding(positions)
-                # base_inputs = [encoded_xyz]
-                # if warp_code is not None:
-                #     base_inputs.append(warp_code)
-            else:
-                base_inputs = []
+                encoded_xyz = self.position_encoding(
+                    gaussian_samples.mean, windows_param=window_gamma, covs=gaussian_samples.cov
+                )
+                base_inputs.append(encoded_xyz)
+                if warp_code is not None:
+                    base_inputs.append(warp_code)
 
             if warp_field is not None:
-                warped_positions = warp_field(gaussian_samples, warp_code, window_alpha)
+                warped_positions, warped_directions, warped_cov = warp_field(
+                    gaussian_samples.mean,
+                    directions,
+                    warp_code,
+                    window_alpha,
+                    covs=gaussian_samples.cov,
+                )
 
-                encoded_xyz = self.position_encoding(warped_positions)
+                encoded_xyz = self.position_encoding(warped_positions, windows_param=window_gamma, covs=warped_cov)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
-                w = slice_field(positions, warp_code)
-
+                w = slice_field(
+                    gaussian_samples.mean,
+                    warp_code,
+                    # covs=gaussian_samples.cov,
+                    # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+                )
+                assert self.slicing_encoding is not None
                 encoded_w = self.slicing_encoding(w, windows_param=window_beta)
                 base_inputs.append(encoded_w)
         else:
-
             positions = ray_samples.frustums.get_positions()
-            directions = ray_samples.frustums.directions
             if self.spatial_distortion is not None:
                 positions = self.spatial_distortion(positions)
 
             if warp_field is None and slice_field is None:
-                encoded_xyz = self.position_encoding(positions)
-                base_inputs = [encoded_xyz]
+                encoded_xyz = self.position_encoding(positions, windows_param=window_gamma)
+                base_inputs.append(encoded_xyz)
                 if warp_code is not None:
                     base_inputs.append(warp_code)
-            else:
-                base_inputs = []
 
             if warp_field is not None:
                 warped_positions, warped_directions = warp_field(positions, directions, warp_code, window_alpha)
 
-                encoded_xyz = self.position_encoding(warped_positions)
+                encoded_xyz = self.position_encoding(warped_positions, windows_param=window_gamma)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
                 w = slice_field(positions, warp_code)
@@ -406,6 +425,7 @@ class HyperNeRFField(Field):
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
         window_beta: Optional[float] = None,
+        window_gamma: Optional[float] = None,
     ):
         """Evaluates the field at points along the ray.
 
@@ -436,11 +456,11 @@ class HyperNeRFField(Field):
         if compute_normals:
             with torch.enable_grad():
                 density, density_embedding, warped_directions = self.get_density(
-                    ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta
+                    ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta, window_gamma
                 )
         else:
             density, density_embedding, warped_directions = self.get_density(
-                ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta
+                ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta, window_gamma
             )
 
         field_outputs = self.get_outputs(
@@ -470,7 +490,6 @@ class HashHyperNeRFField(HyperNeRFField):
         head_mlp_num_layers: Number of layer for ourput head MLP.
         head_mlp_layer_width: Width of output head MLP layers.
         skip_connections: Where to add skip connection in base MLP.
-        use_integrated_encoding: Used integrated samples as encoding input.
         spatial_distortion: Spatial distortion.
     """
 
@@ -487,12 +506,10 @@ class HashHyperNeRFField(HyperNeRFField):
         head_mlp_num_layers: int = 2,
         head_mlp_layer_width: int = 128,
         field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-        use_integrated_encoding: bool = False,
     ) -> None:
         super(HyperNeRFField, self).__init__()
 
         self.aabb = nn.Parameter(aabb, requires_grad=False)
-        self.use_integrated_encoding = use_integrated_encoding
 
         # template NeRF
         self.direction_encoding = tcnn.Encoding(

@@ -35,7 +35,7 @@ from nerfstudio.configs.base_config import InstantiateConfig
 from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
-from nerfstudio.model_components.scene_colliders import NearFarCollider, AABBBoxCollider
+from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
 
 
 # Model related configs
@@ -87,12 +87,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-            self,
-            config: ModelConfig,
-            scene_box: SceneBox,
-            num_train_data: int,
-            camera_frustums: Optional[List[Frustum]] = None,
-            **kwargs,
+        self,
+        config: ModelConfig,
+        scene_box: SceneBox,
+        num_train_data: int,
+        camera_frustums: Optional[List[Frustum]] = None,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -102,8 +102,8 @@ class Model(nn.Module):
         self.kwargs = kwargs
         self.collider = None
 
+        self.callbacks = []
         self.populate_modules()  # populate the modules
-        self.callbacks = None
         # to keep track of which device the nn.Module is on
         self.device_indicator_param = nn.Parameter(torch.empty(0))
 
@@ -113,7 +113,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -125,7 +125,7 @@ class Model(nn.Module):
 
         if self.config.enable_collider:
 
-            if self.config.collider_type == 'AABBBox':
+            if self.config.collider_type == "AABBBox":
                 self.collider = AABBBoxCollider(scene_box=self.scene_box)
 
             elif self.config.collider_type == "NearFar":
@@ -257,7 +257,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -282,11 +282,11 @@ class Model(nn.Module):
         self.load_state_dict(state)  # type: ignore
 
     def apply_background_network(
-            self,
-            batch: Dict[str, torch.Tensor],
-            rgb: torch.Tensor,
-            accumulation: torch.Tensor,
-            background_adjustments: Optional[torch.Tensor] = None,
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        background_adjustments: Optional[torch.Tensor] = None,
     ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
@@ -333,7 +333,7 @@ class Model(nn.Module):
         return rgb
 
     def apply_background_adjustment(
-            self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
     ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
@@ -398,11 +398,14 @@ class Model(nn.Module):
         return rgb_loss
 
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
-        if self.config.use_background_network and "background_adjustments" in outputs \
-                and self.config.lambda_background_adjustment_regularization > 0:
+        if (
+            self.config.use_background_network
+            and "background_adjustments" in outputs
+            and self.config.lambda_background_adjustment_regularization > 0
+        ):
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = (
-                    self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
             )
 
             if background_adjustment_displacement.isnan().any():
@@ -436,7 +439,8 @@ class Model(nn.Module):
 
             if mask_loss.isnan():
                 print(
-                    f"WARNING! MASK LOSS IS NAN! accumulation_per_ray: {accumulation_per_ray}, mask_value_per_ray: {mask_value_per_ray}")
+                    f"WARNING! MASK LOSS IS NAN! accumulation_per_ray: {accumulation_per_ray}, mask_value_per_ray: {mask_value_per_ray}"
+                )
                 mask_loss = 0
 
         return mask_loss
@@ -450,11 +454,9 @@ class Model(nn.Module):
 
         return beta_loss
 
-    def apply_mask(self,
-                   batch: Dict[str, torch.Tensor],
-                   rgb: torch.Tensor,
-                   accumulation: torch.Tensor) -> Tuple[
-        Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def apply_mask(
+        self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
 
         if "mask" in batch:
             # Log masked GT image + masked model prediction which is what the evaluation is performed on
@@ -475,11 +477,11 @@ class Model(nn.Module):
         return None, None, None
 
     def apply_mask_and_combine_images(
-            self,
-            batch: Dict[str, torch.Tensor],
-            rgb: torch.Tensor,
-            accumulation: torch.Tensor,
-            rgb_without_bg: Optional[torch.Tensor],
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        rgb_without_bg: Optional[torch.Tensor],
     ):
 
         image = batch["image"].to(self.device)
