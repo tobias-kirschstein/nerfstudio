@@ -96,15 +96,18 @@ class InstantNGPModelConfig(ModelConfig):
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
-    use_4d_canonical_space: bool = False  # Whether an additional ambient dimension should be used for the canonical space
     max_ray_samples_chunk_size: int = -1
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
     hidden_dim_deformation_field: int = 128
     n_freq_pos_warping: int = 7
+    n_freq_pos_ambient: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
+    window_ambient_begin: int = 0  # the number of steps window_ambient is set to 0
+    window_ambient_end: int = 0  # The number of steps when window_ambient reaches its maximum
+    n_ambient_dimensions: int = 0  # How many ambient dimensions should be used
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
     timestep_canonical: Optional[
         int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
@@ -180,7 +183,7 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
-            use_4d_canonical_space=self.config.use_4d_canonical_space,
+            n_ambient_dimensions=self.config.n_ambient_dimensions,
             disable_view_dependency=self.config.disable_view_dependency,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
@@ -199,9 +202,9 @@ class NGPModel(Model):
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
 
-            if self.config.use_4d_canonical_space:
-                self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_warping,
-                                                               out_dim=1,
+            if self.config.n_ambient_dimensions > 0:
+                self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_ambient,
+                                                               out_dim=self.config.n_ambient_dimensions,
                                                                warp_code_dim=self.config.latent_dim_time,
                                                                mlp_num_layers=self.config.n_layers_deformation_field,
                                                                mlp_layer_width=self.config.hidden_dim_deformation_field)
@@ -252,6 +255,16 @@ class NGPModel(Model):
             )
         else:
             self.sched_window_deform = None
+
+        if self.config.window_ambient_begin > 0 or self.config.window_ambient_end > 0:
+            self.sched_window_ambient = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_pos_warping,
+                begin_step=self.config.window_ambient_begin,
+                end_step=self.config.window_ambient_end,
+            )
+        else:
+            self.sched_window_ambient = None
 
         # background
         if self.config.use_backgrounds:
@@ -334,6 +347,16 @@ class NGPModel(Model):
                     update_every_num_iters=1,
                     func=update_window_param,
                     args=[self.sched_window_deform, "sched_window_deform"],
+                )
+            )
+
+        if self.sched_window_ambient is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_ambient, "sched_window_ambient"],
                 )
             )
 
@@ -466,11 +489,15 @@ class NGPModel(Model):
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, time_codes = self.warp_ray_samples(ray_samples)
 
-        if self.config.use_4d_canonical_space:
+        if self.config.n_ambient_dimensions > 0:
             # TODO: maybe move this inside warp_samples?
+
+            window_ambient = None if self.sched_window_ambient is None else self.sched_window_ambient.value
+
             positions_posed_space = ray_samples.frustums.get_positions(omit_offsets=True, omit_ambient_coordinates=True)
             ambient_coordinates = self.hyper_slicing_network(positions_posed_space,
-                                                             warp_code=time_codes)
+                                                             warp_code=time_codes,
+                                                             window_param=window_ambient)
             ray_samples.frustums.ambient_coordinates = ambient_coordinates
 
         field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)

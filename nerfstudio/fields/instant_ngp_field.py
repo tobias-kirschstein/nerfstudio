@@ -87,7 +87,7 @@ class TCNNInstantNGPField(Field):
             use_time_conditioning_for_rgb_mlp: bool = False,
             use_deformation_skip_connection: bool = False,
             use_smoothstep_hashgrid_interpolation: bool = False,
-            use_4d_canonical_space: bool = False,
+            n_ambient_dimensions: int = 0,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -106,7 +106,7 @@ class TCNNInstantNGPField(Field):
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
         self.density_threshold = density_threshold
         self.use_4d_hashing = use_4d_hashing
-        self.use_4d_canonical_space = use_4d_canonical_space
+        self.n_ambient_dimensions = n_ambient_dimensions
         self.fix_canonical_space = fix_canonical_space
         self.timestep_canonical = timestep_canonical
         self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
@@ -194,17 +194,18 @@ class TCNNInstantNGPField(Field):
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
-            n_base_inputs = 4 if use_4d_hashing or use_4d_canonical_space else 3
+            n_base_inputs = 4 if use_4d_hashing else 3
 
-            if use_4d_canonical_space:
+            if n_ambient_dimensions > 0:
+                n_base_inputs += n_ambient_dimensions
                 base_network_encoding_config = {
                     "otype": "Composite",
                     "nested": [
                         base_network_encoding_config,
                         {
                             "otype": "Frequency",
-                            "n_dims_to_encode": 1,
-                            "n_frequencies": 8
+                            "n_dims_to_encode": n_ambient_dimensions,
+                            "n_frequencies": 2
                         }
                     ]
                 }
@@ -279,11 +280,12 @@ class TCNNInstantNGPField(Field):
         densities = []
         base_mlp_outs = []
 
-        if self.use_4d_canonical_space and ray_samples.frustums.ambient_coordinates is None:
+        if self.n_ambient_dimensions > 0 and ray_samples.frustums.ambient_coordinates is None:
             # Assume that this is a forward pass for the occupancy grid
             # Randomly sample ambient coordinates in [-1, 1]
-            ambient_coordinates = torch.rand(ray_samples.frustums.shape).to(ray_samples.frustums.origins) * 2 - 1
-            ray_samples.frustums.ambient_coordinates = ambient_coordinates.unsqueeze(-1)
+            ambient_coordinates = torch.rand((*ray_samples.frustums.shape, self.n_ambient_dimensions))
+            ambient_coordinates = ambient_coordinates.to(ray_samples.frustums.origins) * 2 - 1
+            ray_samples.frustums.ambient_coordinates = ambient_coordinates
 
         # Nerfacc's occupancy grid update is quite costl, it queries get_density() with 128^3 which are
         # much more samples than the regular rendering requires

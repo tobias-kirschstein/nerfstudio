@@ -193,9 +193,14 @@ class HyperSlicingField(nn.Module):
         skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
-        self.position_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
+
+        self.position_encoding = WindowedNeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=False
         )
+
+        # self.position_encoding = NeRFEncoding(
+        #     in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
+        # )
         self.mlp = MLP(
             in_dim=self.position_encoding.get_out_dim() + warp_code_dim,
             out_dim=out_dim,
@@ -206,10 +211,10 @@ class HyperSlicingField(nn.Module):
 
         nn.init.normal_(self.mlp.layers[-1].weight, std=1e-5)
 
-    def forward(self, positions, warp_code=None):
+    def forward(self, positions, warp_code=None, window_param: Optional[float] = None):
         if warp_code is None:
             return None
-        p = self.position_encoding(positions)
+        p = self.position_encoding(positions, windows_param=window_param)
         return self.mlp(torch.cat([p, warp_code], dim=-1))
 
 
