@@ -87,13 +87,15 @@ class TCNNInstantNGPField(Field):
             use_time_conditioning_for_rgb_mlp: bool = False,
             use_deformation_skip_connection: bool = False,
             use_smoothstep_hashgrid_interpolation: bool = False,
+            use_4d_canonical_space: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
             density_threshold: Optional[float] = None,
             use_4d_hashing: bool = False,
 
-            density_fn_ray_samples_transform: Callable[[RaySamples], Tuple[RaySamples, Optional[torch.TensorType]]] = lambda x: x
+            density_fn_ray_samples_transform: Callable[
+                [RaySamples], Tuple[RaySamples, Optional[torch.TensorType]]] = lambda x: x
     ) -> None:
         super().__init__(density_fn_ray_samples_transform=density_fn_ray_samples_transform)
 
@@ -104,6 +106,7 @@ class TCNNInstantNGPField(Field):
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
         self.density_threshold = density_threshold
         self.use_4d_hashing = use_4d_hashing
+        self.use_4d_canonical_space = use_4d_canonical_space
         self.fix_canonical_space = fix_canonical_space
         self.timestep_canonical = timestep_canonical
         self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
@@ -162,10 +165,6 @@ class TCNNInstantNGPField(Field):
                 # If a deformation field is used, the time embeddings are not fed into the base MLP but into
                 # the deformation network instead
 
-                # self.deformation_network = SE3Field(latent_dim_time, hidden_dim)
-
-                # self.deformation_network = DeformationField(num_layers_deformation_field, hidden_dim, latent_dim_time)
-
                 self.deformation_network = SE3WarpingField(
                     n_freq_pos=n_freq_pos_warping,
                     warp_code_dim=latent_dim_time,
@@ -174,18 +173,6 @@ class TCNNInstantNGPField(Field):
                     warp_direction=False,
                 )
                 self._previous_window_deform = None
-
-                # self.bullshit_deformer = nn.Linear(3, 3)
-                # self.bullshit_deformer.weight.register_hook(lambda grad: print(f"GRADIENT: ", grad))
-                # self.bullshit_deformer_2 = nn.Parameter(torch.zeros((2, 3), dtype=torch.float32), requires_grad=True)
-                # # self.bullshit_deformer_3 = nn.Parameter(torch.zeros((3, 3), dtype=torch.float32), requires_grad=True)
-                # self.bullshit_deformer_3 = tcnn.Network(3, 3, {
-                #     "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
-                #     "activation": "ReLU",
-                #     "output_activation": "None",
-                #     "n_neurons": hidden_dim,
-                #     "n_hidden_layers": num_layers - 1,
-                # })
 
                 base_network_encoding_config = hash_grid_encoding_config
                 n_base_inputs = 3
@@ -207,9 +194,23 @@ class TCNNInstantNGPField(Field):
         else:
             base_network_encoding_config = hash_grid_encoding_config
             self.time_embedding = None
-            n_base_inputs = 4 if use_4d_hashing else 3
+            n_base_inputs = 4 if use_4d_hashing or use_4d_canonical_space else 3
+
+            if use_4d_canonical_space:
+                base_network_encoding_config = {
+                    "otype": "Composite",
+                    "nested": [
+                        base_network_encoding_config,
+                        {
+                            "otype": "Frequency",
+                            "n_dims_to_encode": 1,
+                            "n_frequencies": 8
+                        }
+                    ]
+                }
 
             if use_time_conditioning_for_base_mlp:
+                # TODO: This cannot go together with 4D canonical space
                 base_network_encoding_config = {
                     "otype": "Composite",
                     "nested": [
@@ -278,21 +279,28 @@ class TCNNInstantNGPField(Field):
         densities = []
         base_mlp_outs = []
 
+        if self.use_4d_canonical_space and ray_samples.frustums.ambient_coordinates is None:
+            # Assume that this is a forward pass for the occupancy grid
+            # Randomly sample ambient coordinates in [-1, 1]
+            ambient_coordinates = torch.rand(ray_samples.frustums.shape).to(ray_samples.frustums.origins) * 2 - 1
+            ray_samples.frustums.ambient_coordinates = ambient_coordinates.unsqueeze(-1)
+
         # Nerfacc's occupancy grid update is quite costl, it queries get_density() with 128^3 which are
         # much more samples than the regular rendering requires
         # To avoid being GPU memory upper-bounded by nerfacc's occupancy grid size, we resort to sequential chunking
         # This should not hurt performance too much as the occupancy grid is only updated periodically
         max_chunk_size = ray_samples.size if self.max_ray_samples_chunk_size == -1 else self.max_ray_samples_chunk_size
         positions = ray_samples.frustums.get_positions()
+        d_spatial = positions.shape[-1]
         timesteps = None if ray_samples.timesteps is None else ray_samples.timesteps.squeeze(-1)
 
         for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
             positions_chunk = positions[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
-            positions_flat = positions_chunk.view(-1, 3)
+            positions_flat = positions_chunk.view(-1, d_spatial)
             # positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
             # Manually compute contraction here, as contract(..) is not differentiable wrt the position input
-            # TODO: Does that mean that the deformation field offsets are in world space, not normalized?
-            positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+            # Do not contract ambient dimensions (i.e., only the first 3 dimensions)
+            positions_flat[:, :3] = (positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
             timesteps_chunk = None
             if timesteps is not None:
@@ -323,25 +331,6 @@ class TCNNInstantNGPField(Field):
                         if idx_timesteps_deform.any():
                             positions_to_deform = positions_flat[idx_timesteps_deform]
 
-                            # TODO: Remove torch.zeros_like()
-
-                            # ps = torch.randn((5, 11, 3)).cuda()
-                            # te = torch.randn((5, 11, 128)).cuda()
-                            #
-                            # self.deformation_network(ps,
-                            #                          warp_code=te,
-                            #                          windows_param=window_deform)
-
-                            # deformed_points = self.deformation_network(positions_to_deform,
-                            #                                            warp_code=time_embeddings[idx_timesteps_deform],
-                            #                                            windows_param=window_deform)
-
-                            # Deformation network has to learn 0 in beginning
-                            # deformed_points = positions_to_deform + self.deformation_network(positions_to_deform,
-                            #                                            time_embeddings[idx_timesteps_deform])
-
-                            # Deformation network has to learn identity in beginning
-
                             if window_deform is None:
                                 window_deform = self._previous_window_deform
                             else:
@@ -354,13 +343,6 @@ class TCNNInstantNGPField(Field):
                                                                           windows_param=window_deform)
 
                             positions_flat[idx_timesteps_deform] = deformed_points
-                            # positions_flat[idx_timesteps_deform] = positions_to_deform
-
-                            # deformation_inputs = [positions_to_deform, time_embeddings[idx_timesteps_deform]]
-                            # deformation_inputs = torch.concat(deformation_inputs, dim=1)
-                            # deformation = self.deformation_network(deformation_inputs)
-                            # # deformation = torch.zeros_like(deformation)
-                            # positions_flat[idx_timesteps_deform] = positions_to_deform + deformation
 
                         base_inputs = [positions_flat]
                     else:
@@ -389,7 +371,6 @@ class TCNNInstantNGPField(Field):
 
                 h_canonical = self.mlp_base(base_inputs[~idx_timesteps_deform])
 
-                # TODO: Double check that we get gradients for the time embeddings and MLP...
                 h = torch.zeros((base_inputs.shape[0], *h_canonical.shape[1:]),
                                 dtype=h_canonical.dtype,
                                 device=h_canonical.device)
@@ -421,7 +402,7 @@ class TCNNInstantNGPField(Field):
         if ray_samples.size == 0:
             # Weird edge case
             positions = ray_samples.frustums.get_positions()
-            positions_flat = positions.view(-1, 3)
+            positions_flat = positions.view(-1, d_spatial)
             positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
 
             h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, 1 + self.geo_feat_dim)
@@ -442,11 +423,12 @@ class TCNNInstantNGPField(Field):
 
         if density_embedding is None:
             positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+            d_spatial = positions.shape[-1]
             if self.direction_encoding is None:
-                h = positions.view(-1, 3)
+                h = positions.view(-1, d_spatial)
             else:
                 d = self.direction_encoding(directions_flat)
-                h = torch.cat([d, positions.view(-1, 3)], dim=-1)
+                h = torch.cat([d, positions.view(-1, d_spatial)], dim=-1)
         else:
             if self.direction_encoding is None:
                 h = density_embedding.view(-1, self.geo_feat_dim)

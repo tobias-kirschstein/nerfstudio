@@ -263,6 +263,45 @@ class DepthRenderer(nn.Module):
         raise NotImplementedError(f"Method {self.method} not implemented")
 
 
+class DepthVarianceRenderer(nn.Module):
+    """Calculate depth variance along ray."""
+
+    def forward(
+            self,
+            weights: TensorType[..., "num_samples", 1],
+            ray_samples: RaySamples,
+            depth: TensorType[..., "num_samples", 1],
+            accumulation: TensorType[..., "num_samples", 1],
+            ray_indices: Optional[TensorType["num_samples"]] = None,
+            num_rays: Optional[int] = None,
+    ) -> TensorType[..., 1]:
+        """Composite samples along ray and calculate depth variance.
+
+        Args:
+            weights: Weights for each sample.
+            ray_samples: Set of ray samples.
+            ray_indices: Ray index for each sample, used when samples are packed.
+            num_rays: Number of rays, used when samples are packed.
+
+        Returns:
+            Outputs of depth values.
+        """
+
+        eps = 1e-10
+        steps = (ray_samples.frustums.starts + ray_samples.frustums.ends) / 2
+        depth_per_sample = depth[ray_indices]
+        variance_per_sample = (depth_per_sample - steps).pow(2)
+
+        if ray_indices is not None and num_rays is not None:
+            # Necessary for packed samples from volumetric ray sampler
+            depth_variance = nerfacc.accumulate_along_rays(weights, ray_indices, variance_per_sample, num_rays)
+            depth_variance = depth_variance / (accumulation + eps)
+        else:
+            depth_variance = torch.sum(weights * variance_per_sample, dim=-2) / (torch.sum(weights, -2) + eps)
+
+        return depth_variance
+
+
 class DeformationRenderer(nn.Module):
     def forward(
             self,

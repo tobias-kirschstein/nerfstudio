@@ -42,16 +42,22 @@ class Frustums(TensorDataclass):
     """Projected area of pixel a distance 1 away from origin."""
     offsets: Optional[TensorType["bs":..., 3]] = None
     """Offsets for each sample position"""
+    ambient_coordinates: Optional[TensorType["bs":..., "d_ambient"]] = None
+    """Additional ambient coordinates for each sample"""
 
-    def get_positions(self) -> TensorType[..., 3]:
+    def get_positions(self, omit_offsets: bool = False, omit_ambient_coordinates: bool = False) -> TensorType[..., 3]:
         """Calulates "center" position of frustum. Not weighted by mass.
 
         Returns:
             xyz positions.
         """
         pos = self.origins + self.directions * (self.starts + self.ends) / 2
-        if self.offsets is not None:
+        if not omit_offsets and self.offsets is not None:
             pos = pos + self.offsets
+
+        if not omit_ambient_coordinates and self.ambient_coordinates is not None:
+            pos = torch.concat([pos, self.ambient_coordinates], dim=-1)
+
         return pos
 
     def set_offsets(self, offsets):
@@ -61,6 +67,20 @@ class Frustums(TensorDataclass):
         else:
             # Ensure views of this TensorDataclass can update the original TensorDataclass
             self.offsets[:] = offsets
+
+    def set_directions(self, directions: TensorType["bs":..., 3]):
+        """
+        If you get "A view was created in no_grad mode and is being modified inplace with grad mode enabled"
+        Try setting ```ray_samples.frustums.directions = ray_samples.frustums.directions.clone()```
+        before using this function.
+        This is an artifact of the ray directions being initialized in a no_grad() block but then updated in-place
+        in for normal gradient flow
+        """
+        if self.directions is None:
+            self.directions = directions
+        else:
+            # Ensure views of this TensorDataclass can update the original TensorDataclass
+            self.directions[:] = directions
 
     def get_gaussian_blob(self) -> Gaussians:
         """Calculates guassian approximation of conical frustum.
@@ -118,6 +138,8 @@ class RaySamples(TensorDataclass):
     """Times at which rays are sampled"""
 
     timesteps: Optional[TensorType["bs":..., 1]] = None  # timestep per sample
+    ray_indices: Optional[
+        TensorType["bs": ..., 1]] = None  # Maps each sample back to its original ray where it was sampled from
 
     def get_weights(self, densities: TensorType[..., "num_samples", 1]) -> TensorType[..., "num_samples", 1]:
         """Return weights based on predicted densities
@@ -206,12 +228,12 @@ class RayBundle(TensorDataclass):
         return self.flatten()[start_idx:end_idx]
 
     def get_ray_samples(
-        self,
-        bin_starts: TensorType["bs":..., "num_samples", 1],
-        bin_ends: TensorType["bs":..., "num_samples", 1],
-        spacing_starts: Optional[TensorType["bs":..., "num_samples", 1]] = None,
-        spacing_ends: Optional[TensorType["bs":..., "num_samples", 1]] = None,
-        spacing_to_euclidean_fn: Optional[Callable] = None,
+            self,
+            bin_starts: TensorType["bs":..., "num_samples", 1],
+            bin_ends: TensorType["bs":..., "num_samples", 1],
+            spacing_starts: Optional[TensorType["bs":..., "num_samples", 1]] = None,
+            spacing_ends: Optional[TensorType["bs":..., "num_samples", 1]] = None,
+            spacing_to_euclidean_fn: Optional[Callable] = None,
     ) -> RaySamples:
         """Produces samples for each ray by projection points along the ray direction. Currently samples uniformly.
 
@@ -248,7 +270,7 @@ class RayBundle(TensorDataclass):
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
             metadata=shaped_raybundle_fields.metadata,
             times=None if self.times is None else self.times[..., None],  # [..., 1, 1]
-            timesteps=None if self.timesteps is None else self.timesteps[..., None],   # [..., 1, 1]
+            timesteps=None if self.timesteps is None else self.timesteps[..., None],  # [..., 1, 1]
         )
 
         return ray_samples
