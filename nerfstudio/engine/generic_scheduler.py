@@ -19,7 +19,10 @@ class GenericScheduler(torch.nn.Module):
         elif step < self.begin_step:
             self.value = self.init_value
         else:
-            self.value = min(max((step - self.begin_step) / (self.end_step - self.begin_step), 0), 1) * self.final_value
+            delta = min(max((step - self.begin_step) / (self.end_step - self.begin_step), 0), 1) * (
+                self.final_value - self.init_value
+            )
+            self.value = self.init_value + delta
 
     def get_value(self):
         if self.training:  # inherit from torch.nn.Module
