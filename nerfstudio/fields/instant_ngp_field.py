@@ -80,6 +80,7 @@ class TCNNInstantNGPField(Field):
             use_deformation_field: bool = False,
             fix_canonical_space: bool = False,
             n_freq_pos_warping: int = 7,
+            n_freq_pos_ambient: int = 7,
             n_layers_deformation_field: int = 6,
             hidden_dim_deformation_field: int = 128,
             timestep_canonical: Optional[int] = 0,
@@ -205,7 +206,7 @@ class TCNNInstantNGPField(Field):
                         {
                             "otype": "Frequency",
                             "n_dims_to_encode": n_ambient_dimensions,
-                            "n_frequencies": 2
+                            "n_frequencies": n_freq_pos_ambient
                         }
                     ]
                 }

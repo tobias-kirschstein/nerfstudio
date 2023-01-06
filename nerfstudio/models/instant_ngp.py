@@ -184,6 +184,7 @@ class NGPModel(Model):
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
             n_ambient_dimensions=self.config.n_ambient_dimensions,
+            n_freq_pos_ambient=self.config.n_freq_pos_ambient,
             disable_view_dependency=self.config.disable_view_dependency,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
