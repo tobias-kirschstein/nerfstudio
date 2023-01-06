@@ -176,10 +176,7 @@ class NGPModel(Model):
             n_timesteps=self.config.n_timesteps,
             max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
 
-            use_deformation_field=self.config.use_deformation_field,
             fix_canonical_space=self.config.fix_canonical_space,
-            n_layers_deformation_field=self.config.n_layers_deformation_field,
-            hidden_dim_deformation_field=self.config.hidden_dim_deformation_field,
             timestep_canonical=self.config.timestep_canonical,
             use_time_conditioning_for_base_mlp=self.config.use_time_conditioning_for_base_mlp,
             use_time_conditioning_for_rgb_mlp=self.config.use_time_conditioning_for_rgb_mlp,
@@ -373,11 +370,21 @@ class NGPModel(Model):
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = super(NGPModel, self).get_param_groups()
 
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
+        field_param_groups = self.field.get_param_groups()
+        for key, params in field_param_groups.items():
+            if key in param_groups:
+                param_groups[key].extend(params)
+            else:
+                param_groups[key] = params
 
-        param_groups["fields"].extend(self.field.mlp_base.parameters())
-        param_groups["fields"].extend(self.field.mlp_head.parameters())
+        # if self.field is None:
+        #     raise ValueError("populate_fields() must be called before get_param_groups")
+        #
+        # param_groups["fields"].extend(self.field.mlp_base.parameters())
+        # param_groups["fields"].extend(self.field.mlp_head.parameters())
+        #
+        # if self.config.use_camera_embedding:
+        #     param_groups["fields"].extend(self.field.camera_embedding.parameters())
 
         if self.temporal_distortion is not None:
             param_groups["deformation_field"] = []
@@ -389,12 +396,12 @@ class NGPModel(Model):
 
             param_groups["deformation_field"].extend(self.time_embedding.parameters())
 
-        # TODO: This is from old way of time conditioning
-        if self.field.deformation_network is not None:
-            param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
-
-        if self.field.time_embedding is not None:
-            param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
+        # # TODO: This is from old way of time conditioning
+        # if self.field.deformation_network is not None:
+        #     param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
+        #
+        # if self.field.time_embedding is not None:
+        #     param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
 
         # parameters = list(self.field.get_head_parameters())
         # parameters.extend(self.field.get_base_parameters())
