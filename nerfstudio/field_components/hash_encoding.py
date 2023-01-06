@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -36,18 +37,30 @@ class HashEncodingEnsemble(nn.Module):
     def __init__(self,
                  n_hash_encodings: int,
                  hash_encoding_config: TCNNHashEncodingConfig,
-                 mixing_type: Literal['blend', 'attention'] = 'blend'):
+                 mixing_type: Literal['blend', 'attention'] = 'blend',
+                 dim_conditioning_code: Optional[int] = None):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
         self.n_hash_encodings = n_hash_encodings
-        self.hash_encodings = []
         self.hash_encoding_config = hash_encoding_config
+
+        self.hash_encodings = []
         for i_hash_encoding in range(n_hash_encodings):
             self.hash_encodings.append(hash_encoding_config.setup())
 
         self.hash_encodings = nn.ModuleList(self.hash_encodings)
-        self.n_output_dims = self.hash_encodings[0].n_output_dims
+
+        if mixing_type == 'attention':
+            assert dim_conditioning_code is not None, "For attention mixing_type, dim_conditioning_code must be given"
+            self.attention_keys = nn.Embedding(n_hash_encodings, dim_conditioning_code)
+
+        # Unfortunately, cannot merge hashtables into a single hashtable, as the maximum number of features_per_level is 8!
+        # hash_encoding_config_merged = dataclasses.replace(hash_encoding_config,
+        #                                                   n_features_per_level=hash_encoding_config.n_features_per_level * n_hash_encodings)
+        # self.hash_encoding = hash_encoding_config_merged.setup()
+
+        self.n_output_dims = hash_encoding_config.n_levels * hash_encoding_config.n_features_per_level
 
     def forward(self,
                 in_tensor: torch.Tensor,
@@ -63,8 +76,17 @@ class HashEncodingEnsemble(nn.Module):
             for hash_encoding in self.hash_encodings:
                 embedding = hash_encoding(in_tensor)
                 embeddings.append(embedding)
-
             embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
+
+            # embeddings = self.hash_encoding(in_tensor)  # [B, D * H]
+            # n_levels = self.hash_encoding_config.n_levels
+            # features_per_level = self.hash_encoding_config.n_features_per_level
+            #
+            # embeddings = embeddings.view(-1, n_levels, self.n_hash_encodings, features_per_level)  # [B, L, H, F]
+            # embeddings = embeddings.transpose(1, 2)
+            # embeddings = embeddings.reshape(-1, self.n_hash_encodings, n_levels * features_per_level)  # [B, H, L*F]
+            # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+
             conditioning_code = conditioning_code.unsqueeze(2)  # [B, H, 1]
             conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
             blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
