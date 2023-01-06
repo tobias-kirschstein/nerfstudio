@@ -61,13 +61,17 @@ class SE3WarpingField(nn.Module):
             skip_connections: Tuple[int] = (4,),
             warp_direction: bool = True,
             use_hash_encoding_ensemble: bool = False,
+            hash_encoding_ensemble_n_levels: int = 16,
+            hash_encoding_ensemble_features_per_level: int = 2,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
         self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
         if use_hash_encoding_ensemble:
-            self.position_encoding = HashEncodingEnsemble(warp_code_dim, TCNNHashEncodingConfig())
+            self.position_encoding = HashEncodingEnsemble(warp_code_dim, TCNNHashEncodingConfig(
+                n_levels=hash_encoding_ensemble_n_levels,
+                n_features_per_level=hash_encoding_ensemble_features_per_level))
         else:
             self.position_encoding = WindowedNeRFEncoding(
                 in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True

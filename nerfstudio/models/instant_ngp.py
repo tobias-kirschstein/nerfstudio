@@ -100,6 +100,8 @@ class InstantNGPModelConfig(ModelConfig):
     use_4d_hashing: bool = False
     use_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings for the canonical space
     max_ray_samples_chunk_size: int = -1
+    hash_encoding_ensemble_n_levels: int = 16
+    hash_encoding_ensemble_features_per_level: int = 2
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
@@ -211,7 +213,10 @@ class NGPModel(Model):
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
                 view_direction_warping=self.config.view_direction_warping,
-                use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble)
+                use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble,
+                hash_encoding_ensemble_n_levels=self.config.hash_encoding_ensemble_n_levels,
+                hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level
+            )
 
             if self.config.n_ambient_dimensions > 0:
                 self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_ambient,
@@ -258,7 +263,7 @@ class NGPModel(Model):
         if self.config.window_deform_end >= 1:
             self.sched_window_deform = GenericScheduler(
                 init_value=0,
-                final_value=self.config.n_freq_pos_warping,
+                final_value=self.config.hash_encoding_ensemble_n_levels if self.config.use_deformation_hash_encoding_ensemble else self.config.n_freq_pos_warping,
                 begin_step=self.config.window_deform_begin,
                 end_step=self.config.window_deform_end,
             )

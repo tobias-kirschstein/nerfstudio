@@ -108,7 +108,9 @@ class SE3Distortion(nn.Module):
                  mlp_layer_width: int = 128,
                  skip_connections: Tuple[int] = (4,),
                  view_direction_warping: ViewDirectionWarpType = None,
-                 use_hash_encoding_ensemble: bool = False
+                 use_hash_encoding_ensemble: bool = False,
+                 hash_encoding_ensemble_n_levels: int = 16,
+                 hash_encoding_ensemble_features_per_level: int = 2,
                  ):
         super(SE3Distortion, self).__init__()
 
@@ -124,13 +126,15 @@ class SE3Distortion(nn.Module):
             mlp_layer_width=mlp_layer_width,
             skip_connections=skip_connections,
             warp_direction=view_direction_warping == 'rotation',
-            use_hash_encoding_ensemble=use_hash_encoding_ensemble
+            use_hash_encoding_ensemble=use_hash_encoding_ensemble,
+            hash_encoding_ensemble_n_levels=hash_encoding_ensemble_n_levels,
+            hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level
         )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
         # assert ray_samples.timesteps is not None, "Cannot warp samples if no time is given"
         assert ray_samples.frustums.offsets is None or (
-                    ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
+                ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
 
         positions = ray_samples.frustums.get_positions()
         # Note: contract does not propagate gradients to input positions!
@@ -147,8 +151,10 @@ class SE3Distortion(nn.Module):
             warped_d = nn.functional.normalize(warped_d, dim=1, p=2)
             ray_samples.frustums.set_directions(warped_d)
         elif self.view_direction_warping == 'samples' and ray_samples.ray_indices is not None:
-            idx_no_previous_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts, 1)).squeeze(1).abs() > 0.011
-            idx_no_subsequent_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts, -1)).squeeze(1).abs() > 0.011
+            idx_no_previous_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts, 1)).squeeze(
+                1).abs() > 0.011
+            idx_no_subsequent_sample = (ray_samples.frustums.starts - torch.roll(ray_samples.frustums.starts,
+                                                                                 -1)).squeeze(1).abs() > 0.011
 
             if ray_samples.ray_indices is not None:
                 ray_indices = ray_samples.ray_indices.squeeze()
@@ -171,7 +177,8 @@ class SE3Distortion(nn.Module):
             idx_both_previous_and_next = ~idx_no_previous_sample & ~idx_no_subsequent_sample
             warped_d[idx_only_next_sample] = pos_diff_next[idx_only_next_sample]
             warped_d[idx_only_previous_sample] = pos_diff_previous[idx_only_previous_sample]
-            warped_d[idx_both_previous_and_next] = (pos_diff_next[idx_both_previous_and_next] + pos_diff_previous[idx_both_previous_and_next]) / 2
+            warped_d[idx_both_previous_and_next] = (pos_diff_next[idx_both_previous_and_next] + pos_diff_previous[
+                idx_both_previous_and_next]) / 2
 
             # Cloning is necessary here, otherwise we get the
             # "cannot backpropagate because one of the variables was updated with an in-place operation"
