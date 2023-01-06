@@ -518,7 +518,7 @@ class TCNNInstantNGPField(Field):
         param_groups["fields"].extend(self.mlp_base.parameters())
         param_groups["fields"].extend(self.mlp_head.parameters())
 
-        if self.hash_encoding_ensemble:
+        if self.use_hash_encoding_ensemble:
             param_groups["fields"].extend(self.hash_encoding_ensemble.parameters())
 
         if self.use_camera_embedding:
