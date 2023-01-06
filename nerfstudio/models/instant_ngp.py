@@ -83,7 +83,6 @@ class InstantNGPModelConfig(ModelConfig):
     num_layers_color: int = 3  # Number of layers of the second MLP (only RGB)
     hidden_dim_color: int = 64  # Hidden dimensions of second MLP
 
-
     n_hashgrid_levels: int = 16
     log2_hashmap_size: int = 19
     per_level_hashgrid_scale: float = 1.4472692012786865
@@ -104,6 +103,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
     hidden_dim_deformation_field: int = 128
+    use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding
     n_freq_pos_warping: int = 7
     n_freq_pos_ambient: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
@@ -202,7 +202,8 @@ class NGPModel(Model):
                 warp_code_dim=self.config.latent_dim_time,
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
-                view_direction_warping=self.config.view_direction_warping)
+                view_direction_warping=self.config.view_direction_warping,
+                use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble)
 
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))

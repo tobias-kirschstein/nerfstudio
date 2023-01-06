@@ -19,6 +19,7 @@ import pytorch3d
 import pytorch3d.transforms
 import tinycudann as tcnn
 import torch
+from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig
 from torch import nn
 from torchtyping import TensorType
 
@@ -52,22 +53,33 @@ class SE3WarpingField(nn.Module):
     """
 
     def __init__(
-        self,
-        n_freq_pos=7,
-        warp_code_dim: int = 8,
-        mlp_num_layers: int = 6,
-        mlp_layer_width: int = 128,
-        skip_connections: Tuple[int] = (4,),
-        warp_direction: bool = True,
+            self,
+            n_freq_pos=7,
+            warp_code_dim: int = 8,
+            mlp_num_layers: int = 6,
+            mlp_layer_width: int = 128,
+            skip_connections: Tuple[int] = (4,),
+            warp_direction: bool = True,
+            use_hash_encoding_ensemble: bool = False,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
+        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
-        self.position_encoding = WindowedNeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
-        )
+        if use_hash_encoding_ensemble:
+            self.position_encoding = HashEncodingEnsemble(warp_code_dim, -1, TCNNHashEncodingConfig())
+        else:
+            self.position_encoding = WindowedNeRFEncoding(
+                in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+            )
+
+        in_dim = self.position_encoding.get_out_dim()
+        if not use_hash_encoding_ensemble:
+            # Hash encoding ensemble is already conditioned on warp code
+            in_dim += warp_code_dim
+
         self.mlp_stem = MLP(
-            in_dim=self.position_encoding.get_out_dim() + warp_code_dim,
+            in_dim=in_dim,
             out_dim=mlp_layer_width,
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
@@ -97,14 +109,24 @@ class SE3WarpingField(nn.Module):
         if warp_code is None:
             return None
 
-        encoded_xyz = self.position_encoding(
-            positions,
-            windows_param=windows_param,
-            # covs=covs,
-            # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
-        )  # (R, S, 3)
+        if self.use_hash_encoding_ensemble:
+            encoded_xyz = self.position_encoding(
+                positions,
+                conditioning_code=warp_code
+            )
+            encoded_xyz = encoded_xyz.to(positions)  # Potentially cast encoded values from Half to Float
+            feat = self.mlp_stem(encoded_xyz)  # (R, S, D)
+        else:
 
-        feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
+            encoded_xyz = self.position_encoding(
+                positions,
+                windows_param=windows_param,
+                # covs=covs,
+                # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+            )  # (R, S, 3)
+
+            feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
+
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
         v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
 
@@ -168,12 +190,12 @@ class DeformationField(nn.Module):
     """
 
     def __init__(
-        self,
-        n_freq_pos=7,
-        warp_code_dim: int = 8,
-        mlp_num_layers: int = 6,
-        mlp_layer_width: int = 128,
-        skip_connections: Tuple[int] = (4,),
+            self,
+            n_freq_pos=7,
+            warp_code_dim: int = 8,
+            mlp_num_layers: int = 6,
+            mlp_layer_width: int = 128,
+            skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
         self.position_encoding = WindowedNeRFEncoding(
@@ -205,13 +227,13 @@ class HyperSlicingField(nn.Module):
     """
 
     def __init__(
-        self,
-        n_freq_pos: int = 7,
-        out_dim: int = 2,
-        warp_code_dim: int = 8,
-        mlp_num_layers: int = 6,
-        mlp_layer_width: int = 64,
-        skip_connections: Tuple[int] = (4,),
+            self,
+            n_freq_pos: int = 7,
+            out_dim: int = 2,
+            warp_code_dim: int = 8,
+            mlp_num_layers: int = 6,
+            mlp_layer_width: int = 64,
+            skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
 
@@ -256,22 +278,22 @@ class HyperNeRFField(Field):
     """
 
     def __init__(
-        self,
-        n_freq_pos: int = 9,
-        n_freq_dir: int = 5,
-        use_hyper_slicing: bool = True,
-        n_freq_slice: int = 2,
-        hyper_slice_dim: int = 2,
-        base_extra_dim: int = 0,
-        head_extra_dim: int = 0,
-        base_mlp_num_layers: int = 8,
-        base_mlp_layer_width: int = 256,
-        head_mlp_num_layers: int = 2,
-        head_mlp_layer_width: int = 128,
-        skip_connections: Tuple[int] = (4,),
-        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
-        use_integrated_encoding: bool = False,
-        spatial_distortion: Optional[SpatialDistortion] = None,
+            self,
+            n_freq_pos: int = 9,
+            n_freq_dir: int = 5,
+            use_hyper_slicing: bool = True,
+            n_freq_slice: int = 2,
+            hyper_slice_dim: int = 2,
+            base_extra_dim: int = 0,
+            head_extra_dim: int = 0,
+            base_mlp_num_layers: int = 8,
+            base_mlp_layer_width: int = 256,
+            head_mlp_num_layers: int = 2,
+            head_mlp_layer_width: int = 128,
+            skip_connections: Tuple[int] = (4,),
+            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+            use_integrated_encoding: bool = False,
+            spatial_distortion: Optional[SpatialDistortion] = None,
     ) -> None:
         super().__init__()
 
@@ -314,14 +336,14 @@ class HyperNeRFField(Field):
             field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
 
     def get_density(
-        self,
-        ray_samples: RaySamples,
-        warp_code: Optional[torch.Tensor] = None,
-        warp_field: Optional[SE3WarpingField] = None,
-        slice_field: Optional[HyperSlicingField] = None,
-        window_alpha: Optional[float] = None,
-        window_beta: Optional[float] = None,
-        window_gamma: Optional[float] = None,
+            self,
+            ray_samples: RaySamples,
+            warp_code: Optional[torch.Tensor] = None,
+            warp_field: Optional[SE3WarpingField] = None,
+            slice_field: Optional[HyperSlicingField] = None,
+            window_alpha: Optional[float] = None,
+            window_beta: Optional[float] = None,
+            window_gamma: Optional[float] = None,
     ):
         warped_directions = None
         base_inputs = []
@@ -390,12 +412,12 @@ class HyperNeRFField(Field):
         return density, base_mlp_out, warped_directions
 
     def get_outputs(
-        self,
-        ray_samples: RaySamples,
-        warped_direction: Optional[TensorType] = None,
-        density_embedding: Optional[TensorType] = None,
-        appearance_code: Optional[torch.Tensor] = None,
-        camera_code: Optional[torch.Tensor] = None,
+            self,
+            ray_samples: RaySamples,
+            warped_direction: Optional[TensorType] = None,
+            density_embedding: Optional[TensorType] = None,
+            appearance_code: Optional[torch.Tensor] = None,
+            camera_code: Optional[torch.Tensor] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
@@ -415,17 +437,17 @@ class HyperNeRFField(Field):
         return outputs
 
     def forward(
-        self,
-        ray_samples: RaySamples,
-        compute_normals: bool = False,
-        warp_embeddings: Optional[nn.Embedding] = None,
-        appearance_embeddings: Optional[nn.Embedding] = None,
-        camera_embeddings: Optional[nn.Embedding] = None,
-        warp_field: Optional[SE3WarpingField] = None,
-        slice_field: Optional[HyperSlicingField] = None,
-        window_alpha: Optional[float] = None,
-        window_beta: Optional[float] = None,
-        window_gamma: Optional[float] = None,
+            self,
+            ray_samples: RaySamples,
+            compute_normals: bool = False,
+            warp_embeddings: Optional[nn.Embedding] = None,
+            appearance_embeddings: Optional[nn.Embedding] = None,
+            camera_embeddings: Optional[nn.Embedding] = None,
+            warp_field: Optional[SE3WarpingField] = None,
+            slice_field: Optional[HyperSlicingField] = None,
+            window_alpha: Optional[float] = None,
+            window_beta: Optional[float] = None,
+            window_gamma: Optional[float] = None,
     ):
         """Evaluates the field at points along the ray.
 
@@ -494,18 +516,18 @@ class HashHyperNeRFField(HyperNeRFField):
     """
 
     def __init__(
-        self,
-        aabb: TensorType,
-        use_hyper_slicing: bool = True,
-        n_freq_slice: int = 2,
-        hyper_slice_dim: int = 2,
-        base_extra_dim: int = 0,
-        head_extra_dim: int = 0,
-        base_mlp_num_layers: int = 2,
-        base_mlp_layer_width: int = 64,
-        head_mlp_num_layers: int = 2,
-        head_mlp_layer_width: int = 128,
-        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+            self,
+            aabb: TensorType,
+            use_hyper_slicing: bool = True,
+            n_freq_slice: int = 2,
+            hyper_slice_dim: int = 2,
+            base_extra_dim: int = 0,
+            head_extra_dim: int = 0,
+            base_mlp_num_layers: int = 2,
+            base_mlp_layer_width: int = 64,
+            head_mlp_num_layers: int = 2,
+            head_mlp_layer_width: int = 128,
+            field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
     ) -> None:
         super(HyperNeRFField, self).__init__()
 
@@ -573,13 +595,13 @@ class HashHyperNeRFField(HyperNeRFField):
             field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
 
     def get_density(
-        self,
-        ray_samples: RaySamples,
-        warp_code: Optional[torch.Tensor] = None,
-        warp_field: Optional[SE3WarpingField] = None,
-        slice_field: Optional[HyperSlicingField] = None,
-        window_alpha: Optional[float] = None,
-        window_beta: Optional[float] = None,
+            self,
+            ray_samples: RaySamples,
+            warp_code: Optional[torch.Tensor] = None,
+            warp_field: Optional[SE3WarpingField] = None,
+            slice_field: Optional[HyperSlicingField] = None,
+            window_alpha: Optional[float] = None,
+            window_beta: Optional[float] = None,
     ):
         warped_directions = None
 
@@ -616,12 +638,12 @@ class HashHyperNeRFField(HyperNeRFField):
         return density, base_mlp_out, warped_directions
 
     def get_outputs(
-        self,
-        ray_samples: RaySamples,
-        warped_direction: Optional[TensorType] = None,
-        density_embedding: Optional[TensorType] = None,
-        appearance_code: Optional[torch.Tensor] = None,
-        camera_code: Optional[torch.Tensor] = None,
+            self,
+            ray_samples: RaySamples,
+            warped_direction: Optional[TensorType] = None,
+            density_embedding: Optional[TensorType] = None,
+            appearance_code: Optional[torch.Tensor] = None,
+            camera_code: Optional[torch.Tensor] = None,
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:

@@ -108,6 +108,7 @@ class SE3Distortion(nn.Module):
                  mlp_layer_width: int = 128,
                  skip_connections: Tuple[int] = (4,),
                  view_direction_warping: ViewDirectionWarpType = None,
+                 use_hash_encoding_ensemble: bool = False
                  ):
         super(SE3Distortion, self).__init__()
 
@@ -122,7 +123,8 @@ class SE3Distortion(nn.Module):
             mlp_num_layers=mlp_num_layers,
             mlp_layer_width=mlp_layer_width,
             skip_connections=skip_connections,
-            warp_direction=view_direction_warping == 'rotation'
+            warp_direction=view_direction_warping == 'rotation',
+            use_hash_encoding_ensemble=use_hash_encoding_ensemble
         )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
