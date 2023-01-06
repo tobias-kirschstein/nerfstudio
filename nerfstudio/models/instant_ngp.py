@@ -73,13 +73,15 @@ class InstantNGPModelConfig(ModelConfig):
     """How far along ray to stop sampling."""
     use_appearance_embedding: bool = False
     """Whether to use an appearance embedding."""
+    appearance_embedding_dim: int = 32  # Dimension for every appearance embedding
+    use_camera_embedding: bool = False  # Whether a camera-specific code (shared across timesteps) should be learned for RGB network
+    camera_embedding_dim: int = 8
 
     num_layers_base: int = 2  # Number of layers of the first MLP (both density and RGB)
     hidden_dim_base: int = 64  # Hidden dimensions of first MLP
     geo_feat_dim: int = 15  # Number of geometric features (output from field) that are input for second MLP (only RGB)
     num_layers_color: int = 3  # Number of layers of the second MLP (only RGB)
     hidden_dim_color: int = 64  # Hidden dimensions of second MLP
-    appearance_embedding_dim: int = 32  # ?
 
     n_hashgrid_levels: int = 16
     log2_hashmap_size: int = 19
@@ -96,15 +98,22 @@ class InstantNGPModelConfig(ModelConfig):
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
-    use_4d_canonical_space: bool = False  # Whether an additional ambient dimension should be used for the canonical space
+    use_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings for the canonical space
     max_ray_samples_chunk_size: int = -1
+    hash_encoding_ensemble_n_levels: int = 16
+    hash_encoding_ensemble_features_per_level: int = 2
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
     hidden_dim_deformation_field: int = 128
+    use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding for the deformation field
     n_freq_pos_warping: int = 7
+    n_freq_pos_ambient: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
+    window_ambient_begin: int = 0  # the number of steps window_ambient is set to 0
+    window_ambient_end: int = 0  # The number of steps when window_ambient reaches its maximum
+    n_ambient_dimensions: int = 0  # How many ambient dimensions should be used
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
     timestep_canonical: Optional[
         int] = 0  # Rays in the canonical timestep won't be deformed, if a deformation field is used
@@ -146,14 +155,18 @@ class NGPModel(Model):
         self.field = TCNNInstantNGPField(
             aabb=self.scene_box.aabb,
             contraction_type=self.config.contraction_type,
-            use_appearance_embedding=self.config.use_appearance_embedding,
+
             num_images=self.num_train_data,
             num_layers=self.config.num_layers_base,
             hidden_dim=self.config.hidden_dim_base,
             geo_feat_dim=self.config.geo_feat_dim,
             num_layers_color=self.config.num_layers_color,
             hidden_dim_color=self.config.hidden_dim_color,
+
+            use_appearance_embedding=self.config.use_appearance_embedding,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
+            use_camera_embedding=self.config.use_camera_embedding,
+            camera_embedding_dim=self.config.camera_embedding_dim,
 
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,
@@ -166,10 +179,7 @@ class NGPModel(Model):
             n_timesteps=self.config.n_timesteps,
             max_ray_samples_chunk_size=self.config.max_ray_samples_chunk_size,
 
-            use_deformation_field=self.config.use_deformation_field,
             fix_canonical_space=self.config.fix_canonical_space,
-            n_layers_deformation_field=self.config.n_layers_deformation_field,
-            hidden_dim_deformation_field=self.config.hidden_dim_deformation_field,
             timestep_canonical=self.config.timestep_canonical,
             use_time_conditioning_for_base_mlp=self.config.use_time_conditioning_for_base_mlp,
             use_time_conditioning_for_rgb_mlp=self.config.use_time_conditioning_for_rgb_mlp,
@@ -180,11 +190,19 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
-            use_4d_canonical_space=self.config.use_4d_canonical_space,
+            use_hash_encoding_ensemble=self.config.use_hash_encoding_ensemble,
+            n_ambient_dimensions=self.config.n_ambient_dimensions,
+            n_freq_pos_ambient=self.config.n_freq_pos_ambient,
             disable_view_dependency=self.config.disable_view_dependency,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
         )
+
+        self.temporal_distortion = None
+        self.time_embedding = None
+        if self.config.use_deformation_field or self.config.use_hash_encoding_ensemble:
+            self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
 
         if self.config.use_deformation_field:
             self.temporal_distortion = SE3Distortion(
@@ -194,20 +212,19 @@ class NGPModel(Model):
                 warp_code_dim=self.config.latent_dim_time,
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
-                view_direction_warping=self.config.view_direction_warping)
+                view_direction_warping=self.config.view_direction_warping,
+                use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble,
+                hash_encoding_ensemble_n_levels=self.config.hash_encoding_ensemble_n_levels,
+                hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level
+            )
 
-            self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
-            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
-
-            if self.config.use_4d_canonical_space:
-                self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_warping,
-                                                               out_dim=1,
+            if self.config.n_ambient_dimensions > 0:
+                self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_ambient,
+                                                               out_dim=self.config.n_ambient_dimensions,
                                                                warp_code_dim=self.config.latent_dim_time,
                                                                mlp_num_layers=self.config.n_layers_deformation_field,
                                                                mlp_layer_width=self.config.hidden_dim_deformation_field)
-        else:
-            self.temporal_distortion = None
-            self.time_embedding = None
+
 
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
@@ -246,12 +263,22 @@ class NGPModel(Model):
         if self.config.window_deform_end >= 1:
             self.sched_window_deform = GenericScheduler(
                 init_value=0,
-                final_value=self.config.n_freq_pos_warping,
+                final_value=self.config.hash_encoding_ensemble_n_levels if self.config.use_deformation_hash_encoding_ensemble else self.config.n_freq_pos_warping,
                 begin_step=self.config.window_deform_begin,
                 end_step=self.config.window_deform_end,
             )
         else:
             self.sched_window_deform = None
+
+        if self.config.window_ambient_begin > 0 or self.config.window_ambient_end > 0:
+            self.sched_window_ambient = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_pos_warping,
+                begin_step=self.config.window_ambient_begin,
+                end_step=self.config.window_ambient_end,
+            )
+        else:
+            self.sched_window_ambient = None
 
         # background
         if self.config.use_backgrounds:
@@ -337,16 +364,36 @@ class NGPModel(Model):
                 )
             )
 
+        if self.sched_window_ambient is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_ambient, "sched_window_ambient"],
+                )
+            )
+
         return callbacks
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = super(NGPModel, self).get_param_groups()
 
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
+        field_param_groups = self.field.get_param_groups()
+        for key, params in field_param_groups.items():
+            if key in param_groups:
+                param_groups[key].extend(params)
+            else:
+                param_groups[key] = params
 
-        param_groups["fields"].extend(self.field.mlp_base.parameters())
-        param_groups["fields"].extend(self.field.mlp_head.parameters())
+        # if self.field is None:
+        #     raise ValueError("populate_fields() must be called before get_param_groups")
+        #
+        # param_groups["fields"].extend(self.field.mlp_base.parameters())
+        # param_groups["fields"].extend(self.field.mlp_head.parameters())
+        #
+        # if self.config.use_camera_embedding:
+        #     param_groups["fields"].extend(self.field.camera_embedding.parameters())
 
         if self.temporal_distortion is not None:
             param_groups["deformation_field"] = []
@@ -358,12 +405,12 @@ class NGPModel(Model):
 
             param_groups["deformation_field"].extend(self.time_embedding.parameters())
 
-        # TODO: This is from old way of time conditioning
-        if self.field.deformation_network is not None:
-            param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
-
-        if self.field.time_embedding is not None:
-            param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
+        # # TODO: This is from old way of time conditioning
+        # if self.field.deformation_network is not None:
+        #     param_groups["deformation_field"].extend(self.field.deformation_network.parameters())
+        #
+        # if self.field.time_embedding is not None:
+        #     param_groups["deformation_field"].extend(self.field.time_embedding.parameters())
 
         # parameters = list(self.field.get_head_parameters())
         # parameters.extend(self.field.get_base_parameters())
@@ -390,7 +437,7 @@ class NGPModel(Model):
             window_deform = None
 
         time_embeddings = None
-        if self.temporal_distortion is not None:
+        if self.temporal_distortion is not None or self.config.use_hash_encoding_ensemble:
 
             if ray_samples.timesteps is None:
                 # Assume ray_samples come from occupancy grid.
@@ -400,6 +447,7 @@ class NGPModel(Model):
                 ray_samples.timesteps = torch.randint(self.config.n_timesteps, (ray_samples.size, 1)).to(
                     ray_samples.frustums.origins.device)
 
+        if self.temporal_distortion is not None:
             # Initialize all offsets with 0
             assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
             ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
@@ -438,6 +486,9 @@ class NGPModel(Model):
                     # ray_samples.frustums.directions[slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size)] = ray_samples_chunk.frustums.directions
 
             time_embeddings = torch.concat(time_embeddings, dim=0)
+        elif self.config.use_hash_encoding_ensemble:
+            time_embeddings = self.time_embedding(ray_samples.timesteps.squeeze(-1))
+
         return ray_samples, time_embeddings
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -466,11 +517,15 @@ class NGPModel(Model):
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, time_codes = self.warp_ray_samples(ray_samples)
 
-        if self.config.use_4d_canonical_space:
+        if self.config.n_ambient_dimensions > 0:
             # TODO: maybe move this inside warp_samples?
+
+            window_ambient = None if self.sched_window_ambient is None else self.sched_window_ambient.value
+
             positions_posed_space = ray_samples.frustums.get_positions(omit_offsets=True, omit_ambient_coordinates=True)
             ambient_coordinates = self.hyper_slicing_network(positions_posed_space,
-                                                             warp_code=time_codes)
+                                                             warp_code=time_codes,
+                                                             window_param=window_ambient)
             ray_samples.frustums.ambient_coordinates = ambient_coordinates
 
         field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)

@@ -30,6 +30,10 @@ from nerfstudio.field_components.field_heads import (
     FieldHeadNames,
     RGBFieldHead,
 )
+from nerfstudio.field_components.hash_encoding import (
+    HashEncodingEnsemble,
+    TCNNHashEncodingConfig,
+)
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field
@@ -59,15 +63,34 @@ class SE3WarpingField(nn.Module):
         mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
         warp_direction: bool = True,
+        use_hash_encoding_ensemble: bool = False,
+        hash_encoding_ensemble_n_levels: int = 16,
+        hash_encoding_ensemble_features_per_level: int = 2,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
+        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
-        self.position_encoding = WindowedNeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
-        )
+        if use_hash_encoding_ensemble:
+            self.position_encoding = HashEncodingEnsemble(
+                warp_code_dim,
+                TCNNHashEncodingConfig(
+                    n_levels=hash_encoding_ensemble_n_levels,
+                    n_features_per_level=hash_encoding_ensemble_features_per_level,
+                ),
+            )
+        else:
+            self.position_encoding = WindowedNeRFEncoding(
+                in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+            )
+
+        in_dim = self.position_encoding.get_out_dim()
+        if not use_hash_encoding_ensemble:
+            # Hash encoding ensemble is already conditioned on warp code
+            in_dim += warp_code_dim
+
         self.mlp_stem = MLP(
-            in_dim=self.position_encoding.get_out_dim() + warp_code_dim,
+            in_dim=in_dim,
             out_dim=mlp_layer_width,
             num_layers=mlp_num_layers,
             layer_width=mlp_layer_width,
@@ -97,14 +120,21 @@ class SE3WarpingField(nn.Module):
         if warp_code is None:
             return None
 
-        encoded_xyz = self.position_encoding(
-            positions,
-            windows_param=windows_param,
-            covs=covs,
-            # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
-        )  # (R, S, 3)
+        if self.use_hash_encoding_ensemble:
+            encoded_xyz = self.position_encoding(positions, conditioning_code=warp_code, windows_param=windows_param)
+            encoded_xyz = encoded_xyz.to(positions)  # Potentially cast encoded values from Half to Float
+            feat = self.mlp_stem(encoded_xyz)  # (R, S, D)
+        else:
 
-        feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
+            encoded_xyz = self.position_encoding(
+                positions,
+                windows_param=windows_param,
+                covs=covs,
+                # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+            )  # (R, S, 3)
+
+            feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
+
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
         v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
 
@@ -214,9 +244,14 @@ class HyperSlicingField(nn.Module):
         skip_connections: Tuple[int] = (4,),
     ) -> None:
         super().__init__()
-        self.position_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
+
+        self.position_encoding = WindowedNeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=False
         )
+
+        # self.position_encoding = NeRFEncoding(
+        #     in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1
+        # )
         self.mlp = MLP(
             in_dim=self.position_encoding.get_out_dim() + warp_code_dim,
             out_dim=out_dim,
@@ -227,10 +262,11 @@ class HyperSlicingField(nn.Module):
 
         nn.init.normal_(self.mlp.layers[-1].weight, std=1e-5)
 
-    def forward(self, positions, warp_code=None, covs=None):
+    def forward(self, positions, warp_code=None, covs=None, window_param: Optional[float] = None):
         if warp_code is None:
             return None
-        p = self.position_encoding(positions, covs=covs)
+        p = self.position_encoding(positions, windows_param=window_param, covs=covs)
+
         return self.mlp(torch.cat([p, warp_code], dim=-1))
 
 

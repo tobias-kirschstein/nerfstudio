@@ -2,26 +2,22 @@
 Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
-from math import ceil, sqrt
-from typing import List, Optional, Callable, Tuple
+from math import ceil
+from typing import List, Optional, Callable, Tuple, Dict
 
 import torch
 from nerfacc import ContractionType, contract
-from torch import nn
-from torch.nn import init
-from torch.nn.parameter import Parameter
-from torchtyping import TensorType
-
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
-from nerfstudio.field_components import MLP
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig
 from nerfstudio.fields.base_field import Field
-from nerfstudio.fields.hypernerf_field import SE3WarpingField
-from nerfstudio.fields.warping import DeformationField, SE3Field
 from nerfstudio.utils.torch import disable_gradients_for
+from torch.nn import init
+from torch.nn.parameter import Parameter
+from torchtyping import TensorType
 
 try:
     import tinycudann as tcnn
@@ -63,9 +59,11 @@ class TCNNInstantNGPField(Field):
             geo_feat_dim: int = 15,
             num_layers_color: int = 3,
             hidden_dim_color: int = 64,
-            use_appearance_embedding: bool = False,
             num_images: Optional[int] = None,
+            use_appearance_embedding: bool = False,
             appearance_embedding_dim: int = 32,
+            use_camera_embedding: bool = False,
+            camera_embedding_dim: int = 8,
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
@@ -77,17 +75,15 @@ class TCNNInstantNGPField(Field):
             latent_dim_time: int = 0,
             n_timesteps: int = 1,
             max_ray_samples_chunk_size: int = -1,
-            use_deformation_field: bool = False,
             fix_canonical_space: bool = False,
-            n_freq_pos_warping: int = 7,
-            n_layers_deformation_field: int = 6,
-            hidden_dim_deformation_field: int = 128,
+            n_freq_pos_ambient: int = 7,
             timestep_canonical: Optional[int] = 0,
             use_time_conditioning_for_base_mlp: bool = False,
             use_time_conditioning_for_rgb_mlp: bool = False,
             use_deformation_skip_connection: bool = False,
             use_smoothstep_hashgrid_interpolation: bool = False,
-            use_4d_canonical_space: bool = False,
+            n_ambient_dimensions: int = 0,
+            use_hash_encoding_ensemble: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -106,12 +102,13 @@ class TCNNInstantNGPField(Field):
         self.max_ray_samples_chunk_size = max_ray_samples_chunk_size
         self.density_threshold = density_threshold
         self.use_4d_hashing = use_4d_hashing
-        self.use_4d_canonical_space = use_4d_canonical_space
+        self.n_ambient_dimensions = n_ambient_dimensions
         self.fix_canonical_space = fix_canonical_space
         self.timestep_canonical = timestep_canonical
         self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
         self.use_time_conditioning_for_rgb_mlp = use_time_conditioning_for_rgb_mlp
         self.use_deformation_skip_connection = use_deformation_skip_connection
+        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -119,9 +116,106 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding_dim = appearance_embedding_dim
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
-        # TODO: set this properly based on the aabb
-        # per_level_scale = 1.4472692012786865
-        # per_level_scale = 2
+        self.use_camera_embedding = use_camera_embedding
+        if use_camera_embedding:
+            assert num_images is not None
+            assert n_timesteps is not None, "Currently, camera embedding assumes hat cameras don't move. I.e., there is only 1 camera embedding per camera"
+            self.camera_embedding = Embedding(int(num_images / n_timesteps), camera_embedding_dim)
+            init.uniform_(self.camera_embedding.embedding.weight, a=-0.05, b=0.05)
+
+        # ----------------------------------------------------------
+        # Base network with hash encoding
+        # ----------------------------------------------------------
+
+        if no_hash_encoding:
+            hash_grid_encoding_config = {
+                "n_dims_to_encode": 3,
+                "otype": "Frequency",
+                "n_frequencies": n_frequencies
+            }
+        elif use_hash_encoding_ensemble:
+            self.hash_encoding_ensemble = HashEncodingEnsemble(latent_dim_time, TCNNHashEncodingConfig())
+            # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
+            hash_grid_encoding_config = {
+                "otype": "Identity",
+                "n_dims_to_encode": self.hash_encoding_ensemble.get_out_dim(),
+            }
+        else:
+            hash_grid_encoding_config = {
+                "n_dims_to_encode": 4 if use_4d_hashing else 3,
+                "otype": "HashGrid",
+                "n_levels": n_hashgrid_levels,
+                "n_features_per_level": hashgrid_n_features_per_level,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": hashgrid_base_resolution,
+                "per_level_scale": per_level_hashgrid_scale,
+                "interpolation": "Smoothstep" if use_smoothstep_hashgrid_interpolation else "Linear"
+            }
+
+        base_network_encoding_config = hash_grid_encoding_config
+        if use_4d_hashing:
+            n_base_inputs = 4
+        elif use_hash_encoding_ensemble:
+            n_base_inputs = self.hash_encoding_ensemble.get_out_dim()
+        else:
+            n_base_inputs = 3
+
+        if n_ambient_dimensions > 0:
+            n_base_inputs += n_ambient_dimensions
+            base_network_encoding_config = {
+                "otype": "Composite",
+                "nested": [
+                    base_network_encoding_config,
+                    {
+                        "otype": "Frequency",
+                        "n_dims_to_encode": n_ambient_dimensions,
+                        "n_frequencies": n_freq_pos_ambient
+                    }
+                ]
+            }
+
+        if use_time_conditioning_for_base_mlp:
+            # TODO: This cannot go together with 4D canonical space
+            base_network_encoding_config = {
+                "otype": "Composite",
+                "nested": [
+                    base_network_encoding_config,
+                    {
+                        "otype": "Identity",  # Number of remaining input dimensions is automatically derived
+                    }
+                ]
+            }
+            n_base_inputs += latent_dim_time
+
+        if use_deformation_skip_connection:
+            if not base_network_encoding_config['otype'] == 'Composite':
+                base_network_encoding_config = {
+                    "otype": "Composite",
+                    "nested": [
+                        base_network_encoding_config,
+                        {
+                            "otype": "Identity",  # Number of remaining input dimensions is automatically derived
+                        }
+                    ]
+                }
+            n_base_inputs += 3 * 16  # For some reason the skip connection only works with a higher dimensionality
+
+        self.mlp_base = tcnn.NetworkWithInputEncoding(
+            n_input_dims=n_base_inputs,
+            n_output_dims=1 + self.geo_feat_dim,
+            encoding_config=base_network_encoding_config,
+            network_config={
+                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": hidden_dim,
+                "n_hidden_layers": num_layers - 1,
+            },
+        )
+
+        # ----------------------------------------------------------
+        # RGB network
+        # ----------------------------------------------------------
 
         if disable_view_dependency:
             self.direction_encoding = None
@@ -141,113 +235,6 @@ class TCNNInstantNGPField(Field):
                 },
             )
 
-        if no_hash_encoding:
-            hash_grid_encoding_config = {
-                "n_dims_to_encode": 3,
-                "otype": "Frequency",
-                "n_frequencies": n_frequencies
-            }
-        else:
-            hash_grid_encoding_config = {
-                "n_dims_to_encode": 4 if use_4d_hashing else 3,
-                "otype": "HashGrid",
-                "n_levels": n_hashgrid_levels,
-                "n_features_per_level": hashgrid_n_features_per_level,
-                "log2_hashmap_size": log2_hashmap_size,
-                "base_resolution": hashgrid_base_resolution,
-                "per_level_scale": per_level_hashgrid_scale,
-                "interpolation": "Smoothstep" if use_smoothstep_hashgrid_interpolation else "Linear"
-            }
-
-        self.deformation_network = None
-        if False and latent_dim_time > 0 and not use_4d_hashing:
-            if use_deformation_field:
-                # If a deformation field is used, the time embeddings are not fed into the base MLP but into
-                # the deformation network instead
-
-                self.deformation_network = SE3WarpingField(
-                    n_freq_pos=n_freq_pos_warping,
-                    warp_code_dim=latent_dim_time,
-                    mlp_num_layers=n_layers_deformation_field,
-                    mlp_layer_width=hidden_dim_deformation_field,
-                    warp_direction=False,
-                )
-                self._previous_window_deform = None
-
-                base_network_encoding_config = hash_grid_encoding_config
-                n_base_inputs = 3
-            else:
-                # Input is [xyz, emb(t)] concatenated
-                base_network_encoding_config = {
-                    "otype": "Composite",
-                    "nested": [
-                        hash_grid_encoding_config,
-                        {
-                            "otype": "Identity"  # Number of remaining input dimensions is automatically derived
-                        }
-                    ]
-                }
-                n_base_inputs = 3 + latent_dim_time
-
-            self.time_embedding = nn.Embedding(self.n_timesteps, latent_dim_time)
-            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(latent_dim_time))
-        else:
-            base_network_encoding_config = hash_grid_encoding_config
-            self.time_embedding = None
-            n_base_inputs = 4 if use_4d_hashing or use_4d_canonical_space else 3
-
-            if use_4d_canonical_space:
-                base_network_encoding_config = {
-                    "otype": "Composite",
-                    "nested": [
-                        base_network_encoding_config,
-                        {
-                            "otype": "Frequency",
-                            "n_dims_to_encode": 1,
-                            "n_frequencies": 8
-                        }
-                    ]
-                }
-
-            if use_time_conditioning_for_base_mlp:
-                # TODO: This cannot go together with 4D canonical space
-                base_network_encoding_config = {
-                    "otype": "Composite",
-                    "nested": [
-                        base_network_encoding_config,
-                        {
-                            "otype": "Identity",  # Number of remaining input dimensions is automatically derived
-                        }
-                    ]
-                }
-                n_base_inputs += latent_dim_time
-
-            if use_deformation_skip_connection:
-                if not base_network_encoding_config['otype'] == 'Composite':
-                    base_network_encoding_config = {
-                        "otype": "Composite",
-                        "nested": [
-                            base_network_encoding_config,
-                            {
-                                "otype": "Identity",  # Number of remaining input dimensions is automatically derived
-                            }
-                        ]
-                    }
-                n_base_inputs += 3 * 16  # For some reason the skip connection only works with a higher dimensionality
-
-        self.mlp_base = tcnn.NetworkWithInputEncoding(
-            n_input_dims=n_base_inputs,
-            n_output_dims=1 + self.geo_feat_dim,
-            encoding_config=base_network_encoding_config,
-            network_config={
-                "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": hidden_dim,
-                "n_hidden_layers": num_layers - 1,
-            },
-        )
-
         if self.direction_encoding is not None:
             in_dim = self.direction_encoding.n_output_dims + self.geo_feat_dim
         else:
@@ -255,6 +242,9 @@ class TCNNInstantNGPField(Field):
 
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
+
+        if self.use_camera_embedding:
+            in_dim += self.camera_embedding.out_dim
 
         if use_time_conditioning_for_rgb_mlp:
             in_dim += latent_dim_time
@@ -279,11 +269,12 @@ class TCNNInstantNGPField(Field):
         densities = []
         base_mlp_outs = []
 
-        if self.use_4d_canonical_space and ray_samples.frustums.ambient_coordinates is None:
+        if self.n_ambient_dimensions > 0 and ray_samples.frustums.ambient_coordinates is None:
             # Assume that this is a forward pass for the occupancy grid
             # Randomly sample ambient coordinates in [-1, 1]
-            ambient_coordinates = torch.rand(ray_samples.frustums.shape).to(ray_samples.frustums.origins) * 2 - 1
-            ray_samples.frustums.ambient_coordinates = ambient_coordinates.unsqueeze(-1)
+            ambient_coordinates = torch.rand((*ray_samples.frustums.shape, self.n_ambient_dimensions))
+            ambient_coordinates = ambient_coordinates.to(ray_samples.frustums.origins) * 2 - 1
+            ray_samples.frustums.ambient_coordinates = ambient_coordinates
 
         # Nerfacc's occupancy grid update is quite costl, it queries get_density() with 128^3 which are
         # much more samples than the regular rendering requires
@@ -306,8 +297,7 @@ class TCNNInstantNGPField(Field):
             if timesteps is not None:
                 timesteps_chunk = timesteps[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
 
-            if self.time_embedding is not None or self.use_4d_hashing:
-
+            if self.use_4d_hashing:
                 if timesteps is None:
                     # Assume ray_samples come from occupancy grid.
                     # We only have one grid to model the whole scene accross time.
@@ -318,37 +308,16 @@ class TCNNInstantNGPField(Field):
                 if self.use_4d_hashing:
                     timesteps_chunk = timesteps_chunk.float() / self.n_timesteps
                     base_inputs = [positions_flat, timesteps_chunk.unsqueeze(1)]
-                else:
-                    time_embeddings = self.time_embedding(timesteps_chunk)
-                    if self.deformation_network is not None:
-                        if self.timestep_canonical is not None:
-                            # Only deform points for other timesteps than canonical
-                            idx_timesteps_deform = timesteps_chunk != self.timestep_canonical
-                        else:
-                            # All timesteps will be deformed into a latent canonical space
-                            idx_timesteps_deform = torch.ones_like(timesteps_chunk).bool()
-
-                        if idx_timesteps_deform.any():
-                            positions_to_deform = positions_flat[idx_timesteps_deform]
-
-                            if window_deform is None:
-                                window_deform = self._previous_window_deform
-                            else:
-                                # Cache window_deform
-                                self._previous_window_deform = window_deform
-
-                            deformed_points, _ = self.deformation_network(positions_to_deform,
-                                                                          warp_code=time_embeddings[
-                                                                              idx_timesteps_deform],
-                                                                          windows_param=window_deform)
-
-                            positions_flat[idx_timesteps_deform] = deformed_points
-
-                        base_inputs = [positions_flat]
-                    else:
-                        base_inputs = [positions_flat, time_embeddings]
             else:
-                base_inputs = [positions_flat]
+                if self.use_hash_encoding_ensemble:
+                    time_codes_chunk = time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
+                    embeddings = self.hash_encoding_ensemble(positions_flat,
+                                                             conditioning_code=time_codes_chunk,
+                                                             #windows_param=window_deform
+                                                             )
+                    base_inputs = [embeddings]
+                else:
+                    base_inputs = [positions_flat]
 
                 if self.use_time_conditioning_for_base_mlp:
                     assert time_codes is not None, "If use_time_conditioning_for_base_mlp is set, time_codes have to be provided"
@@ -448,6 +417,18 @@ class TCNNInstantNGPField(Field):
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
 
+        if self.use_camera_embedding:
+            if ray_samples.camera_indices is None:
+                raise AttributeError("Camera indices are not provided.")
+            camera_indices = ray_samples.camera_indices.squeeze()
+            if self.training:
+                camera_code = self.camera_embedding(camera_indices)
+            else:
+                # During evaluation we use the mean over all camera embeddings
+                camera_code = self.camera_embedding.embedding.weight.mean(0)[None, :].repeat(*ray_samples.shape, 1)
+
+            h = torch.cat([h, camera_code.view(-1, self.camera_embedding.out_dim)], dim=-1)
+
         if self.use_time_conditioning_for_rgb_mlp:
             assert time_codes is not None, "If use_time_conditioning_for_rgb_mlp is set, time_codes have to be provided"
             h = torch.cat([h, time_codes], dim=-1)
@@ -529,6 +510,24 @@ class TCNNInstantNGPField(Field):
 
         opacity = density * step_size
         return opacity
+
+    def get_param_groups(self) -> Dict[str, List[Parameter]]:
+        param_groups = dict()
+
+        param_groups["fields"] = []
+        param_groups["fields"].extend(self.mlp_base.parameters())
+        param_groups["fields"].extend(self.mlp_head.parameters())
+
+        if self.use_hash_encoding_ensemble:
+            param_groups["fields"].extend(self.hash_encoding_ensemble.parameters())
+
+        if self.use_camera_embedding:
+            param_groups["fields"].extend(self.camera_embedding.parameters())
+
+        if self.use_appearance_embedding:
+            param_groups["fields"].extend(self.appearance_embedding.parameters())
+
+        return param_groups
 
     def get_head_parameters(self) -> List[Parameter]:
         return list(self.mlp_head.parameters())
