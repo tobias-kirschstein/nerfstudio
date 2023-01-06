@@ -100,8 +100,8 @@ class SE3WarpingField(nn.Module):
         encoded_xyz = self.position_encoding(
             positions,
             windows_param=windows_param,
-            # covs=covs,
-            # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+            covs=covs,
+            # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
         )  # (R, S, 3)
 
         feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
@@ -137,12 +137,12 @@ class SE3WarpingField(nn.Module):
 
             warped_d = warped_d.reshape(
                 *directions.shape[: directions.ndim - 1], 3
-            )  # .detach()  #TODO: further test its inluece to training stability
+            )  # .detach()  # TODO: further test its influence to training stability
         else:
             warped_d = directions
 
         if covs is not None:
-            c = covs.reshape(-1, *covs.shape[-2:])
+            c = covs.reshape(-1, 3, 3)  # covariance matrix: (BxS, 3, 3)
 
             warped_c = rots @ c @ rots.transpose(-2, -1)
             warped_c = warped_c.to(covs.dtype)
@@ -349,8 +349,8 @@ class HyperNeRFField(Field):
                 w = slice_field(
                     gaussian_samples.mean,
                     warp_code,
-                    # covs=gaussian_samples.cov,
-                    # not use IPE because the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+                    covs=gaussian_samples.cov,
+                    # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
                 )
                 assert self.slicing_encoding is not None
                 encoded_w = self.slicing_encoding(w, windows_param=window_beta)

@@ -329,9 +329,18 @@ class Trainer:
                     writer.put_scalar(f"{n} (max)", grad.max(), step)
                     writer.put_scalar(f"{n} (mean)", grad.mean(), step)
 
+        # TODO: remove before release
+        nan_exist = False
         for n, p in self.pipeline.model.named_parameters():
             if p.grad is not None and p.grad.isnan().any():
                 print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}")
+                nan_exist = True
+        if nan_exist:
+            import ipdb
+
+            ipdb.set_trace()
+            print("NAN VALUE ENCOUNTERED IN GRADIENTS")
+        ################################
 
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
