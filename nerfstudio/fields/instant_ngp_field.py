@@ -108,6 +108,7 @@ class TCNNInstantNGPField(Field):
         self.use_time_conditioning_for_base_mlp = use_time_conditioning_for_base_mlp
         self.use_time_conditioning_for_rgb_mlp = use_time_conditioning_for_rgb_mlp
         self.use_deformation_skip_connection = use_deformation_skip_connection
+        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
         self.use_appearance_embedding = use_appearance_embedding
         if use_appearance_embedding:
@@ -308,7 +309,15 @@ class TCNNInstantNGPField(Field):
                     timesteps_chunk = timesteps_chunk.float() / self.n_timesteps
                     base_inputs = [positions_flat, timesteps_chunk.unsqueeze(1)]
             else:
-                base_inputs = [positions_flat]
+                if self.use_hash_encoding_ensemble:
+                    time_codes_chunk = time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
+                    embeddings = self.hash_encoding_ensemble(positions_flat,
+                                                             conditioning_code=time_codes_chunk,
+                                                             #windows_param=window_deform
+                                                             )
+                    base_inputs = [embeddings]
+                else:
+                    base_inputs = [positions_flat]
 
                 if self.use_time_conditioning_for_base_mlp:
                     assert time_codes is not None, "If use_time_conditioning_for_base_mlp is set, time_codes have to be provided"
@@ -508,6 +517,9 @@ class TCNNInstantNGPField(Field):
         param_groups["fields"] = []
         param_groups["fields"].extend(self.mlp_base.parameters())
         param_groups["fields"].extend(self.mlp_head.parameters())
+
+        if self.hash_encoding_ensemble:
+            param_groups["fields"].extend(self.hash_encoding_ensemble.parameters())
 
         if self.use_camera_embedding:
             param_groups["fields"].extend(self.camera_embedding.parameters())

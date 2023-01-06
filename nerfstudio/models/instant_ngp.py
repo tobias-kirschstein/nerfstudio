@@ -98,12 +98,13 @@ class InstantNGPModelConfig(ModelConfig):
     latent_dim_time: int = 0
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
+    use_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings for the canonical space
     max_ray_samples_chunk_size: int = -1
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
     hidden_dim_deformation_field: int = 128
-    use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding
+    use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding for the deformation field
     n_freq_pos_warping: int = 7
     n_freq_pos_ambient: int = 7
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
@@ -187,12 +188,19 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
+            use_hash_encoding_ensemble=self.config.use_hash_encoding_ensemble,
             n_ambient_dimensions=self.config.n_ambient_dimensions,
             n_freq_pos_ambient=self.config.n_freq_pos_ambient,
             disable_view_dependency=self.config.disable_view_dependency,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
         )
+
+        self.temporal_distortion = None
+        self.time_embedding = None
+        if self.config.use_deformation_field or self.config.use_hash_encoding_ensemble:
+            self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
+            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
 
         if self.config.use_deformation_field:
             self.temporal_distortion = SE3Distortion(
@@ -205,18 +213,13 @@ class NGPModel(Model):
                 view_direction_warping=self.config.view_direction_warping,
                 use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble)
 
-            self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
-            init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
-
             if self.config.n_ambient_dimensions > 0:
                 self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_ambient,
                                                                out_dim=self.config.n_ambient_dimensions,
                                                                warp_code_dim=self.config.latent_dim_time,
                                                                mlp_num_layers=self.config.n_layers_deformation_field,
                                                                mlp_layer_width=self.config.hidden_dim_deformation_field)
-        else:
-            self.temporal_distortion = None
-            self.time_embedding = None
+
 
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
@@ -429,7 +432,7 @@ class NGPModel(Model):
             window_deform = None
 
         time_embeddings = None
-        if self.temporal_distortion is not None:
+        if self.temporal_distortion is not None or self.config.use_hash_encoding_ensemble:
 
             if ray_samples.timesteps is None:
                 # Assume ray_samples come from occupancy grid.
@@ -439,6 +442,7 @@ class NGPModel(Model):
                 ray_samples.timesteps = torch.randint(self.config.n_timesteps, (ray_samples.size, 1)).to(
                     ray_samples.frustums.origins.device)
 
+        if self.temporal_distortion is not None:
             # Initialize all offsets with 0
             assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
             ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
@@ -477,6 +481,9 @@ class NGPModel(Model):
                     # ray_samples.frustums.directions[slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size)] = ray_samples_chunk.frustums.directions
 
             time_embeddings = torch.concat(time_embeddings, dim=0)
+        elif self.config.use_hash_encoding_ensemble:
+            time_embeddings = self.time_embedding(ray_samples.timesteps.squeeze(-1))
+
         return ray_samples, time_embeddings
 
     def get_outputs(self, ray_bundle: RayBundle):

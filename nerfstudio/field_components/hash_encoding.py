@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from typing import Literal, Union, Optional
+from typing import Literal, Optional
 
+import tinycudann as tcnn
 import torch
 from nerfstudio.field_components.encodings import posenc_window
-from torch import nn, TensorType
-import tinycudann as tcnn
+from torch import nn
 
 
 @dataclass
@@ -85,16 +85,3 @@ class HashEncodingEnsemble(nn.Module):
 
     def get_out_dim(self) -> int:
         return self.n_output_dims
-
-
-class MLPWithHashEncodingEnsemble(nn.Module):
-
-    def __init__(self,
-                 mlp: tcnn.NetworkWithInputEncoding,
-                 hash_encoding_ensemble: HashEncodingEnsemble):
-        super(MLPWithHashEncodingEnsemble, self).__init__()
-        self.mlp = mlp
-        self.hash_encoding_ensemble = hash_encoding_ensemble
-
-    def forward(self, in_tensor: torch.Tensor):
-        pass
