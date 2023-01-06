@@ -73,13 +73,16 @@ class InstantNGPModelConfig(ModelConfig):
     """How far along ray to stop sampling."""
     use_appearance_embedding: bool = False
     """Whether to use an appearance embedding."""
+    appearance_embedding_dim: int = 32  # Dimension for every appearance embedding
+    use_camera_embedding: bool = False  # Whether a camera-specific code (shared across timesteps) should be learned for RGB network
+    camera_embedding_dim: int = 8
 
     num_layers_base: int = 2  # Number of layers of the first MLP (both density and RGB)
     hidden_dim_base: int = 64  # Hidden dimensions of first MLP
     geo_feat_dim: int = 15  # Number of geometric features (output from field) that are input for second MLP (only RGB)
     num_layers_color: int = 3  # Number of layers of the second MLP (only RGB)
     hidden_dim_color: int = 64  # Hidden dimensions of second MLP
-    appearance_embedding_dim: int = 32  # ?
+
 
     n_hashgrid_levels: int = 16
     log2_hashmap_size: int = 19
@@ -149,14 +152,18 @@ class NGPModel(Model):
         self.field = TCNNInstantNGPField(
             aabb=self.scene_box.aabb,
             contraction_type=self.config.contraction_type,
-            use_appearance_embedding=self.config.use_appearance_embedding,
+
             num_images=self.num_train_data,
             num_layers=self.config.num_layers_base,
             hidden_dim=self.config.hidden_dim_base,
             geo_feat_dim=self.config.geo_feat_dim,
             num_layers_color=self.config.num_layers_color,
             hidden_dim_color=self.config.hidden_dim_color,
+
+            use_appearance_embedding=self.config.use_appearance_embedding,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
+            use_camera_embedding=self.config.use_camera_embedding,
+            camera_embedding_dim=self.config.camera_embedding_dim,
 
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,

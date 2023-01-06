@@ -63,9 +63,11 @@ class TCNNInstantNGPField(Field):
             geo_feat_dim: int = 15,
             num_layers_color: int = 3,
             hidden_dim_color: int = 64,
-            use_appearance_embedding: bool = False,
             num_images: Optional[int] = None,
+            use_appearance_embedding: bool = False,
             appearance_embedding_dim: int = 32,
+            use_camera_embedding: bool = False,
+            camera_embedding_dim: int = 8,
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
@@ -118,7 +120,13 @@ class TCNNInstantNGPField(Field):
         if use_appearance_embedding:
             assert num_images is not None
             self.appearance_embedding_dim = appearance_embedding_dim
-            self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
+
+        self.use_camera_embedding = use_camera_embedding
+        if use_camera_embedding:
+            assert num_images is not None
+            assert n_timesteps is not None, "Currently, camera embedding assumes hat cameras don't move. I.e., there is only 1 camera embedding per camera"
+            self.camera_embedding = Embedding(int(num_images / n_timesteps), camera_embedding_dim)
+            init.uniform_(self.camera_embedding.embedding.weight, a=-0.05, b=0.05)
 
         # TODO: set this properly based on the aabb
         # per_level_scale = 1.4472692012786865
@@ -257,6 +265,9 @@ class TCNNInstantNGPField(Field):
 
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
+
+        if self.use_camera_embedding:
+            in_dim += self.camera_embedding.out_dim
 
         if use_time_conditioning_for_rgb_mlp:
             in_dim += latent_dim_time
@@ -450,6 +461,18 @@ class TCNNInstantNGPField(Field):
                     (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
+
+        if self.use_camera_embedding:
+            if ray_samples.camera_indices is None:
+                raise AttributeError("Camera indices are not provided.")
+            camera_indices = ray_samples.camera_indices.squeeze()
+            if self.training:
+                camera_code = self.camera_embedding(camera_indices)
+            else:
+                # During evaluation we use the mean over all camera embeddings
+                camera_code = self.camera_embedding.embedding.weight.mean(0)[None, :].repeat(*ray_samples.shape, 1)
+
+            h = torch.cat([h, camera_code.view(-1, self.camera_embedding.out_dim)], dim=-1)
 
         if self.use_time_conditioning_for_rgb_mlp:
             assert time_codes is not None, "If use_time_conditioning_for_rgb_mlp is set, time_codes have to be provided"
