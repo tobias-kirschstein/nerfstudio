@@ -12,6 +12,7 @@ from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -75,7 +76,6 @@ class TCNNInstantNGPField(Field):
             n_timesteps: int = 1,
             max_ray_samples_chunk_size: int = -1,
             fix_canonical_space: bool = False,
-            n_freq_pos_warping: int = 7,
             n_freq_pos_ambient: int = 7,
             timestep_canonical: Optional[int] = 0,
             use_time_conditioning_for_base_mlp: bool = False,
@@ -83,6 +83,7 @@ class TCNNInstantNGPField(Field):
             use_deformation_skip_connection: bool = False,
             use_smoothstep_hashgrid_interpolation: bool = False,
             n_ambient_dimensions: int = 0,
+            use_hash_encoding_ensemble: bool = False,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -131,6 +132,13 @@ class TCNNInstantNGPField(Field):
                 "otype": "Frequency",
                 "n_frequencies": n_frequencies
             }
+        elif use_hash_encoding_ensemble:
+            self.hash_encoding_ensemble = HashEncodingEnsemble(latent_dim_time, TCNNHashEncodingConfig())
+            # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
+            hash_grid_encoding_config = {
+                "otype": "Identity",
+                "n_dims_to_encode": self.hash_encoding_ensemble.get_out_dim(),
+            }
         else:
             hash_grid_encoding_config = {
                 "n_dims_to_encode": 4 if use_4d_hashing else 3,
@@ -144,7 +152,12 @@ class TCNNInstantNGPField(Field):
             }
 
         base_network_encoding_config = hash_grid_encoding_config
-        n_base_inputs = 4 if use_4d_hashing else 3
+        if use_4d_hashing:
+            n_base_inputs = 4
+        elif use_hash_encoding_ensemble:
+            n_base_inputs = self.hash_encoding_ensemble.get_out_dim()
+        else:
+            n_base_inputs = 3
 
         if n_ambient_dimensions > 0:
             n_base_inputs += n_ambient_dimensions

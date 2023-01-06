@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from typing import Literal, Union
+from typing import Literal, Union, Optional
 
 import torch
+from nerfstudio.field_components.encodings import posenc_window
 from torch import nn, TensorType
 import tinycudann as tcnn
 
@@ -34,7 +35,6 @@ class HashEncodingEnsemble(nn.Module):
 
     def __init__(self,
                  n_hash_encodings: int,
-                 dim_conditioning_code: int,
                  hash_encoding_config: TCNNHashEncodingConfig,
                  mixing_type: Literal['blend', 'attention'] = 'blend'):
         super(HashEncodingEnsemble, self).__init__()
@@ -42,6 +42,7 @@ class HashEncodingEnsemble(nn.Module):
         self.mixing_type = mixing_type
         self.n_hash_encodings = n_hash_encodings
         self.hash_encodings = []
+        self.hash_encoding_config = hash_encoding_config
         for i_hash_encoding in range(n_hash_encodings):
             self.hash_encodings.append(hash_encoding_config.setup())
 
@@ -50,7 +51,8 @@ class HashEncodingEnsemble(nn.Module):
 
     def forward(self,
                 in_tensor: torch.Tensor,
-                conditioning_code: torch.Tensor) -> torch.Tensor:
+                conditioning_code: torch.Tensor,
+                windows_param: Optional[float] = None) -> torch.Tensor:
 
         if self.mixing_type == 'blend':
             assert conditioning_code.shape[-1] == self.n_hash_encodings, \
@@ -68,9 +70,31 @@ class HashEncodingEnsemble(nn.Module):
             blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
             blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
 
+            if windows_param is not None:
+                window = posenc_window(windows_param,
+                                       0,
+                                       self.hash_encoding_config.n_levels - 1,
+                                       self.hash_encoding_config.n_levels)
+                window = window.repeat_interleave(self.hash_encoding_config.n_features_per_level)
+                window = window.unsqueeze(0).to(blended_embeddings)
+                blended_embeddings = window * blended_embeddings
+
             return blended_embeddings
         else:
             raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
     def get_out_dim(self) -> int:
         return self.n_output_dims
+
+
+class MLPWithHashEncodingEnsemble(nn.Module):
+
+    def __init__(self,
+                 mlp: tcnn.NetworkWithInputEncoding,
+                 hash_encoding_ensemble: HashEncodingEnsemble):
+        super(MLPWithHashEncodingEnsemble, self).__init__()
+        self.mlp = mlp
+        self.hash_encoding_ensemble = hash_encoding_ensemble
+
+    def forward(self, in_tensor: torch.Tensor):
+        pass

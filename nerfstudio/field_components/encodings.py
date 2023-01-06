@@ -60,6 +60,25 @@ class Encoding(FieldComponent):
         raise NotImplementedError
 
 
+def posenc_window(windows_param: float, min_bands: float, max_bands: float, dim_encoding: int) -> torch.Tensor:
+    """Windows a the encoding using a cosiney window.
+
+    This is equivalent to taking a truncated Hann window and sliding it to the
+    right along the frequency spectrum.
+
+    Args:
+        min_deg: the lower frequency band.
+        max_deg: the upper frequency band.
+        windows_param: will ease in each frequency as windows_param goes from 0.0 to num_freqs.
+
+    Returns:
+        A 1-d torch tensor with dim_encoding elements containing the window.
+    """
+    bands = torch.linspace(min_bands, max_bands, dim_encoding)
+    x = torch.clamp(windows_param - bands, 0, 1)
+    return 0.5 * (1 - torch.cos(torch.pi * x))
+
+
 class Identity(Encoding):
     """Identity encoding (Does not modify input)"""
 

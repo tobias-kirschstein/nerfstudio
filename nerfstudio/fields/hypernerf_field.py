@@ -67,7 +67,7 @@ class SE3WarpingField(nn.Module):
         self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
         if use_hash_encoding_ensemble:
-            self.position_encoding = HashEncodingEnsemble(warp_code_dim, -1, TCNNHashEncodingConfig())
+            self.position_encoding = HashEncodingEnsemble(warp_code_dim, TCNNHashEncodingConfig())
         else:
             self.position_encoding = WindowedNeRFEncoding(
                 in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
@@ -112,7 +112,8 @@ class SE3WarpingField(nn.Module):
         if self.use_hash_encoding_ensemble:
             encoded_xyz = self.position_encoding(
                 positions,
-                conditioning_code=warp_code
+                conditioning_code=warp_code,
+                windows_param=windows_param
             )
             encoded_xyz = encoded_xyz.to(positions)  # Potentially cast encoded values from Half to Float
             feat = self.mlp_stem(encoded_xyz)  # (R, S, D)
