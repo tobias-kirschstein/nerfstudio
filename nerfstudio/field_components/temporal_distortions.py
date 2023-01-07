@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Tuple, Literal
 import torch
 from nerfacc import contract, ContractionType
 from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from torch import nn
 from torchtyping import TensorType
@@ -111,6 +112,9 @@ class SE3Distortion(nn.Module):
                  use_hash_encoding_ensemble: bool = False,
                  hash_encoding_ensemble_n_levels: int = 16,
                  hash_encoding_ensemble_features_per_level: int = 2,
+                 hash_encoding_ensemble_n_tables: Optional[int] = None,
+                 hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
+                 hash_encoding_ensemble_n_heads: Optional[int] = None
                  ):
         super(SE3Distortion, self).__init__()
 
@@ -128,7 +132,10 @@ class SE3Distortion(nn.Module):
             warp_direction=view_direction_warping == 'rotation',
             use_hash_encoding_ensemble=use_hash_encoding_ensemble,
             hash_encoding_ensemble_n_levels=hash_encoding_ensemble_n_levels,
-            hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level
+            hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level,
+            hash_encoding_ensemble_n_tables=hash_encoding_ensemble_n_tables,
+            hash_encoding_ensemble_mixing_type=hash_encoding_ensemble_mixing_type,
+            hash_encoding_ensemble_n_heads=hash_encoding_ensemble_n_heads
         )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:

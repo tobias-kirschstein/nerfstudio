@@ -15,6 +15,7 @@ import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from nerfacc import ContractionType
+from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
 from nerfstudio.fields.hypernerf_field import HyperSlicingField
 from torch import nn
@@ -102,6 +103,9 @@ class InstantNGPModelConfig(ModelConfig):
     max_ray_samples_chunk_size: int = -1
     hash_encoding_ensemble_n_levels: int = 16
     hash_encoding_ensemble_features_per_level: int = 2
+    hash_encoding_ensemble_n_tables: Optional[int] = None,
+    hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend'
+    hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
@@ -215,7 +219,10 @@ class NGPModel(Model):
                 view_direction_warping=self.config.view_direction_warping,
                 use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble,
                 hash_encoding_ensemble_n_levels=self.config.hash_encoding_ensemble_n_levels,
-                hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level
+                hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level,
+                hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
+                hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
+                hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads
             )
 
             if self.config.n_ambient_dimensions > 0:
