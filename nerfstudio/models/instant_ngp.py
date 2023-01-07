@@ -195,10 +195,16 @@ class NGPModel(Model):
             n_frequencies=self.config.n_frequencies,
             density_threshold=self.config.density_threshold,
             use_4d_hashing=self.config.use_4d_hashing,
-            use_hash_encoding_ensemble=self.config.use_hash_encoding_ensemble,
             n_ambient_dimensions=self.config.n_ambient_dimensions,
             n_freq_pos_ambient=self.config.n_freq_pos_ambient,
             disable_view_dependency=self.config.disable_view_dependency,
+
+            use_hash_encoding_ensemble=self.config.use_hash_encoding_ensemble,
+            hash_encoding_ensemble_n_levels=self.config.hash_encoding_ensemble_n_levels,
+            hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level,
+            hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
+            hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
+            hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
         )

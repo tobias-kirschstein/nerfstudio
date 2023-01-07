@@ -9,7 +9,7 @@ import torch
 from nerfstudio.field_components.encodings import posenc_window
 from torch import nn
 
-HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention']
+HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention', 'multihead_blend']
 
 
 @dataclass
@@ -57,7 +57,18 @@ class HashEncodingEnsemble(nn.Module):
         self.hash_encodings = nn.ModuleList(self.hash_encodings)
 
         dim_hash_encoding = hash_encoding_config.n_levels * hash_encoding_config.n_features_per_level
-        if mixing_type in {'attention', 'multihead_attention'}:
+        if mixing_type == 'multihead_blend':
+            if n_heads is None:
+                # Assume, we just want one head per hash table level
+                n_heads = hash_encoding_config.n_levels
+
+            self.n_heads = n_heads
+            assert dim_hash_encoding % self.n_heads == 0, \
+                "output hash encoding dimensionality must be divisible by n_heads"
+            self.n_features_per_head = int(dim_hash_encoding / self.n_heads)
+            self.n_output_dims = dim_hash_encoding
+
+        elif mixing_type in {'attention', 'multihead_attention'}:
             assert dim_conditioning_code is not None, "For attention mixing_type, dim_conditioning_code must be given"
             self.attention_keys = nn.Embedding(n_hash_encodings,
                                                dim_conditioning_code,
@@ -127,6 +138,22 @@ class HashEncodingEnsemble(nn.Module):
             conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
             blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
             blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
+
+        elif self.mixing_type == 'multihead_blend':
+            assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
+                "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
+
+            B = conditioning_code.shape[0]
+            C = conditioning_code.shape[1]  # code dim
+            H = embeddings.shape[2]  # number of hash tables
+            nH = self.n_heads
+            FpH = self.n_features_per_head
+
+            conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
+            conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
+            conditioning_code = conditioning_code.transpose(1, 2)  # [B, D, H]
+            weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
+            blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
 
         elif self.mixing_type == 'attention':
             # Scaled dot-product attention

@@ -12,7 +12,8 @@ from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig
+from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
+    HashEnsembleMixingType
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -83,7 +84,13 @@ class TCNNInstantNGPField(Field):
             use_deformation_skip_connection: bool = False,
             use_smoothstep_hashgrid_interpolation: bool = False,
             n_ambient_dimensions: int = 0,
+
             use_hash_encoding_ensemble: bool = False,
+            hash_encoding_ensemble_n_levels: int = 16,
+            hash_encoding_ensemble_features_per_level: int = 2,
+            hash_encoding_ensemble_n_tables: Optional[int] = None,
+            hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
+            hash_encoding_ensemble_n_heads: Optional[int] = None,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -134,7 +141,15 @@ class TCNNInstantNGPField(Field):
                 "n_frequencies": n_frequencies
             }
         elif use_hash_encoding_ensemble:
-            self.hash_encoding_ensemble = HashEncodingEnsemble(latent_dim_time, TCNNHashEncodingConfig())
+            n_hashtables = latent_dim_time if hash_encoding_ensemble_mixing_type == 'blend' else hash_encoding_ensemble_n_tables
+            self.hash_encoding_ensemble = HashEncodingEnsemble(
+                n_hashtables,
+                TCNNHashEncodingConfig(n_levels=hash_encoding_ensemble_n_levels,
+                                       n_features_per_level=hash_encoding_ensemble_features_per_level),
+                mixing_type=hash_encoding_ensemble_mixing_type,
+                dim_conditioning_code=latent_dim_time,
+                n_heads=hash_encoding_ensemble_n_heads)
+
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
             hash_grid_encoding_config = {
                 "otype": "Identity",
@@ -313,7 +328,7 @@ class TCNNInstantNGPField(Field):
                     time_codes_chunk = time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
                     embeddings = self.hash_encoding_ensemble(positions_flat,
                                                              conditioning_code=time_codes_chunk,
-                                                             #windows_param=window_deform
+                                                             # windows_param=window_deform
                                                              )
                     base_inputs = [embeddings]
                 else:
