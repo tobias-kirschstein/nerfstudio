@@ -137,6 +137,7 @@ class InstantNGPModelConfig(ModelConfig):
     view_frustum_culling: Optional[
         int] = None  # Filters out points that are seen by less than the specified number of cameras
     use_view_frustum_culling_for_train: bool = False  # Whether to also filter points during training (slow)
+    only_render_canonical_space: bool = False  # Special option for evaluation purposes: Disables any existing deformation field
 
 
 class NGPModel(Model):
@@ -231,7 +232,6 @@ class NGPModel(Model):
                                                                warp_code_dim=self.config.latent_dim_time,
                                                                mlp_num_layers=self.config.n_layers_deformation_field,
                                                                mlp_layer_width=self.config.hidden_dim_deformation_field)
-
 
         self.scene_aabb = Parameter(self.scene_box.aabb.flatten(), requires_grad=False)
 
@@ -435,6 +435,9 @@ class NGPModel(Model):
         return param_groups
 
     def warp_ray_samples(self, ray_samples: RaySamples) -> Tuple[RaySamples, Optional[torch.TensorType]]:
+        if self.config.only_render_canonical_space:
+            return ray_samples, None
+
         # window parameters
         if self.sched_window_deform is not None:
             # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
