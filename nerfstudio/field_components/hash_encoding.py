@@ -1,7 +1,9 @@
 import dataclasses
 from dataclasses import dataclass
+from math import sqrt
 from typing import Literal, Optional
 
+import torch.nn.functional as F
 import tinycudann as tcnn
 import torch
 from nerfstudio.field_components.encodings import posenc_window
@@ -54,6 +56,7 @@ class HashEncodingEnsemble(nn.Module):
         if mixing_type == 'attention':
             assert dim_conditioning_code is not None, "For attention mixing_type, dim_conditioning_code must be given"
             self.attention_keys = nn.Embedding(n_hash_encodings, dim_conditioning_code)
+            self.sqrt_dim = sqrt(dim_conditioning_code)
 
         # Unfortunately, cannot merge hashtables into a single hashtable, as the maximum number of features_per_level is 8!
         # hash_encoding_config_merged = dataclasses.replace(hash_encoding_config,
@@ -67,16 +70,16 @@ class HashEncodingEnsemble(nn.Module):
                 conditioning_code: torch.Tensor,
                 windows_param: Optional[float] = None) -> torch.Tensor:
 
+        embeddings = []
+        for hash_encoding in self.hash_encodings:
+            embedding = hash_encoding(in_tensor)
+            embeddings.append(embedding)
+        embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
+
         if self.mixing_type == 'blend':
             assert conditioning_code.shape[-1] == self.n_hash_encodings, \
                 "If blend mixing type is chosen, conditioning code needs to have as many dimensions as there are " \
                 "hashtables in the encoding"
-
-            embeddings = []
-            for hash_encoding in self.hash_encodings:
-                embedding = hash_encoding(in_tensor)
-                embeddings.append(embedding)
-            embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
 
             # embeddings = self.hash_encoding(in_tensor)  # [B, D * H]
             # n_levels = self.hash_encoding_config.n_levels
@@ -92,18 +95,42 @@ class HashEncodingEnsemble(nn.Module):
             blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
             blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
 
-            if windows_param is not None:
-                window = posenc_window(windows_param,
-                                       0,
-                                       self.hash_encoding_config.n_levels - 1,
-                                       self.hash_encoding_config.n_levels)
-                window = window.repeat_interleave(self.hash_encoding_config.n_features_per_level)
-                window = window.unsqueeze(0).to(blended_embeddings)
-                blended_embeddings = window * blended_embeddings
+        elif self.mixing_type == 'attention':
+            # Scaled dot-product attention
+            keys = self.attention_keys.weight  # [H, T]
+            queries = conditioning_code  # [B, T]
+            values = embeddings  # [B, D, H]
+            B = queries.shape[0]
 
-            return blended_embeddings
+            queries = queries.unsqueeze(1)  # [B, 1, T]
+            keys = keys.t().unsqueeze(0)  # [1, T, H]
+            keys = keys.repeat(B, 1, 1)  # [B, T, H]  share keys across samples
+
+            scores = torch.bmm(queries, keys) / self.sqrt_dim  # [B, 1, H]
+            attentions = F.softmax(scores, dim=2)  # [B, 1, H]
+
+            values = values.transpose(1, 2)  # [B, H, D]
+            # TODO: This bmm might not work
+            attended_embeddings = torch.bmm(attentions, values)  # [B, 1, D]
+            blended_embeddings = attended_embeddings.squeeze(1)  # [B, D]
+        elif self.mixing_type == 'multihead_attention':
+            T = conditioning_code.shape[1]
+            n_heads = 4
+            multihead_attn = nn.MultiheadAttention(T, n_heads, batch_first=True)
+            pass
         else:
             raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
+
+        if windows_param is not None:
+            window = posenc_window(windows_param,
+                                   0,
+                                   self.hash_encoding_config.n_levels - 1,
+                                   self.hash_encoding_config.n_levels)
+            window = window.repeat_interleave(self.hash_encoding_config.n_features_per_level)
+            window = window.unsqueeze(0).to(blended_embeddings)
+            blended_embeddings = window * blended_embeddings
+
+        return blended_embeddings
 
     def get_out_dim(self) -> int:
         return self.n_output_dims
