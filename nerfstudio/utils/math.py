@@ -189,5 +189,17 @@ def expected_sin(x_means: torch.Tensor, x_vars: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: The expected value of sin.
     """
+    # TODO: remove before release
+    A = torch.exp(-0.5 * x_vars)
+    B = torch.sin(x_means)
+    E = A * B
 
-    return torch.exp(-0.5 * x_vars) * torch.sin(x_means)
+    if E.isinf().any():
+        import ipdb
+
+        ipdb.set_trace()
+        print(f"INF in expected_sin")
+    return E
+    ###########################
+
+    # return torch.exp(-0.5 * x_vars) * torch.sin(x_means)

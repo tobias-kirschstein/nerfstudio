@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type
 
+import pytorch_warmup as warmup
 import torch
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.nn.parameter import Parameter
@@ -105,6 +106,7 @@ class Optimizers:
         self.config = config
         self.optimizers = {}
         self.schedulers = {}
+        self.warmup_schedulers = {}
         for param_group_name, params in param_groups.items():
             lr_init = config[param_group_name]["optimizer"].lr
             self.optimizers[param_group_name] = config[param_group_name]["optimizer"].setup(params=params)
@@ -112,6 +114,11 @@ class Optimizers:
                 self.schedulers[param_group_name] = config[param_group_name]["scheduler"].setup(
                     optimizer=self.optimizers[param_group_name], lr_init=lr_init
                 )
+                if "warmup_period" in config[param_group_name]:
+                    self.warmup_schedulers[param_group_name] = warmup.ExponentialWarmup(
+                        self.optimizers[param_group_name],
+                        warmup_period=config[param_group_name]["warmup_period"],
+                    )
 
     def optimizer_step(self, param_group_name: str) -> None:
         """Fetch and step corresponding optimizer.
@@ -162,9 +169,15 @@ class Optimizers:
             step: the current step
         """
         for param_group_name, scheduler in self.schedulers.items():
-            scheduler.step()
-            # TODO(ethan): clean this up. why is there indexing into a list?
-            lr = scheduler.get_last_lr()[0]
+            if param_group_name in self.warmup_schedulers:
+                with self.warmup_schedulers[param_group_name].dampening():
+                    scheduler.step()
+                lr = self.optimizers[param_group_name].param_groups[0]["lr"]
+            else:
+                scheduler.step()
+                # TODO(ethan): clean this up. why is there indexing into a list?
+                lr = scheduler.get_last_lr()[0]
+
             writer.put_scalar(name=f"learning_rate/{param_group_name}", scalar=lr, step=step)
 
     def load_optimizers(self, loaded_state: Dict[str, Any]) -> None:
