@@ -93,6 +93,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_dist_loss: float = 0
     lambda_sparse_prior: float = 0
     lambda_l1_field_regularization: float = 0
+    lambda_global_sparsity_prior: float = 0  # Force density globally to be as small as possible
 
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
@@ -141,7 +142,8 @@ class InstantNGPModelConfig(ModelConfig):
     use_view_frustum_culling_for_train: bool = False  # Whether to also filter points during training (slow)
 
     only_render_canonical_space: bool = False  # Special option for evaluation purposes: Disables any existing deformation field
-    only_render_hash_table: Optional[int] = None  # Special option for evaluation purpose: Only query specified hash table in Hash Ensembles
+    only_render_hash_table: Optional[
+        int] = None  # Special option for evaluation purpose: Only query specified hash table in Hash Ensembles
 
 
 class NGPModel(Model):
@@ -792,6 +794,32 @@ class NGPModel(Model):
             sparsity_loss = self.config.lambda_sparse_prior * accumulation_per_ray.mean()
             # sparsity_loss = self.config.lambda_sparse_prior * (1 + 2 * weights.pow(2)).log().sum()
             loss_dict["sparsity_loss"] = sparsity_loss
+
+        if self.config.lambda_global_sparsity_prior > 0:
+            n_random_points = 128
+            random_points = torch.rand(n_random_points, 3) * 2 - 1  # [-1, 1]
+            random_points = random_points.to(rgb_pred)
+            ray_samples_random = RaySamples(
+                Frustums(
+                    origins=random_points,
+                    directions=torch.zeros_like(random_points),
+                    starts=torch.zeros((*random_points.shape[:-1], 1)).to(random_points),
+                    ends=torch.zeros((*random_points.shape[:-1], 1)).to(random_points),
+                    pixel_area=None
+                ),
+                timesteps=torch.randint(self.config.n_timesteps, (n_random_points, 1), dtype=torch.int, device=random_points.device)
+            )
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+            if ray_samples_random.timesteps is not None:
+                # Detach time codes as we only want to supervise the actual field
+                time_codes = self.time_embedding(ray_samples_random.timesteps.squeeze(1)).detach()
+            else:
+                time_codes = None
+
+            density, _ = self.field.get_density(ray_samples_random, window_deform=window_deform, time_codes=time_codes)
+            assert density.min() >= 0
+            global_sparsity_loss = density.mean()
+            loss_dict["global_sparsity_loss"] = self.config.lambda_global_sparsity_prior * global_sparsity_loss
 
         # TODO: L1 regularization for hash table (Is inside mlp_base)
         if self.config.lambda_l1_field_regularization > 0:
