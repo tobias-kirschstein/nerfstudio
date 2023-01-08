@@ -18,7 +18,7 @@ from nerfacc import ContractionType
 from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
 from nerfstudio.fields.hypernerf_field import HyperSlicingField
-from torch import nn
+from torch import nn, TensorType
 from torch.nn import Parameter, init
 from torch.nn.modules.module import T
 from torch_efficient_distloss import flatten_eff_distloss
@@ -97,6 +97,8 @@ class InstantNGPModelConfig(ModelConfig):
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
     latent_dim_time: int = 0
+    latent_dim_time_deformation: Optional[
+        int] = None  # In case multiple time embeddings are used, can specify a different dimension for deformation field
     n_timesteps: int = 1  # Number of timesteps for time embedding
     use_4d_hashing: bool = False
     use_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings for the canonical space
@@ -215,12 +217,27 @@ class NGPModel(Model):
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
 
+        if self.config.use_deformation_field \
+                and self.config.latent_dim_time_deformation is not None \
+                and self.config.use_hash_encoding_ensemble:
+            # If both deformation field AND canonical hash ensemble are used, can have separate time embeddings
+            self.use_separate_deformation_time_embedding = True
+            self.time_embedding_deformation = nn.Embedding(self.config.n_timesteps,
+                                                           self.config.latent_dim_time_deformation)
+            init.normal_(self.time_embedding_deformation.weight, mean=0.,
+                         std=0.01 / sqrt(self.config.latent_dim_time_deformation))
+            latent_dim_time_deformation = self.config.latent_dim_time_deformation
+        else:
+            self.use_separate_deformation_time_embedding = False
+            self.time_embedding_deformation = self.time_embedding
+            latent_dim_time_deformation = self.config.latent_dim_time
+
         if self.config.use_deformation_field:
             self.temporal_distortion = SE3Distortion(
                 self.scene_box.aabb,
                 contraction_type=self.config.contraction_type,
                 n_freq_pos=self.config.n_freq_pos_warping,
-                warp_code_dim=self.config.latent_dim_time,
+                warp_code_dim=latent_dim_time_deformation,
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
                 view_direction_warping=self.config.view_direction_warping,
@@ -235,7 +252,7 @@ class NGPModel(Model):
             if self.config.n_ambient_dimensions > 0:
                 self.hyper_slicing_network = HyperSlicingField(self.config.n_freq_pos_ambient,
                                                                out_dim=self.config.n_ambient_dimensions,
-                                                               warp_code_dim=self.config.latent_dim_time,
+                                                               warp_code_dim=latent_dim_time_deformation,
                                                                mlp_num_layers=self.config.n_layers_deformation_field,
                                                                mlp_layer_width=self.config.hidden_dim_deformation_field)
 
@@ -253,7 +270,7 @@ class NGPModel(Model):
         self.sampler_train = VolumetricSampler(
             scene_aabb=vol_sampler_aabb,
             occupancy_grid=self.occupancy_grid,
-            density_fn=self.field.density_fn,
+            density_fn=self.density_fn,
             camera_frustums=self.camera_frustums if self.config.use_view_frustum_culling_for_train else None,
             view_frustum_culling=self.config.view_frustum_culling if self.config.use_view_frustum_culling_for_train else None
         )
@@ -267,7 +284,7 @@ class NGPModel(Model):
         self.sampler_eval = VolumetricSampler(
             scene_aabb=vol_sampler_aabb_eval,
             occupancy_grid=self.occupancy_grid,
-            density_fn=self.field.density_fn,
+            density_fn=self.density_fn,
             camera_frustums=self.camera_frustums,
             view_frustum_culling=self.config.view_frustum_culling
         )
@@ -339,6 +356,32 @@ class NGPModel(Model):
 
         return super().train(mode)
 
+    def density_fn(self, positions: TensorType["bs":..., 3]) -> TensorType["bs":..., 1]:
+        """Returns only the density. Used primarily with the density grid.
+
+        Args:
+            positions: the origin of the samples/frustums
+        """
+        # Need to figure out a better way to descibe positions with a ray.
+        ray_samples = RaySamples(
+            frustums=Frustums(
+                origins=positions,
+                directions=torch.ones_like(positions),
+                starts=torch.zeros_like(positions[..., :1]),
+                ends=torch.zeros_like(positions[..., :1]),
+                pixel_area=torch.ones_like(positions[..., :1]),
+            ),
+        )
+
+        ray_samples, _ = self.warp_ray_samples(ray_samples)
+        if ray_samples.timesteps is not None:
+            time_codes = self.time_embedding(ray_samples.timesteps)
+        else:
+            time_codes = None
+
+        density, _ = self.field.get_density(ray_samples, time_codes=time_codes)
+        return density
+
     def get_training_callbacks(
             self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -350,7 +393,8 @@ class NGPModel(Model):
             # https://github.com/KAIR-BAIR/nerfacc/blob/127223b11401125a9fce5ce269bb0546ee4de6e8/examples/train_ngp_nerf.py#L190-L213
             self.occupancy_grid.every_n_step(
                 step=step,
-                occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
+                # occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
+                occ_eval_fn=lambda x: self.density_fn(x) * self.config.render_step_size,
                 # occ_eval_fn=lambda x: torch.ones_like(x)[..., 0],
             )
 
@@ -413,10 +457,17 @@ class NGPModel(Model):
             param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
 
         if self.time_embedding is not None:
-            if "deformation_field" not in param_groups:
-                param_groups["deformation_field"] = []
+            if self.use_separate_deformation_time_embedding:
+                if "deformation_field" not in param_groups:
+                    param_groups["deformation_field"] = []
 
-            param_groups["deformation_field"].extend(self.time_embedding.parameters())
+                param_groups["deformation_field"].extend(self.time_embedding_deformation.parameters())
+                param_groups["fields"].extend(self.time_embedding.parameters())
+            else:
+                if "deformation_field" not in param_groups:
+                    param_groups["deformation_field"] = []
+
+                param_groups["deformation_field"].extend(self.time_embedding.parameters())
 
         # # TODO: This is from old way of time conditioning
         # if self.field.deformation_network is not None:
@@ -476,7 +527,7 @@ class NGPModel(Model):
             for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
                 ray_samples_chunk = ray_samples.view(slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size))
                 timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
-                time_embeddings_chunk = self.time_embedding(timesteps_chunk)
+                time_embeddings_chunk = self.time_embedding_deformation(timesteps_chunk)
                 time_embeddings.append(time_embeddings_chunk)
 
                 if self.config.timestep_canonical is not None:
@@ -505,6 +556,17 @@ class NGPModel(Model):
         elif self.config.use_hash_encoding_ensemble:
             time_embeddings = self.time_embedding(ray_samples.timesteps.squeeze(-1))
 
+        if self.config.n_ambient_dimensions > 0:
+            # TODO: maybe move this inside warp_samples?
+
+            window_ambient = None if self.sched_window_ambient is None else self.sched_window_ambient.value
+
+            positions_posed_space = ray_samples.frustums.get_positions(omit_offsets=True, omit_ambient_coordinates=True)
+            ambient_coordinates = self.hyper_slicing_network(positions_posed_space,
+                                                             warp_code=time_embeddings,
+                                                             window_param=window_ambient)
+            ray_samples.frustums.ambient_coordinates = ambient_coordinates
+
         return ray_samples, time_embeddings
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -531,18 +593,13 @@ class NGPModel(Model):
             window_deform = None
 
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
-        ray_samples, time_codes = self.warp_ray_samples(ray_samples)
+        ray_samples, _ = self.warp_ray_samples(ray_samples)
 
-        if self.config.n_ambient_dimensions > 0:
-            # TODO: maybe move this inside warp_samples?
-
-            window_ambient = None if self.sched_window_ambient is None else self.sched_window_ambient.value
-
-            positions_posed_space = ray_samples.frustums.get_positions(omit_offsets=True, omit_ambient_coordinates=True)
-            ambient_coordinates = self.hyper_slicing_network(positions_posed_space,
-                                                             warp_code=time_codes,
-                                                             window_param=window_ambient)
-            ray_samples.frustums.ambient_coordinates = ambient_coordinates
+        if ray_samples.timesteps is not None:
+            # This potentially uses a different time embedding for the canonical field than the deformation field
+            time_codes = self.time_embedding(ray_samples.timesteps)
+        else:
+            time_codes = None
 
         field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)
 
