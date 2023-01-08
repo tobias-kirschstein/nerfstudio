@@ -114,7 +114,8 @@ class SE3Distortion(nn.Module):
                  hash_encoding_ensemble_features_per_level: int = 2,
                  hash_encoding_ensemble_n_tables: Optional[int] = None,
                  hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
-                 hash_encoding_ensemble_n_heads: Optional[int] = None
+                 hash_encoding_ensemble_n_heads: Optional[int] = None,
+                 only_render_hash_table: Optional[int] = None
                  ):
         super(SE3Distortion, self).__init__()
 
@@ -135,7 +136,8 @@ class SE3Distortion(nn.Module):
             hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level,
             hash_encoding_ensemble_n_tables=hash_encoding_ensemble_n_tables,
             hash_encoding_ensemble_mixing_type=hash_encoding_ensemble_mixing_type,
-            hash_encoding_ensemble_n_heads=hash_encoding_ensemble_n_heads
+            hash_encoding_ensemble_n_heads=hash_encoding_ensemble_n_heads,
+            only_render_hash_table=only_render_hash_table
         )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:

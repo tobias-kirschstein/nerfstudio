@@ -43,12 +43,14 @@ class HashEncodingEnsemble(nn.Module):
                  hash_encoding_config: TCNNHashEncodingConfig,
                  mixing_type: HashEnsembleMixingType = 'blend',
                  dim_conditioning_code: Optional[int] = None,
-                 n_heads: Optional[int] = None):
+                 n_heads: Optional[int] = None,
+                 only_render_hash_table: Optional[int] = None):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
         self.n_hash_encodings = n_hash_encodings
         self.hash_encoding_config = hash_encoding_config
+        self.only_render_hash_table = only_render_hash_table
 
         self.hash_encodings = []
         for i_hash_encoding in range(n_hash_encodings):
@@ -72,7 +74,7 @@ class HashEncodingEnsemble(nn.Module):
             assert dim_conditioning_code is not None, "For attention mixing_type, dim_conditioning_code must be given"
             self.attention_keys = nn.Embedding(n_hash_encodings,
                                                dim_conditioning_code,
-                                               #dtype=self.hash_encodings[0].dtype
+                                               # dtype=self.hash_encodings[0].dtype
                                                )
             self.sqrt_dim = sqrt(dim_conditioning_code)
 
@@ -120,88 +122,91 @@ class HashEncodingEnsemble(nn.Module):
             window = window.unsqueeze(0).unsqueeze(2).to(embeddings)  # [1, D, 1]
             embeddings = window * embeddings
 
-        if self.mixing_type == 'blend':
-            assert conditioning_code.shape[-1] == self.n_hash_encodings, \
-                "If blend mixing type is chosen, conditioning code needs to have as many dimensions as there are " \
-                "hashtables in the encoding"
-
-            # embeddings = self.hash_encoding(in_tensor)  # [B, D * H]
-            # n_levels = self.hash_encoding_config.n_levels
-            # features_per_level = self.hash_encoding_config.n_features_per_level
-            #
-            # embeddings = embeddings.view(-1, n_levels, self.n_hash_encodings, features_per_level)  # [B, L, H, F]
-            # embeddings = embeddings.transpose(1, 2)
-            # embeddings = embeddings.reshape(-1, self.n_hash_encodings, n_levels * features_per_level)  # [B, H, L*F]
-            # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
-
-            conditioning_code = conditioning_code.unsqueeze(2)  # [B, H, 1]
-            conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
-            blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
-            blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
-
-        elif self.mixing_type == 'multihead_blend':
-            assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
-                "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
-
-            B = conditioning_code.shape[0]
-            C = conditioning_code.shape[1]  # code dim
-            H = embeddings.shape[2]  # number of hash tables
-            nH = self.n_heads
-            FpH = self.n_features_per_head
-
-            conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
-            conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
-            conditioning_code = conditioning_code.transpose(1, 2)  # [B, D, H]
-            weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
-            blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
-
-        elif self.mixing_type == 'attention':
-            # Scaled dot-product attention
-            keys = self.attention_keys.weight  # [H, T]
-            queries = conditioning_code  # [B, T]
-            values = embeddings  # [B, D, H]
-            B = queries.shape[0]
-
-            queries = queries.unsqueeze(1)  # [B, 1, T]
-            values = values.to(queries)  # Make values normal precision
-            keys = keys.unsqueeze(0).transpose(1, 2)  # [1, T, H]
-
-            scores = torch.matmul(queries, keys) / self.sqrt_dim  # [B, 1, H]
-            attentions = F.softmax(scores, dim=2)  # [B, 1, H]
-
-            values = values.transpose(1, 2)  # [B, H, D]
-            # TODO: This bmm might not work
-            attended_embeddings = torch.bmm(attentions, values)  # [B, 1, D]
-            blended_embeddings = attended_embeddings.squeeze(1)  # [B, D]
-        elif self.mixing_type == 'multihead_attention':
-            B = conditioning_code.shape[0]  # batch dim: number of samples
-
-            queries = conditioning_code  # [B, C]
-            keys = self.attention_keys.weight  # [H, C]
-            values = embeddings  # [B, D, H]
-
-            queries = queries.unsqueeze(1)  # [B, 1, C]
-            keys = keys.unsqueeze(0)  # [1, H, C]
-            # Unfortunately, we have to call repeat() here because multihead_attn does not do broadcasting
-            # This leads to a massive GPU memory consumption
-            keys = keys.repeat(B, 1, 1)  # [B, H, C]  share keys across samples
-            values = values.transpose(1, 2)  # [B, H, D]
-            values = values.to(queries)  # Make values normal precision
-
-            # Make queries and keys half precision
-            # queries = queries.to(values)
-            # keys = keys.to(values)
-
-            # NOTE: nn.MultiheadAttention implicitly uses a transform W_v for the values (hash encodings in our case)
-            # which maps from vdim=H onto the embed_dim=C
-            # Hence the output of the attention operation is not only a weighted combination of the original hash
-            # encodings, but instead a weighted combination of TRANSFORMED (H->C) hash encodings
-            # If we wanted to keep the original dimension (H) of the hash encodings, we could instead use
-            # the return attention weights and perform the weighted combination ourselves
-            blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
-            blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
+        if self.only_render_hash_table is not None:
+            blended_embeddings = 0.06 * embeddings[:, :, self.only_render_hash_table]
         else:
-            raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
+            if self.mixing_type == 'blend':
+                assert conditioning_code.shape[-1] == self.n_hash_encodings, \
+                    "If blend mixing type is chosen, conditioning code needs to have as many dimensions as there are " \
+                    "hashtables in the encoding"
+
+                # embeddings = self.hash_encoding(in_tensor)  # [B, D * H]
+                # n_levels = self.hash_encoding_config.n_levels
+                # features_per_level = self.hash_encoding_config.n_features_per_level
+                #
+                # embeddings = embeddings.view(-1, n_levels, self.n_hash_encodings, features_per_level)  # [B, L, H, F]
+                # embeddings = embeddings.transpose(1, 2)
+                # embeddings = embeddings.reshape(-1, self.n_hash_encodings, n_levels * features_per_level)  # [B, H, L*F]
+                # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+
+                conditioning_code = conditioning_code.unsqueeze(2)  # [B, H, 1]
+                conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
+                blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
+                blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
+
+            elif self.mixing_type == 'multihead_blend':
+                assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
+                    "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
+
+                B = conditioning_code.shape[0]
+                C = conditioning_code.shape[1]  # code dim
+                H = embeddings.shape[2]  # number of hash tables
+                nH = self.n_heads
+                FpH = self.n_features_per_head
+
+                conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
+                conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
+                conditioning_code = conditioning_code.transpose(1, 2)  # [B, D, H]
+                weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
+                blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
+
+            elif self.mixing_type == 'attention':
+                # Scaled dot-product attention
+                keys = self.attention_keys.weight  # [H, T]
+                queries = conditioning_code  # [B, T]
+                values = embeddings  # [B, D, H]
+                B = queries.shape[0]
+
+                queries = queries.unsqueeze(1)  # [B, 1, T]
+                values = values.to(queries)  # Make values normal precision
+                keys = keys.unsqueeze(0).transpose(1, 2)  # [1, T, H]
+
+                scores = torch.matmul(queries, keys) / self.sqrt_dim  # [B, 1, H]
+                attentions = F.softmax(scores, dim=2)  # [B, 1, H]
+
+                values = values.transpose(1, 2)  # [B, H, D]
+                # TODO: This bmm might not work
+                attended_embeddings = torch.bmm(attentions, values)  # [B, 1, D]
+                blended_embeddings = attended_embeddings.squeeze(1)  # [B, D]
+            elif self.mixing_type == 'multihead_attention':
+                B = conditioning_code.shape[0]  # batch dim: number of samples
+
+                queries = conditioning_code  # [B, C]
+                keys = self.attention_keys.weight  # [H, C]
+                values = embeddings  # [B, D, H]
+
+                queries = queries.unsqueeze(1)  # [B, 1, C]
+                keys = keys.unsqueeze(0)  # [1, H, C]
+                # Unfortunately, we have to call repeat() here because multihead_attn does not do broadcasting
+                # This leads to a massive GPU memory consumption
+                keys = keys.repeat(B, 1, 1)  # [B, H, C]  share keys across samples
+                values = values.transpose(1, 2)  # [B, H, D]
+                values = values.to(queries)  # Make values normal precision
+
+                # Make queries and keys half precision
+                # queries = queries.to(values)
+                # keys = keys.to(values)
+
+                # NOTE: nn.MultiheadAttention implicitly uses a transform W_v for the values (hash encodings in our case)
+                # which maps from vdim=H onto the embed_dim=C
+                # Hence the output of the attention operation is not only a weighted combination of the original hash
+                # encodings, but instead a weighted combination of TRANSFORMED (H->C) hash encodings
+                # If we wanted to keep the original dimension (H) of the hash encodings, we could instead use
+                # the return attention weights and perform the weighted combination ourselves
+                blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
+                blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
+            else:
+                raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
         return blended_embeddings
 

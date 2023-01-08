@@ -68,7 +68,8 @@ class SE3WarpingField(nn.Module):
             hash_encoding_ensemble_features_per_level: int = 2,
             hash_encoding_ensemble_n_tables: Optional[int] = None,
             hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
-            hash_encoding_ensemble_n_heads: Optional[int] = None
+            hash_encoding_ensemble_n_heads: Optional[int] = None,
+            only_render_hash_table: Optional[int] = None
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
@@ -87,7 +88,8 @@ class SE3WarpingField(nn.Module):
                 ),
                 mixing_type=hash_encoding_ensemble_mixing_type,
                 dim_conditioning_code=warp_code_dim,
-                n_heads=hash_encoding_ensemble_n_heads
+                n_heads=hash_encoding_ensemble_n_heads,
+                only_render_hash_table=only_render_hash_table
             )
         else:
             self.position_encoding = WindowedNeRFEncoding(

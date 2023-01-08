@@ -139,7 +139,9 @@ class InstantNGPModelConfig(ModelConfig):
     view_frustum_culling: Optional[
         int] = None  # Filters out points that are seen by less than the specified number of cameras
     use_view_frustum_culling_for_train: bool = False  # Whether to also filter points during training (slow)
+
     only_render_canonical_space: bool = False  # Special option for evaluation purposes: Disables any existing deformation field
+    only_render_hash_table: Optional[int] = None  # Special option for evaluation purpose: Only query specified hash table in Hash Ensembles
 
 
 class NGPModel(Model):
@@ -207,6 +209,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
             hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
+            only_render_hash_table=self.config.only_render_hash_table,
 
             density_fn_ray_samples_transform=self.warp_ray_samples
         )
@@ -229,7 +232,7 @@ class NGPModel(Model):
             latent_dim_time_deformation = self.config.latent_dim_time_deformation
         else:
             self.use_separate_deformation_time_embedding = False
-            self.time_embedding_deformation = self.time_embedding
+            self.time_embedding_deformation = None
             latent_dim_time_deformation = self.config.latent_dim_time
 
         if self.config.use_deformation_field:
@@ -246,7 +249,8 @@ class NGPModel(Model):
                 hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level,
                 hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
                 hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
-                hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads
+                hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
+                only_render_hash_table=self.config.only_render_hash_table
             )
 
             if self.config.n_ambient_dimensions > 0:
@@ -375,7 +379,7 @@ class NGPModel(Model):
 
         ray_samples, _ = self.warp_ray_samples(ray_samples)
         if ray_samples.timesteps is not None:
-            time_codes = self.time_embedding(ray_samples.timesteps)
+            time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
         else:
             time_codes = None
 
@@ -527,7 +531,10 @@ class NGPModel(Model):
             for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
                 ray_samples_chunk = ray_samples.view(slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size))
                 timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
-                time_embeddings_chunk = self.time_embedding_deformation(timesteps_chunk)
+                if self.use_separate_deformation_time_embedding:
+                    time_embeddings_chunk = self.time_embedding_deformation(timesteps_chunk)
+                else:
+                    time_embeddings_chunk = self.time_embedding(timesteps_chunk)
                 time_embeddings.append(time_embeddings_chunk)
 
                 if self.config.timestep_canonical is not None:
@@ -538,7 +545,8 @@ class NGPModel(Model):
                         # Compute offsets
                         time_embeddings_deform = time_embeddings_chunk[idx_timesteps_deform]
                         ray_samples_deform = ray_samples_chunk[idx_timesteps_deform]
-                        self.temporal_distortion(ray_samples_deform, warp_code=time_embeddings_deform,
+                        self.temporal_distortion(ray_samples_deform,
+                                                 warp_code=time_embeddings_deform,
                                                  windows_param=window_deform)
 
                         # Need to explicitly set offsets because ray_samples_deform contains a copy of the ray samples
@@ -548,7 +556,8 @@ class NGPModel(Model):
 
                 else:
                     # Deform all samples into the latent canonical space
-                    self.temporal_distortion(ray_samples_chunk, warp_code=time_embeddings_chunk,
+                    self.temporal_distortion(ray_samples_chunk,
+                                             warp_code=time_embeddings_chunk,
                                              windows_param=window_deform)
                     # ray_samples.frustums.directions[slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size)] = ray_samples_chunk.frustums.directions
 
@@ -597,7 +606,7 @@ class NGPModel(Model):
 
         if ray_samples.timesteps is not None:
             # This potentially uses a different time embedding for the canonical field than the deformation field
-            time_codes = self.time_embedding(ray_samples.timesteps)
+            time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
         else:
             time_codes = None
 

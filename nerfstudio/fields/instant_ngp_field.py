@@ -91,6 +91,7 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_n_tables: Optional[int] = None,
             hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
             hash_encoding_ensemble_n_heads: Optional[int] = None,
+            only_render_hash_table: Optional[int] = None,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -148,7 +149,8 @@ class TCNNInstantNGPField(Field):
                                        n_features_per_level=hash_encoding_ensemble_features_per_level),
                 mixing_type=hash_encoding_ensemble_mixing_type,
                 dim_conditioning_code=latent_dim_time,
-                n_heads=hash_encoding_ensemble_n_heads)
+                n_heads=hash_encoding_ensemble_n_heads,
+                only_render_hash_table=only_render_hash_table)
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
             hash_grid_encoding_config = {
