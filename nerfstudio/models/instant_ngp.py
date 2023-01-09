@@ -116,10 +116,15 @@ class InstantNGPModelConfig(ModelConfig):
     use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding for the deformation field
     n_freq_pos_warping: int = 7
     n_freq_pos_ambient: int = 7
+
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
     window_ambient_begin: int = 0  # the number of steps window_ambient is set to 0
     window_ambient_end: int = 0  # The number of steps when window_ambient reaches its maximum
+    window_canonical_begin: int = 0  # Iteration at which allowing more complexity for canonical space should be started
+    window_canonical_end: int = 0  # Iteration at which all complexity for canonical space should be there
+    window_canonical_initial: int = 3  # How many levels of the canonical hash encoding should be active initially
+
     n_ambient_dimensions: int = 0  # How many ambient dimensions should be used
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
     timestep_canonical: Optional[
@@ -316,6 +321,17 @@ class NGPModel(Model):
         else:
             self.sched_window_ambient = None
 
+        if self.config.use_hash_encoding_ensemble and self.config.window_canonical_end >= 1:
+            self.sched_window_canonical = GenericScheduler(
+                init_value=self.config.window_canonical_initial,
+                final_value=self.config.hash_encoding_ensemble_n_levels,
+                begin_step=self.config.window_canonical_begin,
+                end_step=self.config.window_canonical_end,
+            )
+        else:
+            self.sched_window_canonical = None
+
+
         # background
         if self.config.use_backgrounds:
             background_color = None
@@ -434,6 +450,16 @@ class NGPModel(Model):
                     update_every_num_iters=1,
                     func=update_window_param,
                     args=[self.sched_window_ambient, "sched_window_ambient"],
+                )
+            )
+
+        if self.sched_window_canonical is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_canonical, "sched_window_canonical"],
                 )
             )
 
@@ -595,14 +621,6 @@ class NGPModel(Model):
                 alpha_thre=self.config.alpha_thre,
             )
 
-        # window parameters
-        if self.sched_window_deform is not None:
-            # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
-            # window_deform = self.sched_window_deform.get_value() if self.sched_window_deform is not None else None
-            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
-        else:
-            window_deform = None
-
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, _ = self.warp_ray_samples(ray_samples)
 
@@ -612,7 +630,9 @@ class NGPModel(Model):
         else:
             time_codes = None
 
-        field_outputs = self.field(ray_samples, window_deform=window_deform, time_codes=time_codes)
+        window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+
+        field_outputs = self.field(ray_samples, window_canonical=window_canonical, time_codes=time_codes)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(

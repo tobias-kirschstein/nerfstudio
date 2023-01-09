@@ -280,7 +280,7 @@ class TCNNInstantNGPField(Field):
 
     def get_density(self,
                     ray_samples: RaySamples,
-                    window_deform: Optional[float] = None,
+                    window_canonical: Optional[float] = None,
                     time_codes: Optional[torch.Tensor] = None):
 
         densities = []
@@ -330,7 +330,7 @@ class TCNNInstantNGPField(Field):
                     time_codes_chunk = time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
                     embeddings = self.hash_encoding_ensemble(positions_flat,
                                                              conditioning_code=time_codes_chunk,
-                                                             # windows_param=window_deform
+                                                             windows_param=window_canonical
                                                              )
                     base_inputs = [embeddings]
                 else:
@@ -478,7 +478,7 @@ class TCNNInstantNGPField(Field):
     def forward(self,
                 ray_samples: RaySamples,
                 compute_normals: bool = False,
-                window_deform: Optional[float] = None,
+                window_canonical: Optional[float] = None,
                 time_codes: Optional[TensorType] = None):
         """Evaluates the field at points along the ray.
 
@@ -487,10 +487,10 @@ class TCNNInstantNGPField(Field):
         """
         if compute_normals:
             with torch.enable_grad():
-                density, density_embedding = self.get_density(ray_samples, window_deform=window_deform,
+                density, density_embedding = self.get_density(ray_samples, window_canonical=window_canonical,
                                                               time_codes=time_codes)
         else:
-            density, density_embedding = self.get_density(ray_samples, window_deform=window_deform,
+            density, density_embedding = self.get_density(ray_samples, window_canonical=window_canonical,
                                                           time_codes=time_codes)
 
         field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
