@@ -606,7 +606,7 @@ class NGPModel(Model):
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, _ = self.warp_ray_samples(ray_samples)
 
-        if ray_samples.timesteps is not None:
+        if ray_samples.timesteps is not None and self.time_embedding is not None:
             # This potentially uses a different time embedding for the canonical field than the deformation field
             time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
         else:
@@ -683,6 +683,10 @@ class NGPModel(Model):
         mask = self.get_mask_per_ray(batch)
         if mask is not None:
             metrics_dict["psnr_masked"] = self.psnr(rgb[mask], image[mask])
+
+        floaters = self.get_floaters_metric(batch, outputs["accumulation"])
+        if floaters is not None:
+            metrics_dict["floaters"] = floaters
 
         metrics_dict["num_samples_per_batch"] = outputs["num_samples_per_ray"].sum()
         return metrics_dict
@@ -908,6 +912,8 @@ class NGPModel(Model):
             images_dict["img_without_bg"] = outputs["rgb_without_bg"]
 
         return metrics_dict, images_dict
+
+
 
     def _apply_background_network(self,
                                   batch: Dict[str, torch.Tensor],

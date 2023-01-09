@@ -87,12 +87,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-        self,
-        config: ModelConfig,
-        scene_box: SceneBox,
-        num_train_data: int,
-        camera_frustums: Optional[List[Frustum]] = None,
-        **kwargs,
+            self,
+            config: ModelConfig,
+            scene_box: SceneBox,
+            num_train_data: int,
+            camera_frustums: Optional[List[Frustum]] = None,
+            **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -113,7 +113,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -257,7 +257,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -282,11 +282,11 @@ class Model(nn.Module):
         self.load_state_dict(state)  # type: ignore
 
     def apply_background_network(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        background_adjustments: Optional[torch.Tensor] = None,
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            background_adjustments: Optional[torch.Tensor] = None,
     ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
@@ -333,7 +333,7 @@ class Model(nn.Module):
         return rgb
 
     def apply_background_adjustment(
-        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+            self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
     ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
@@ -399,13 +399,13 @@ class Model(nn.Module):
 
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
         if (
-            self.config.use_background_network
-            and "background_adjustments" in outputs
-            and self.config.lambda_background_adjustment_regularization > 0
+                self.config.use_background_network
+                and "background_adjustments" in outputs
+                and self.config.lambda_background_adjustment_regularization > 0
         ):
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = (
-                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                    self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
             )
 
             if background_adjustment_displacement.isnan().any():
@@ -445,6 +445,15 @@ class Model(nn.Module):
 
         return mask_loss
 
+    def get_floaters_metric(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
+        mask = self.get_mask_per_ray(batch)
+        if mask is not None:
+            floaters = accumulation[~mask].mean()
+
+            return floaters
+        else:
+            return None
+
     def get_beta_loss(self, accumulation: torch.Tensor) -> Optional[torch.Tensor]:
         beta_loss = None
         if self.config.lambda_beta_loss > 0 and self.training:
@@ -455,7 +464,7 @@ class Model(nn.Module):
         return beta_loss
 
     def apply_mask(
-        self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
+            self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
 
         if "mask" in batch:
@@ -477,11 +486,11 @@ class Model(nn.Module):
         return None, None, None
 
     def apply_mask_and_combine_images(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        rgb_without_bg: Optional[torch.Tensor],
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            rgb_without_bg: Optional[torch.Tensor],
     ):
 
         image = batch["image"].to(self.device)

@@ -369,6 +369,10 @@ class HyperNeRFModel(Model):
         if mask is not None:
             metrics_dict["psnr_masked"] = self.psnr(rgb[mask], image[mask])
 
+        floaters = self.get_floaters_metric(batch, outputs["accumulation_fine"])
+        if floaters is not None:
+            metrics_dict["floaters"] = floaters
+
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
