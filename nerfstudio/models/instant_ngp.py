@@ -833,14 +833,14 @@ class NGPModel(Model):
                 ),
                 timesteps=torch.randint(self.config.n_timesteps, (n_random_points, 1), dtype=torch.int, device=random_points.device)
             )
-            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+            window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
             if ray_samples_random.timesteps is not None:
                 # Detach time codes as we only want to supervise the actual field
                 time_codes = self.time_embedding(ray_samples_random.timesteps.squeeze(1)).detach()
             else:
                 time_codes = None
 
-            density, _ = self.field.get_density(ray_samples_random, window_deform=window_deform, time_codes=time_codes)
+            density, _ = self.field.get_density(ray_samples_random, window_canonical=window_canonical, time_codes=time_codes)
             assert density.min() >= 0
             global_sparsity_loss = density.mean()
             loss_dict["global_sparsity_loss"] = self.config.lambda_global_sparsity_prior * global_sparsity_loss
