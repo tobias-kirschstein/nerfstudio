@@ -335,12 +335,12 @@ class Trainer:
             if p.grad is not None and p.grad.isnan().any():
                 print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}")
                 nan_exist = True
-        if nan_exist:
-            import ipdb
-
-            ipdb.set_trace()
-            print("NAN VALUE ENCOUNTERED IN GRADIENTS")
-        ################################
+        # if nan_exist:
+        #     import ipdb
+        #
+        #     ipdb.set_trace()
+        #     print("NAN VALUE ENCOUNTERED IN GRADIENTS")
+        # ################################
 
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
