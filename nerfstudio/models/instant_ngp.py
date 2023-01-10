@@ -98,6 +98,9 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_l1_field_regularization: float = 0
     lambda_global_sparsity_prior: float = 0  # Force density globally to be as small as possible
 
+    lambda_temporal_tv_loss: float = 0 # enforce total variation loss across temporal codes
+
+
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
     latent_dim_time: int = 0
@@ -897,6 +900,13 @@ class NGPModel(Model):
                                             self.sched_landmark_loss is not None
                                             else self.config.lambda_landmark_loss) * \
                                          landmark_loss.mean()
+
+        if self.config.lambda_temporal_tv_loss > 0:
+            temoral_tv_loss = self.get_temporal_tv_loss()
+            loss_dict["temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()#(self.sched_temporal_tv_loss.value if
+                                            #self.sched_temporal_tv_loss is not None
+                                            #else self.config.lambda_temporal_tv_loss) * \
+                                         #temoral_tv_loss.mean()
 
         #import numpy as np
         #out_dir = '/mnt/hdd/debug/famudy_debug2/'

@@ -581,8 +581,8 @@ class Model(nn.Module):
 
 
     def get_temporal_tv_loss(self):
-        timesteps1 = self.time_embedding(torch.arange(self.time_embedding.num_embeddings-1, device=self.time_embedding.device))
-        timesteps2 = self.time_embedding(torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.device))
+        timesteps1 = self.time_embedding(torch.arange(self.time_embedding.num_embeddings-1, device=self.time_embedding.weight.device))
+        timesteps2 = self.time_embedding(torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.weight.device))
 
         temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
         return temporal_difference
