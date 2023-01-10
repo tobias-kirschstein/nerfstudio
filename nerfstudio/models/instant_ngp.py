@@ -485,21 +485,14 @@ class NGPModel(Model):
         #     param_groups["fields"].extend(self.field.camera_embedding.parameters())
 
         if self.temporal_distortion is not None:
-            param_groups["deformation_field"] = []
             param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
 
         if self.time_embedding is not None:
             if self.use_separate_deformation_time_embedding:
-                if "deformation_field" not in param_groups:
-                    param_groups["deformation_field"] = []
-
-                param_groups["deformation_field"].extend(self.time_embedding_deformation.parameters())
-                param_groups["fields"].extend(self.time_embedding.parameters())
+                param_groups["embeddings"].extend(self.time_embedding_deformation.parameters())
+                param_groups["embeddings"].extend(self.time_embedding.parameters())
             else:
-                if "deformation_field" not in param_groups:
-                    param_groups["deformation_field"] = []
-
-                param_groups["deformation_field"].extend(self.time_embedding.parameters())
+                param_groups["embeddings"].extend(self.time_embedding.parameters())
 
         # # TODO: This is from old way of time conditioning
         # if self.field.deformation_network is not None:

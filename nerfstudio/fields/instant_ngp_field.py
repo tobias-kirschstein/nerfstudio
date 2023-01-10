@@ -2,6 +2,7 @@
 Instant-NGP field implementations using tiny-cuda-nn, torch, ....
 Adapted from the original implementation to allow configuration of more hyperparams (that were previously hard-coded).
 """
+from collections import defaultdict
 from math import ceil
 from typing import List, Optional, Callable, Tuple, Dict
 
@@ -529,9 +530,8 @@ class TCNNInstantNGPField(Field):
         return opacity
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = dict()
+        param_groups = defaultdict(list)
 
-        param_groups["fields"] = []
         param_groups["fields"].extend(self.mlp_base.parameters())
         param_groups["fields"].extend(self.mlp_head.parameters())
 
@@ -539,10 +539,10 @@ class TCNNInstantNGPField(Field):
             param_groups["fields"].extend(self.hash_encoding_ensemble.parameters())
 
         if self.use_camera_embedding:
-            param_groups["fields"].extend(self.camera_embedding.parameters())
+            param_groups["embeddings"].extend(self.camera_embedding.parameters())
 
         if self.use_appearance_embedding:
-            param_groups["fields"].extend(self.appearance_embedding.parameters())
+            param_groups["embeddings"].extend(self.appearance_embedding.parameters())
 
         return param_groups
 

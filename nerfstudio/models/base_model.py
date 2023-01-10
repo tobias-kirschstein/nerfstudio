@@ -171,7 +171,8 @@ class Model(nn.Module):
             Mapping of different parameter groups
         """
 
-        param_groups = {"fields": []}
+        param_groups = defaultdict(list)
+
         if self.config.use_backgrounds and self.config.use_background_network:
             param_groups["fields"].extend(self.mlp_background.parameters())
 
