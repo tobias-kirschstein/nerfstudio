@@ -14,7 +14,8 @@ import nerfacc
 import tinycudann as tcnn
 import torch
 from elias.config import implicit
-from nerfacc import ContractionType
+from nerfacc import ContractionType, contract
+from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
 from nerfstudio.fields.hypernerf_field import HyperSlicingField
@@ -91,6 +92,7 @@ class InstantNGPModelConfig(ModelConfig):
     hashgrid_n_features_per_level: int = 2
 
     lambda_dist_loss: float = 0
+    dist_loss_max_rays: int = 500  # To avoid massive GPU memory consumption, one can compute the distloss only on a subset of rays per iteration
     lambda_sparse_prior: float = 0
     lambda_l1_field_regularization: float = 0
     lambda_global_sparsity_prior: float = 0  # Force density globally to be as small as possible
@@ -743,24 +745,31 @@ class NGPModel(Model):
             ray_indices = outputs["ray_indices"]
             weights = outputs["weights"]
 
-            max_samples = 10000
-            indices = sorted(
-                random.sample(range(len(weights)), min(max_samples, len(weights)))
-            )  # Sorting is important!
+            max_rays = self.config.dist_loss_max_rays
+            indices = (ray_indices.unsqueeze(1) == ray_indices.unique()[:max_rays]).any(dim=1)
+            # max_samples = 10000
+            # indices = sorted(
+            #     random.sample(range(len(weights)), min(max_samples, len(weights)))
+            # )  # Sorting is important!
             ray_indices_small = ray_indices[indices]
             weights_small = weights[indices]
-            ends_rays = ray_samples.frustums.ends[indices]
-            starts_rays = ray_samples.frustums.starts[indices]
+            ends_rays = ray_samples.frustums.ends[indices].squeeze(-1)
+            starts_rays = ray_samples.frustums.starts[indices].squeeze(-1)
+            #starts_rays = SceneBox.get_normalized_positions(starts_rays, self.field.aabb.data)
+            #ends_rays = SceneBox.get_normalized_positions(ends_rays, self.field.aabb.data)
 
             # TODO: arbitrary near/far ends of rays
-            g = lambda x: ((1 / x) - 1 / 5) / (1 / 15 - 1 / 5)
-            ends = g(ends_rays)
-            starts = g(starts_rays)
+            # g = lambda x: ((1 / x) - 1 / 5) / (1 / 15 - 1 / 5)
+            # ends = g(ends_rays)
+            # starts = g(starts_rays)
+
+            ends = ends_rays
+            starts = starts_rays
             midpoint_distances = (ends + starts) * 0.5
             intervals = ends - starts
             # Need ray_indices for flatten_eff_distloss
             dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
-                weights_small, midpoint_distances.squeeze(0), intervals.squeeze(0), ray_indices_small
+                weights_small, midpoint_distances, intervals, ray_indices_small
             )
             #
             # n_samples = ray_indices_small.shape[0]

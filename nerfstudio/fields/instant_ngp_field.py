@@ -309,7 +309,8 @@ class TCNNInstantNGPField(Field):
             # positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
             # Manually compute contraction here, as contract(..) is not differentiable wrt the position input
             # Do not contract ambient dimensions (i.e., only the first 3 dimensions)
-            positions_flat[:, :3] = (positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+            positions_flat[:, :3] = SceneBox.get_normalized_positions(positions_flat[:, :3], self.aabb)
+            # positions_flat[:, :3] = (positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
             timesteps_chunk = None
             if timesteps is not None:
