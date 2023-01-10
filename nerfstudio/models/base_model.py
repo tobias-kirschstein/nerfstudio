@@ -464,6 +464,129 @@ class Model(nn.Module):
 
         return beta_loss
 
+    def get_landmark_loss(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        if self.sched_window_deform is not None:
+            # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
+            # window_deform = self.sched_window_deform.get_value() if self.sched_window_deform is not None else None
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+        else:
+            window_deform = None
+
+        landmarks_a = batch["landmarks"] # B x N_lm x 3
+        rnd_perm = torch.randperm(landmarks_a.shape[0], device=landmarks_a.device)
+        landmarks_b = batch["landmarks"][rnd_perm]
+        time_embeddings_a = self.time_embedding(batch["timesteps"]).unsqueeze(1).repeat(1, landmarks_a.shape[1], 1) # B x N_LM  x embed_dim
+        time_embeddings_b = self.time_embedding(batch["timesteps"][rnd_perm]).unsqueeze(1).repeat(1,
+                                                                                                  landmarks_b.shape[1],
+                                                                                                  1)
+
+        valid_a = ~(landmarks_a.isnan().any(dim=-1))
+        valid_b = ~(landmarks_b.isnan().any(dim=-1))
+        landmarks_a_clone = landmarks_a.detach().clone()
+        landmarks_b_clone = landmarks_b.detach().clone()
+
+        landmarks_a = landmarks_a[valid_a, :].view(-1, 3)
+        landmarks_b = landmarks_b[valid_b, :].view(-1, 3)
+
+        time_embeddings_a = time_embeddings_a[valid_a, :].view(landmarks_a.shape[0], -1)
+        time_embeddings_b = time_embeddings_b[valid_b, :].view(landmarks_b.shape[0], -1)
+
+
+        #landmarks_a = contract(x=landmarks_a,
+        #                          roi=self.temporal_distortion.aabb,
+        #                          type=self.temporal_distortion.contraction_type)
+
+        #landmarks_b = contract(x=landmarks_b,
+        #                          roi=self.temporal_distortion.aabb,
+        #                          type=self.temporal_distortion.contraction_type)
+
+        landmarks_a = (landmarks_a - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+        landmarks_b = (landmarks_b - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+
+
+
+
+        warped_landmarks_a, _ = self.temporal_distortion.se3_field(landmarks_a,
+                                                                   directions=None,
+                                                                   warp_code=time_embeddings_a,
+                                                                   windows_param=window_deform
+                                                                   )
+
+        warped_landmarks_b, _ = self.temporal_distortion.se3_field(landmarks_b,
+                                                                   directions=None,
+                                                                   warp_code=time_embeddings_b,
+                                                                   windows_param=window_deform
+                                                                   )
+
+        valid_ab = ~(landmarks_a_clone[valid_b, :].isnan().any(dim=-1))
+        valid_ba = ~(landmarks_b_clone[valid_a, :].isnan().any(dim=-1))
+
+        warped_landmarks_a = warped_landmarks_a[valid_ba]
+        warped_landmarks_b = warped_landmarks_b[valid_ab]
+
+        loss = ((warped_landmarks_a - warped_landmarks_b)).abs()
+        assert not loss.isnan().any()
+        return loss
+
+
+    def get_landmark_loss_direct(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        if self.sched_window_deform is not None:
+            # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
+            # window_deform = self.sched_window_deform.get_value() if self.sched_window_deform is not None else None
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+        else:
+            window_deform = None
+
+
+        canonical_timestep_mask = batch["timesteps"] == 1
+
+
+        landmarks_src = batch["landmarks"][~canonical_timestep_mask, :, :] # T_non_can x N_lm x 3
+        landmarks_tgt = batch["landmarks"][canonical_timestep_mask, :, :] # T_can x N_lm x 3
+        landmarks_tgt = landmarks_tgt[0:1, ...].repeat(landmarks_src.shape[0], 1, 1) #there is only one canoncial timestep
+
+        landmarks = torch.stack([landmarks_tgt, landmarks_src], dim=0) # 2 x T_non_can x N_lm x 3
+
+
+        time_embeddings = self.time_embedding(batch["timesteps"][~canonical_timestep_mask]).unsqueeze(1).repeat(1, landmarks_src.shape[1], 1) # T_non_can x N_lm x embed_dim
+
+
+        valid = ~torch.isnan(landmarks).any(-1).any(0) # T_non_can x N_lm
+
+        landmarks_src = landmarks[1][valid, :] # N_valid_lms x 3
+        landmarks_tgt = landmarks[0][valid, :] # N_valid_lms x 3
+
+        time_embeddings = time_embeddings[valid, :] #N_valid_lms x 3
+
+
+
+        #landmarks_src = contract(x=landmarks_src,
+        #                          roi=self.temporal_distortion.aabb,
+        #                          type=self.temporal_distortion.contraction_type)
+        #landmarks_tgt = contract(x=landmarks_tgt,
+        #                         roi=self.temporal_distortion.aabb,
+        #                         type=self.temporal_distortion.contraction_type)
+        landmarks_src = (landmarks_src - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+        landmarks_tgt = (landmarks_tgt - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+
+        warped_landmarks_src, _ = self.temporal_distortion.se3_field(landmarks_src,
+                                                                   directions=None,
+                                                                   warp_code=time_embeddings,
+                                                                   windows_param=window_deform
+                                                                   )
+
+        loss = ((warped_landmarks_src - landmarks_tgt)).abs()
+        assert not loss.isnan().any()
+        return loss
+
+
+    def get_temporal_tv_loss(self):
+        timesteps1 = self.time_embedding(torch.arange(self.time_embedding.num_embeddings-1, device=self.time_embedding.device))
+        timesteps2 = self.time_embedding(torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.device))
+
+        temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
+        return temporal_difference
+
     def apply_mask(
             self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:

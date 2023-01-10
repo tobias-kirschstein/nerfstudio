@@ -315,6 +315,17 @@ class NGPModel(Model):
         else:
             self.sched_window_deform = None
 
+        if self.config.landmark_loss_end is not None:
+            self.sched_landmark_loss = GenericScheduler(
+                init_value=self.config.lambda_landmark_loss,
+                final_value=0,
+                begin_step=0,
+                end_step=self.config.landmark_loss_end,
+            )
+        else:
+            self.sched_landmark_loss = None
+
+
         if self.config.window_ambient_begin > 0 or self.config.window_ambient_end > 0:
             self.sched_window_ambient = GenericScheduler(
                 init_value=0,
@@ -707,6 +718,10 @@ class NGPModel(Model):
             metrics_dict["floaters"] = floaters
 
         metrics_dict["num_samples_per_batch"] = outputs["num_samples_per_ray"].sum()
+
+        if "landmarks" in batch and self.temporal_distortion is not None:
+            with torch.no_grad():
+                metrics_dict["landmark_loss"] = self.get_landmark_loss(batch).mean()
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
@@ -872,6 +887,26 @@ class NGPModel(Model):
             loss_dict["l1_field_regularization"] = (
                     self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
             )
+
+        if "ray_samples" in outputs and self.config.lambda_deformation_l1_prior > 0 and self.train_step < 100000:
+            loss_dict["deformation_l1_prior"] = self.config.lambda_deformation_l1_prior * outputs["ray_samples"].frustums.offsets.abs().mean()
+
+        if self.temporal_distortion is not None and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
+            landmark_loss = self.get_landmark_loss(batch)
+            loss_dict["landmark_loss"] = (self.sched_landmark_loss.value if
+                                            self.sched_landmark_loss is not None
+                                            else self.config.lambda_landmark_loss) * \
+                                         landmark_loss.mean()
+
+        #import numpy as np
+        #out_dir = '/mnt/hdd/debug/famudy_debug2/'
+        #os.makedirs(out_dir, exist_ok=True)
+        #np.save(out_dir + 'cam_origins.npy', outputs["ray_samples"].frustums.origins.detach().cpu().numpy())
+        #np.save(out_dir + 'samples.npy', outputs["ray_samples"].frustums.get_positions().detach().cpu().numpy())
+        #np.save(out_dir + 'landmarks.npy', batch["landmarks"].detach().cpu().numpy())
+        #assert 1 == 2
+
+
 
         return loss_dict
 
