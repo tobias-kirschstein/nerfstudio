@@ -92,6 +92,7 @@ class InstantNGPModelConfig(ModelConfig):
     hashgrid_n_features_per_level: int = 2
 
     lambda_dist_loss: float = 0
+    lambda_random_dist_loss: float = 0  # Additionally, shoot random rays in scene and enforce dist loss to be small
     dist_loss_max_rays: int = 500  # To avoid massive GPU memory consumption, one can compute the distloss only on a subset of rays per iteration
     lambda_sparse_prior: float = 0
     lambda_l1_field_regularization: float = 0
@@ -747,74 +748,91 @@ class NGPModel(Model):
 
             max_rays = self.config.dist_loss_max_rays
             indices = (ray_indices.unsqueeze(1) == ray_indices.unique()[:max_rays]).any(dim=1)
-            # max_samples = 10000
-            # indices = sorted(
-            #     random.sample(range(len(weights)), min(max_samples, len(weights)))
-            # )  # Sorting is important!
+
             ray_indices_small = ray_indices[indices]
             weights_small = weights[indices]
-            ends_rays = ray_samples.frustums.ends[indices].squeeze(-1)
-            starts_rays = ray_samples.frustums.starts[indices].squeeze(-1)
-            #starts_rays = SceneBox.get_normalized_positions(starts_rays, self.field.aabb.data)
-            #ends_rays = SceneBox.get_normalized_positions(ends_rays, self.field.aabb.data)
+            ends = ray_samples.frustums.ends[indices].squeeze(-1)
+            starts = ray_samples.frustums.starts[indices].squeeze(-1)
 
-            # TODO: arbitrary near/far ends of rays
-            # g = lambda x: ((1 / x) - 1 / 5) / (1 / 15 - 1 / 5)
-            # ends = g(ends_rays)
-            # starts = g(starts_rays)
-
-            ends = ends_rays
-            starts = starts_rays
             midpoint_distances = (ends + starts) * 0.5
             intervals = ends - starts
+
             # Need ray_indices for flatten_eff_distloss
             dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
                 weights_small, midpoint_distances, intervals, ray_indices_small
             )
-            #
-            # n_samples = ray_indices_small.shape[0]
-            # different_ray_indices = ray_indices_small.bincount()
-            # n_rays = different_ray_indices.shape[0]
-            # max_samples_per_ray = different_ray_indices.max()
-            # weight_combinations = torch.zeros((n_rays, max_samples_per_ray, max_samples_per_ray), device=self.device)
-            # midpoint_distances_combinations = torch.zeros((n_rays, max_samples_per_ray, max_samples_per_ray), device=self.device)
-            #
-            # arange = torch.arange(n_samples, device=self.device).repeat((n_rays, 1))
-            # bincount = torch.concat([torch.zeros(1, dtype=torch.int64, device=self.device), different_ray_indices[:-1]])
-            # diff_arange = arange - bincount.unsqueeze(1)
-            # index_mask = diff_arange >= 0
-            # index_mask_2 = torch.concat([index_mask, torch.zeros((1, index_mask.shape[1]), dtype=torch.bool, device=self.device)])
-            # insert_indices = index_mask_2.min(dim=0).indices - 1
-            #
-            # weight_combinations[insert_indices, ray_indices_small] = weights_small
-            # midpoint_distances_combinations[insert_indices, ray_indices_small] = midpoint_distances
-            #
-            #
-            # dist_loss = None
-            # for ray_id in ray_indices_small.unique():
-            #     ray_mask = ray_indices_small == ray_id
-            #     ray_weights = weights_small[ray_mask]
-            #     ray_midpoint_distances = midpoint_distances[ray_mask].squeeze(1)
-            #     n_samples = ray_weights.shape[0]
-            #
-            #     weight_combinations = ray_weights.repeat((n_samples, 1))
-            #     weight_combinations = weight_combinations * weight_combinations.T
-            #
-            #     midpoint_distances_combinations = ray_midpoint_distances.repeat((n_samples, 1))
-            #     midpoint_distances_combinations = (midpoint_distances_combinations - midpoint_distances_combinations.T).abs()
-            #
-            #     ray_dist_loss = (weight_combinations * midpoint_distances_combinations).sum()
-            #     if dist_loss is None:
-            #         dist_loss = ray_dist_loss
-            #     else:
-            #         dist_loss += ray_dist_loss
 
-            # For GPU memory reasons:
-            #  1) We only use the uni-lateral regularization on the weights
-            #  2) We don't use individual intervals per sample, but assume they are the same for all
-            # dist_loss = self.config.lambda_dist_loss * (1/3) * (intervals[0] * weights.pow(2)).sum()
-            # print(f"Dist loss: {dist_loss.item():0.4f}")
             loss_dict["dist_loss"] = dist_loss
+
+            if self.config.lambda_random_dist_loss > 0:
+                typical_origin_distance = ray_samples.frustums.origins.norm(dim=1).mean()
+                typical_start = starts.min()  # TODO: could use the mean() of the starting points of rays
+                typical_end = ends.max()
+                nears = typical_start.repeat(max_rays).unsqueeze(1)
+                fars = typical_end.repeat(max_rays).unsqueeze(1)
+
+                random_origins = torch.randn((max_rays, 3), device=weights.device)
+                random_origins = random_origins / (random_origins.norm(dim=1).unsqueeze(1) + 1e-8)  # distribute on unit sphere
+
+                directions = -random_origins  # random rays should all point towards 0
+                random_directions_offset = torch.randn((max_rays, 3), device=weights.device)
+                random_directions_offset = random_directions_offset / (random_directions_offset.norm(dim=1).unsqueeze(1) + 1e-8) # distribute on unit sphere
+                directions = directions + 0.5 * random_directions_offset  # 0.5 -> ray directions are distorted up to a 90° cone
+                directions = directions / (directions.norm(dim=1).unsqueeze(1) + 1e-8)
+                random_origins = typical_origin_distance * random_origins  # Move points out to roughly match where train cameras are
+
+                random_timesteps = torch.randint(self.config.n_timesteps, (max_rays, 1), dtype=torch.int, device=weights.device)
+
+                random_ray_bundle = RayBundle(
+                    random_origins,
+                    directions,
+                    None,
+                    camera_indices=None,
+                    nears=nears,
+                    fars=fars,
+                    timesteps=random_timesteps
+                )
+
+                with torch.no_grad():
+                    random_ray_samples, random_packed_info, random_ray_indices = self.sampler(
+                        ray_bundle=random_ray_bundle,
+                        near_plane=self.config.near_plane,
+                        far_plane=self.config.far_plane,
+                        render_step_size=self.config.render_step_size,
+                        cone_angle=self.config.cone_angle,
+                        early_stop_eps=self.config.early_stop_eps,
+                        alpha_thre=self.config.alpha_thre,
+                    )
+
+                window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+                if random_ray_samples.timesteps is not None:
+                    # Detach time codes as we only want to supervise the actual field
+                    time_codes = self.time_embedding(random_ray_samples.timesteps.squeeze(1)).detach()
+                else:
+                    time_codes = None
+
+                density, _ = self.field.get_density(random_ray_samples,
+                                                    window_canonical=window_canonical,
+                                                    time_codes=time_codes)
+
+                random_weights = nerfacc.render_weight_from_density(
+                    packed_info=random_packed_info,
+                    sigmas=density,
+                    t_starts=random_ray_samples.frustums.starts,
+                    t_ends=random_ray_samples.frustums.ends,
+                )
+
+                random_midpoint_distances = (random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
+                random_midpoint_distances = random_midpoint_distances.squeeze(1)
+                random_intervals = random_ray_samples.frustums.ends - random_ray_samples.frustums.starts
+                random_intervals = random_intervals.squeeze(1)
+
+                # Need ray_indices for flatten_eff_distloss
+                random_dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
+                    random_weights, random_midpoint_distances, random_intervals, random_ray_indices
+                )
+
+                loss_dict["random_dist_loss"] = random_dist_loss
 
         if self.config.lambda_sparse_prior > 0 and self.training:
             weights = outputs["weights"]
