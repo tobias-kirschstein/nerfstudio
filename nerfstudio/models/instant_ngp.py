@@ -140,7 +140,8 @@ class InstantNGPModelConfig(ModelConfig):
     n_frequencies: int = 12
 
     early_stop_eps: float = 1e-4
-    alpha_thre: float = 1e-2
+    alpha_thre: float = 1e-2  # Threshold for skipping empty space when sampling points on rays
+    occ_thre: float = 1e-2  # Threshold for how large density needs to be such that occupancy grid marks region as occupied
     density_threshold: Optional[float] = None  # if set, densities below the value will be ignored during inference
     view_frustum_culling: Optional[
         int] = None  # Filters out points that are seen by less than the specified number of cameras
@@ -417,6 +418,7 @@ class NGPModel(Model):
                 step=step,
                 # occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
                 occ_eval_fn=lambda x: self.density_fn(x) * self.config.render_step_size,
+                occ_thre=self.config.occ_thre,
                 # occ_eval_fn=lambda x: torch.ones_like(x)[..., 0],
             )
 
