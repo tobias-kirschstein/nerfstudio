@@ -92,7 +92,7 @@ def collate_image_dataset_batch(batch: Dict,
     # debug_sample_probabilities[batch['image_idx'][indices[:, 0]].cpu(), indices[:, 1].cpu(), indices[:, 2].cpu()] += 1
 
     c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
-    collated_batch = {key: value[c, y, x] for key, value in batch.items() if key not in {'image_idx', 'cam_ids', 'timesteps'} and value is not None}
+    collated_batch = {key: value[c, y, x] for key, value in batch.items() if key not in {'image_idx', 'cam_ids', 'timesteps', 'landmarks'} and value is not None}
 
     assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
 
@@ -100,6 +100,8 @@ def collate_image_dataset_batch(batch: Dict,
         collated_batch["cam_ids"] = batch['cam_ids'][c]
     if 'timesteps' in batch:
         collated_batch['timesteps'] = batch['timesteps'][c]
+    if 'landmarks' in batch:
+        collated_batch['landmarks'] = batch['landmarks'][c]
 
     # Needed to correct the random indices to their actual camera idx locations.
     local_indices = indices.clone()

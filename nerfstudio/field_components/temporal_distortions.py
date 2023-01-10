@@ -147,7 +147,8 @@ class SE3Distortion(nn.Module):
 
         positions = ray_samples.frustums.get_positions()
         # Note: contract does not propagate gradients to input positions!
-        positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
+        #positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
+        positions = (positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
         warped_p, warped_d = self.se3_field(positions,
                                             directions=ray_samples.frustums.directions,
