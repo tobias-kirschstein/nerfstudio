@@ -76,7 +76,9 @@ class HashEncodingEnsemble(nn.Module):
             self.n_output_dims = dim_hash_encoding
 
             if mixing_type == 'multihead_blend_mixed':
-                raise ValueError('Not Implemented yet')
+                self.mixing_heads = nn.ModuleList(
+                    [nn.Linear(dim_hash_encoding, dim_hash_encoding) for _ in range(self.n_hash_encodings)])
+
 
         elif mixing_type == 'multihead_blend_attention_style':
             n_heads = 8 # TODO expose parameter
@@ -85,14 +87,14 @@ class HashEncodingEnsemble(nn.Module):
             self.n_features_per_head = dim_hash_encoding
             self.n_output_dims = dim_hash_encoding
 
-            self.lin_heads = nn.ModuleList([nn.Linear(dim_hash_encoding, dim_hash_encoding) for _ in range(n_heads)])
+            self.lin_heads = nn.ModuleList([nn.Linear(dim_hash_encoding, dim_hash_encoding//4) for _ in range(n_heads)])
             #self.lin_heads = torch.nn.ModuleList([
             #     nn.Embedding(dim_hash_encoding,
             #                                       dim_hash_encoding,
             #                                       # dtype=self.hash_encodings[0].dtype
             #                                       ).cuda() for _ in range(n_heads)
             #])
-            self.lin_combine = nn.Linear(n_heads*dim_hash_encoding, self.n_output_dims)
+            self.lin_combine = nn.Linear(n_heads*dim_hash_encoding//4, self.n_output_dims)
             #self.lin_combine = nn.Embedding(n_heads*dim_hash_encoding,
             #                                   self.n_output_dims,
             #                                   # dtype=self.hash_encodings[0].dtype
@@ -172,7 +174,7 @@ class HashEncodingEnsemble(nn.Module):
                 blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
                 blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
 
-            elif self.mixing_type == 'multihead_blend':
+            elif self.mixing_type in ['multihead_blend', 'multihead_blend_mixed']:
                 assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
                     "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
 
@@ -181,6 +183,10 @@ class HashEncodingEnsemble(nn.Module):
                 H = embeddings.shape[2]  # number of hash tables
                 nH = self.n_heads
                 FpH = self.n_features_per_head
+
+                embeddings = embeddings.to(conditioning_code)
+                if self.mixing_type == 'multihead_blend_mixed':
+                    embeddings = torch.stack([self.mixing_heads[i](embeddings[:, :, i]) for i in range(self.n_hash_encodings)], dim=-1)
 
                 conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
                 conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
