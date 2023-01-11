@@ -13,7 +13,7 @@ HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                     'multihead_blend',
                                     'multihead_blend_mixed',
                                     'multihead_blend_attention_style',
-                                    'mlp_blend_field' # TODO
+                                    'mlp_blend_field'
 ]
 
 
@@ -124,6 +124,21 @@ class HashEncodingEnsemble(nn.Module):
 
             else:
                 self.n_output_dims = dim_hash_encoding
+        elif self.mixing_type == 'mlp_blend_field':
+            hidden_dim = 64
+            condition_dim = 32
+            self.n_blend_layers = 3
+            self.skips = [2]
+            self.blend_layers = nn.ModuleList(
+                [nn.Linear(3 + condition_dim, hidden_dim)] +
+                [nn.Linear(hidden_dim, hidden_dim) if i not in self.skips else
+                 nn.Linear(hidden_dim + 3 + condition_dim, hidden_dim) for i in range(self.n_blend_layers)]
+            )
+            self.out_layer = nn.Linear(hidden_dim, self.n_hash_encodings)
+
+
+            self.n_output_dims = dim_hash_encoding
+
         else:
             self.n_output_dims = dim_hash_encoding
 
@@ -262,6 +277,22 @@ class HashEncodingEnsemble(nn.Module):
                 # the return attention weights and perform the weighted combination ourselves
                 blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
                 blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
+            elif self.mixing_type == 'mlp_blend_field':
+                # embdeggins: B x D x H
+                # conditioning_code: B x C
+                inp = torch.cat([in_tensor, conditioning_code], dim=-1)
+                hidden = inp
+                for i, layer in enumerate(self.blend_layers):
+                    hidden = layer(hidden)
+                    hidden = F.relu(hidden)
+                    if i in self.skips:
+                        hidden = torch.cat([inp, hidden], dim=-1)
+
+                weights = F.normalize(self.out_layer(hidden), dim=-1) # B x H
+
+                blended_embeddings = (embeddings * weights.unsqueeze(1)).sum(dim=-1) # B x D
+
+
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
