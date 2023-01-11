@@ -16,13 +16,13 @@ def viz_top_k_components(components):
     for segid in range(N_components):
         blocks[str(segid)] = components[segid] * 100
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(notebook=False)
     pl.add_volume(blocks, multi_colors=True)
     pl.show()
 
 
 def extract_top_k_connected_component(density_grid: np.ndarray,
-                                      threshold: float = 0.8,
+                                      threshold: float = 0.6,
                                       sigma_thinning: float = 1,
                                       sigma_erosion: float = 2,
                                       K=1
@@ -40,8 +40,6 @@ def extract_top_k_connected_component(density_grid: np.ndarray,
 
     """
 
-    # apply gaussian filter to "break" narrow connections
-    density_grid = scipy.ndimage.gaussian_filter(density_grid, sigma=sigma_thinning)
 
     # maybe applying a sigmoid layer on the density scores is nicer
     # clamp_max = clamp
@@ -49,11 +47,15 @@ def extract_top_k_connected_component(density_grid: np.ndarray,
     # density_grid = (density_grid*(255/clamp_max)).astype('uint8')
 
     density_grid = sigmoid(density_grid)
-    density_grid = (density_grid * (255)).astype(
-        'uint8')  # rescaling to 255 and casting for commented pyvista volume rendering
+    density_grid = ((density_grid - 0.5) * 2 * (255)).astype(np.uint8)  # rescaling to 255 and casting for commented pyvista volume rendering
+
+    # apply gaussian filter to "break" narrow connections
+    density_grid = scipy.ndimage.gaussian_filter(density_grid, sigma=sigma_thinning)
 
     # remove all densities below a threshold
+
     density_grid[density_grid < 255 * threshold] = 0
+    density_grid[density_grid >= 255 * threshold] = 1
 
     # import pyvista as pv
     # print('[LOG] Plotting density grid after filtering and thresholding')
