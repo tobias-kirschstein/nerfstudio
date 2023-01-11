@@ -17,6 +17,7 @@ from elias.config import implicit
 from nerfacc import ContractionType, contract
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
+from nerfstudio.field_components.occupancy import FilteredOccupancyGrid
 from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
 from nerfstudio.fields.hypernerf_field import HyperSlicingField
 from torch import nn, TensorType
@@ -98,8 +99,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_l1_field_regularization: float = 0
     lambda_global_sparsity_prior: float = 0  # Force density globally to be as small as possible
 
-    lambda_temporal_tv_loss: float = 0 # enforce total variation loss across temporal codes
-
+    lambda_temporal_tv_loss: float = 0  # enforce total variation loss across temporal codes
 
     use_spherical_harmonics: bool = True
     disable_view_dependency: bool = False
@@ -152,6 +152,7 @@ class InstantNGPModelConfig(ModelConfig):
     view_frustum_culling: Optional[
         int] = None  # Filters out points that are seen by less than the specified number of cameras
     use_view_frustum_culling_for_train: bool = False  # Whether to also filter points during training (slow)
+    use_occupancy_grid_filtering: bool = False  # If enabled, filters the occupancy grid to only contain the largest connected component which should remove floaters
 
     only_render_canonical_space: bool = False  # Special option for evaluation purposes: Disables any existing deformation field
     only_render_hash_table: Optional[
@@ -283,6 +284,11 @@ class NGPModel(Model):
             contraction_type=self.config.contraction_type,
         )
 
+        if self.config.use_occupancy_grid_filtering:
+            self.occupancy_grid_eval = FilteredOccupancyGrid(self.occupancy_grid)
+        else:
+            self.occupancy_grid_eval = self.occupancy_grid
+
         # Sampler
         vol_sampler_aabb = self.scene_box.aabb if self.config.contraction_type == ContractionType.AABB else None
         self.sampler_train = VolumetricSampler(
@@ -301,7 +307,7 @@ class NGPModel(Model):
             )
         self.sampler_eval = VolumetricSampler(
             scene_aabb=vol_sampler_aabb_eval,
-            occupancy_grid=self.occupancy_grid,
+            occupancy_grid=self.occupancy_grid_eval,
             density_fn=self.density_fn,
             camera_frustums=self.camera_frustums,
             view_frustum_culling=self.config.view_frustum_culling
@@ -328,7 +334,6 @@ class NGPModel(Model):
         else:
             self.sched_landmark_loss = None
 
-
         if self.config.window_ambient_begin > 0 or self.config.window_ambient_end > 0:
             self.sched_window_ambient = GenericScheduler(
                 init_value=0,
@@ -348,7 +353,6 @@ class NGPModel(Model):
             )
         else:
             self.sched_window_canonical = None
-
 
         # background
         if self.config.use_backgrounds:
@@ -384,6 +388,11 @@ class NGPModel(Model):
         self.renderer_rgb = self.renderer_rgb_eval
         self.sampler = self.sampler_eval
 
+        if self.config.use_occupancy_grid_filtering:
+            # Whenever we change to eval() mode, update the eval occupancy grid s.t. it only contains the largest
+            # connected component
+            self.occupancy_grid_eval.update()
+
         return super().eval()
 
     def train(self: T, mode: bool = True) -> T:
@@ -393,6 +402,11 @@ class NGPModel(Model):
         else:
             self.renderer_rgb = self.renderer_rgb_eval
             self.sampler = self.sampler_eval
+
+            if self.config.use_occupancy_grid_filtering:
+                # Whenever we change to eval() mode, update the eval occupancy grid s.t. it only contains the largest
+                # connected component
+                self.occupancy_grid_eval.update()
 
         return super().train(mode)
 
@@ -790,16 +804,19 @@ class NGPModel(Model):
                 fars = typical_end.repeat(max_rays).unsqueeze(1)
 
                 random_origins = torch.randn((max_rays, 3), device=weights.device)
-                random_origins = random_origins / (random_origins.norm(dim=1).unsqueeze(1) + 1e-8)  # distribute on unit sphere
+                random_origins = random_origins / (
+                            random_origins.norm(dim=1).unsqueeze(1) + 1e-8)  # distribute on unit sphere
 
                 directions = -random_origins  # random rays should all point towards 0
                 random_directions_offset = torch.randn((max_rays, 3), device=weights.device)
-                random_directions_offset = random_directions_offset / (random_directions_offset.norm(dim=1).unsqueeze(1) + 1e-8) # distribute on unit sphere
+                random_directions_offset = random_directions_offset / (
+                            random_directions_offset.norm(dim=1).unsqueeze(1) + 1e-8)  # distribute on unit sphere
                 directions = directions + 0.5 * random_directions_offset  # 0.5 -> ray directions are distorted up to a 90° cone
                 directions = directions / (directions.norm(dim=1).unsqueeze(1) + 1e-8)
                 random_origins = typical_origin_distance * random_origins  # Move points out to roughly match where train cameras are
 
-                random_timesteps = torch.randint(self.config.n_timesteps, (max_rays, 1), dtype=torch.int, device=weights.device)
+                random_timesteps = torch.randint(self.config.n_timesteps, (max_rays, 1), dtype=torch.int,
+                                                 device=weights.device)
 
                 random_ray_bundle = RayBundle(
                     random_origins,
@@ -840,7 +857,8 @@ class NGPModel(Model):
                     t_ends=random_ray_samples.frustums.ends,
                 )
 
-                random_midpoint_distances = (random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
+                random_midpoint_distances = (
+                                                        random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
                 random_midpoint_distances = random_midpoint_distances.squeeze(1)
                 random_intervals = random_ray_samples.frustums.ends - random_ray_samples.frustums.starts
                 random_intervals = random_intervals.squeeze(1)
@@ -871,7 +889,8 @@ class NGPModel(Model):
                     ends=torch.zeros((*random_points.shape[:-1], 1)).to(random_points),
                     pixel_area=None
                 ),
-                timesteps=torch.randint(self.config.n_timesteps, (n_random_points, 1), dtype=torch.int, device=random_points.device)
+                timesteps=torch.randint(self.config.n_timesteps, (n_random_points, 1), dtype=torch.int,
+                                        device=random_points.device)
             )
             window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
             if ray_samples_random.timesteps is not None:
@@ -880,7 +899,8 @@ class NGPModel(Model):
             else:
                 time_codes = None
 
-            density, _ = self.field.get_density(ray_samples_random, window_canonical=window_canonical, time_codes=time_codes)
+            density, _ = self.field.get_density(ray_samples_random, window_canonical=window_canonical,
+                                                time_codes=time_codes)
             assert density.min() >= 0
             global_sparsity_loss = density.mean()
             loss_dict["global_sparsity_loss"] = self.config.lambda_global_sparsity_prior * global_sparsity_loss
@@ -892,31 +912,31 @@ class NGPModel(Model):
             )
 
         if "ray_samples" in outputs and self.config.lambda_deformation_l1_prior > 0 and self.train_step < 100000:
-            loss_dict["deformation_l1_prior"] = self.config.lambda_deformation_l1_prior * outputs["ray_samples"].frustums.offsets.abs().mean()
+            loss_dict["deformation_l1_prior"] = self.config.lambda_deformation_l1_prior * outputs[
+                "ray_samples"].frustums.offsets.abs().mean()
 
         if self.temporal_distortion is not None and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
             landmark_loss = self.get_landmark_loss(batch)
             loss_dict["landmark_loss"] = (self.sched_landmark_loss.value if
-                                            self.sched_landmark_loss is not None
-                                            else self.config.lambda_landmark_loss) * \
+                                          self.sched_landmark_loss is not None
+                                          else self.config.lambda_landmark_loss) * \
                                          landmark_loss.mean()
 
         if self.config.lambda_temporal_tv_loss > 0:
             temoral_tv_loss = self.get_temporal_tv_loss()
-            loss_dict["temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()#(self.sched_temporal_tv_loss.value if
-                                            #self.sched_temporal_tv_loss is not None
-                                            #else self.config.lambda_temporal_tv_loss) * \
-                                         #temoral_tv_loss.mean()
+            loss_dict[
+                "temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  # (self.sched_temporal_tv_loss.value if
+            # self.sched_temporal_tv_loss is not None
+            # else self.config.lambda_temporal_tv_loss) * \
+            # temoral_tv_loss.mean()
 
-        #import numpy as np
-        #out_dir = '/mnt/hdd/debug/famudy_debug2/'
-        #os.makedirs(out_dir, exist_ok=True)
-        #np.save(out_dir + 'cam_origins.npy', outputs["ray_samples"].frustums.origins.detach().cpu().numpy())
-        #np.save(out_dir + 'samples.npy', outputs["ray_samples"].frustums.get_positions().detach().cpu().numpy())
-        #np.save(out_dir + 'landmarks.npy', batch["landmarks"].detach().cpu().numpy())
-        #assert 1 == 2
-
-
+        # import numpy as np
+        # out_dir = '/mnt/hdd/debug/famudy_debug2/'
+        # os.makedirs(out_dir, exist_ok=True)
+        # np.save(out_dir + 'cam_origins.npy', outputs["ray_samples"].frustums.origins.detach().cpu().numpy())
+        # np.save(out_dir + 'samples.npy', outputs["ray_samples"].frustums.get_positions().detach().cpu().numpy())
+        # np.save(out_dir + 'landmarks.npy', batch["landmarks"].detach().cpu().numpy())
+        # assert 1 == 2
 
         return loss_dict
 
@@ -999,8 +1019,6 @@ class NGPModel(Model):
             images_dict["img_without_bg"] = outputs["rgb_without_bg"]
 
         return metrics_dict, images_dict
-
-
 
     def _apply_background_network(self,
                                   batch: Dict[str, torch.Tensor],
