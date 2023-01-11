@@ -49,6 +49,7 @@ def _render_trajectory_video(
         output_format: Literal["images", "video"] = "video",
         use_depth_culling: bool = False,
         use_occupancy_grid_filtering: bool = False,
+        debug_occupancy_grid_filtering: bool = False
 ) -> None:
     """Helper function to create a video of the spiral trajectory.
 
@@ -81,6 +82,11 @@ def _render_trajectory_video(
         occupancy_grid_densities = occupancy_grid.occs
         occupancy_grid_densities = occupancy_grid_densities.reshape(*resolution)
         occupancy_grid_densities = occupancy_grid_densities.cpu().numpy()
+
+        if debug_occupancy_grid_filtering:
+            np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid_densities)
+            print("Exiting rendering as debug_occupancy_grid_filtering was set")
+            exit(0)
 
         largest_connected_component = extract_top_k_connected_component(occupancy_grid_densities, sigma_erosion=5)[0]
 
@@ -221,6 +227,7 @@ class RenderTrajectory:
     overwrite_config: Optional[dict] = None
     use_depth_culling: bool = False
     use_occupancy_grid_filtering: bool = False  # If true, the occupancy grid will be filtered to only contain the largest connected compoment (gets rid of isolated floaters)
+    debug_occupancy_grid_filtering: bool = False,  # If true the occupancy grid densities will be written out to disk in the current working directory
 
     def main(self) -> None:
         """Main function."""
@@ -268,7 +275,8 @@ class RenderTrajectory:
             seconds=seconds,
             output_format=self.output_format,
             use_depth_culling=self.use_depth_culling,
-            use_occupancy_grid_filtering=self.use_occupancy_grid_filtering
+            use_occupancy_grid_filtering=self.use_occupancy_grid_filtering,
+            debug_occupancy_grid_filtering=debug_occupancy_grid_filtering
         )
 
 
