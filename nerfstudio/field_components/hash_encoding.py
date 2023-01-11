@@ -9,7 +9,7 @@ import torch
 from nerfstudio.field_components.encodings import posenc_window
 from torch import nn
 
-HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention', 'multihead_blend']
+HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention', 'multihead_blend', 'multihead_blend++', 'mlp_blend_field']
 
 
 @dataclass
@@ -69,6 +69,28 @@ class HashEncodingEnsemble(nn.Module):
                 "output hash encoding dimensionality must be divisible by n_heads"
             self.n_features_per_head = int(dim_hash_encoding / self.n_heads)
             self.n_output_dims = dim_hash_encoding
+
+        elif mixing_type == 'multihead_blend++':
+            if n_heads is None:
+                # Assume, we just want one head per hash table level
+                n_heads = hash_encoding_config.n_levels
+            self.n_heads = n_heads
+
+            self.n_features_per_head = dim_hash_encoding
+            self.n_output_dims = dim_hash_encoding
+
+            self.lin_heads = nn.ModuleList([nn.Linear(dim_hash_encoding, dim_hash_encoding) for _ in range(n_heads)])
+            #self.lin_heads = torch.nn.ModuleList([
+            #     nn.Embedding(dim_hash_encoding,
+            #                                       dim_hash_encoding,
+            #                                       # dtype=self.hash_encodings[0].dtype
+            #                                       ).cuda() for _ in range(n_heads)
+            #])
+            self.lin_combine = nn.Linear(n_heads*dim_hash_encoding, self.n_output_dims)
+            #self.lin_combine = nn.Embedding(n_heads*dim_hash_encoding,
+            #                                   self.n_output_dims,
+            #                                   # dtype=self.hash_encodings[0].dtype
+            #                                   ).cuda()
 
         elif mixing_type in {'attention', 'multihead_attention'}:
             assert dim_conditioning_code is not None, "For attention mixing_type, dim_conditioning_code must be given"
@@ -160,6 +182,31 @@ class HashEncodingEnsemble(nn.Module):
                 weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
                 blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
 
+            elif self.mixing_type == 'multihead_blend++':
+                #embdeggins: B x D x H
+                #conditioning_code: B x C
+                assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
+                    "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
+
+                B = conditioning_code.shape[0]
+                C = conditioning_code.shape[1]  # code dim
+                H = embeddings.shape[2]  # number of hash tables
+
+                embeddings = embeddings.permute(0, 2, 1)  # B x H x D
+                conditioning_code = conditioning_code.reshape(B, H, self.n_heads)
+                embeddings = embeddings.to(conditioning_code)
+                # dimension wise this works torch.einsum('jk,bnj->bnk', self.lin_heads[0].weight, embeddings) instead but casting is still a problem
+                #fused_embeddings = torch.stack([ torch.matmul(self.lin_heads[i].weight, embeddings) for i in range(self.n_heads)], dim=-2) # B x H x n_heads x D
+                fused_embeddings = torch.stack([ self.lin_heads[i](embeddings) for i in range(self.n_heads)], dim=-2) # B x H x n_heads x D
+
+                scaled_f = conditioning_code.unsqueeze(-1) * fused_embeddings # B x H x n_heads x D
+
+                scaled_f = scaled_f.sum(dim=1) # B x n_heads x D
+
+                scaled_f = scaled_f.reshape(B, -1) # B x n_heads * D
+
+                blended_embeddings = self.lin_combine(scaled_f) # B x D
+                #blended_embeddings = torch.matmul(self.lin_combine.weight, scaled_f) # B x D
             elif self.mixing_type == 'attention':
                 # Scaled dot-product attention
                 keys = self.attention_keys.weight  # [H, T]
