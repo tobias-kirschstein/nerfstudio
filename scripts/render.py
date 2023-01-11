@@ -14,6 +14,9 @@ import mediapy as media
 import numpy as np
 import torch
 import tyro
+from nerfacc import contract, OccupancyGrid
+from nerfstudio.configs.base_config import Config  # pylint: disable=unused-import
+from nerfstudio.data.datasets.base_dataset import InputDataset
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -26,24 +29,26 @@ from typing_extensions import Literal, assert_never
 
 from nerfstudio.cameras.camera_paths import get_path_from_json, get_spiral_path
 from nerfstudio.cameras.cameras import Cameras
-from nerfstudio.configs.base_config import Config  # pylint: disable=unused-import
 from nerfstudio.pipelines.base_pipeline import Pipeline
 from nerfstudio.utils import install_checks
 from nerfstudio.utils.colormaps import apply_depth_colormap
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import ItersPerSecColumn
+from nerfstudio.utils.connected_components import extract_top_k_connected_component
 
 CONSOLE = Console(width=120)
 
 
 def _render_trajectory_video(
-    pipeline: Pipeline,
-    cameras: Cameras,
-    output_filename: Path,
-    rendered_output_names: List[str],
-    rendered_resolution_scaling_factor: float = 1.0,
-    seconds: float = 5.0,
-    output_format: Literal["images", "video"] = "video",
+        pipeline: Pipeline,
+        cameras: Cameras,
+        output_filename: Path,
+        rendered_output_names: List[str],
+        rendered_resolution_scaling_factor: float = 1.0,
+        seconds: float = 5.0,
+        output_format: Literal["images", "video"] = "video",
+        use_depth_culling: bool = False,
+        use_occupancy_grid_filtering: bool = False,
 ) -> None:
     """Helper function to create a video of the spiral trajectory.
 
@@ -63,6 +68,86 @@ def _render_trajectory_video(
     scale_factor = pipeline.datamanager.config.dataparser.scale_factor
     cameras.scale_coordinate_system(scale_factor)
     n_timesteps = pipeline.datamanager.config.dataparser.n_timesteps
+
+    if use_occupancy_grid_filtering:
+        occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
+        resolution = occupancy_grid.resolution
+        try:
+            iter(resolution)
+        except TypeError:
+            # If resolution is not iterable, it probably was a single number
+            resolution = [resolution, resolution, resolution]
+
+        occupancy_grid_densities = occupancy_grid.occs
+        occupancy_grid_densities = occupancy_grid_densities.reshape(*resolution)
+        occupancy_grid_densities = occupancy_grid_densities.cpu().numpy()
+
+        largest_connected_component = extract_top_k_connected_component(occupancy_grid_densities, sigma_erosion=5)[0]
+
+        filtered_occupancy_grid = largest_connected_component > 0  # Make binary
+        filtered_occupancy_grid = torch.tensor(filtered_occupancy_grid,
+                                               device=occupancy_grid.device,
+                                               dtype=occupancy_grid._binary.dtype)
+        occupancy_grid._binary = occupancy_grid._binary & filtered_occupancy_grid
+
+    if use_depth_culling:
+        depth_maps = []
+        accumulations = []
+        rendered_images = []
+        grid_resolution = 64
+        depth_culling_grid = torch.zeros((grid_resolution, grid_resolution, grid_resolution), dtype=torch.bool).cuda()
+
+        train_dataset = pipeline.datamanager.train_dataset
+        n_cameras = pipeline.datamanager.dataparser.config.n_cameras
+        train_cameras = train_dataset._dataparser_outputs.cameras[:n_cameras]
+        for i_cam in range(n_cameras):
+            # TODO: need to do this for all timesteps!
+            camera_ray_bundle = train_cameras.generate_rays(camera_indices=i_cam, timesteps=0).to(torch.device('cuda'))
+            with torch.no_grad():
+                outputs = pipeline.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+            depth_map = outputs['depth']
+            accumulation = outputs['accumulation']
+
+            depth_maps.append(depth_map)
+            accumulations.append(accumulation)
+            rendered_images.append(outputs['rgb'])
+
+            step_size = 0.1
+            distance = depth_map.min()
+            origins = camera_ray_bundle.origins
+            directions = camera_ray_bundle.directions
+            while True:
+                distance += step_size
+                ray_points = origins + distance * directions  # [H, W, 3]
+                H = ray_points.shape[0]
+                W = ray_points.shape[1]
+                ray_points = ray_points.view(-1, 3)  # contract() requires flattened points
+                ray_points_normalized = contract(x=ray_points,
+                                                 roi=pipeline.model.scene_box.aabb.cuda(),
+                                                 type=pipeline.model.config.contraction_type)  # [H, W, 3] - [0, 1]
+                ray_points_normalized = ray_points_normalized.view(H, W, 3)
+                # ray_points_normalized = (ray_points_normalized + 1) / 2  # [H, W, 3] - [0, 1]
+                grid_indices = (ray_points_normalized * grid_resolution).long()  # [H, W, 3] - [0, grid_resolution]^3
+                idx_inside_grid = (0 <= grid_indices) & (grid_indices < grid_resolution)
+                idx_inside_grid = idx_inside_grid.all(dim=2)
+                idx_before_depth = distance < depth_map.squeeze(2)  # [H, W]
+                idx_enough_accumulation = accumulation.squeeze(2) > 0.1  # [H, W]
+                valid_grid_indices = grid_indices[idx_inside_grid & idx_before_depth & idx_enough_accumulation]  # [?, 3]
+
+                if distance > depth_map.mean() and not valid_grid_indices.any():
+                    break
+
+                xs = valid_grid_indices[:, 0]
+                ys = valid_grid_indices[:, 1]
+                zs = valid_grid_indices[:, 2]
+
+                depth_culling_grid[xs, ys, zs] = True
+
+        from famudy.env import FAMUDY_ANALYSES_PATH
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/depth_culling_grid_timestep_0", depth_culling_grid.cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/depth_maps_timestep_0", torch.concat(depth_maps, dim=-1).permute(2, 0, 1).cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/accumulations_timestep_0", torch.concat(accumulations, dim=-1).permute(2, 0, 1).cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/rgb_timestep_0", torch.concat(rendered_images, dim=-1).permute(2, 0, 1).cpu().numpy())
 
     progress = Progress(
         TextColumn(":movie_camera: Rendering :movie_camera:"),
@@ -134,6 +219,8 @@ class RenderTrajectory:
     checkpoint_step: Optional[int] = None
 
     overwrite_config: Optional[dict] = None
+    use_depth_culling: bool = False
+    use_occupancy_grid_filtering: bool = False  # If true, the occupancy grid will be filtered to only contain the largest connected compoment (gets rid of isolated floaters)
 
     def main(self) -> None:
         """Main function."""
@@ -180,6 +267,8 @@ class RenderTrajectory:
             rendered_resolution_scaling_factor=1.0 / self.downscale_factor,
             seconds=seconds,
             output_format=self.output_format,
+            use_depth_culling=self.use_depth_culling,
+            use_occupancy_grid_filtering=self.use_occupancy_grid_filtering
         )
 
 
