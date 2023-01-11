@@ -1,13 +1,15 @@
 import dataclasses
 from dataclasses import dataclass
 from math import sqrt
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 
 import torch.nn.functional as F
 import tinycudann as tcnn
 import torch
 from nerfstudio.field_components.encodings import posenc_window
 from torch import nn
+from nerfstudio.field_components.mlp import MLP
+from nerfstudio.field_components.encodings import NeRFEncoding
 
 HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                     'multihead_blend',
@@ -15,6 +17,26 @@ HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                     'multihead_blend_attention_style',
                                     'mlp_blend_field'
 ]
+
+
+class Normalizer(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return F.normalize(x, dim=-1)
+
+
+class IdenEnc(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.out_dim = 3
+
+    def forward(self, x):
+        return x
+
+    def get_out_dim(self):
+        return self.out_dim
 
 
 @dataclass
@@ -41,6 +63,41 @@ class TCNNHashEncodingConfig:
         return encoding
 
 
+@dataclass
+class BlendFieldConfig:
+    n_hidden_dims: int = 64
+    n_layers: int = 4
+    output_activation: Optional[Literal['Normalization', 'Tanh']] = 'Tanh'
+    n_freq_pos_enc: int = 0
+    skip_connections: Optional[Tuple[int]] = None
+    input_dim: int = 3
+
+    def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> (NeRFEncoding, MLP):
+        if self.n_freq_pos_enc > 0:
+            nerf_encoder = NeRFEncoding(in_dim=self.input_dim,
+                                        num_frequencies=self.n_freq_pos_enc,
+                                        min_freq_exp=0,
+                                        max_freq_exp=self.n_freq_pos_enc - 1,
+                                        include_input=True)
+        else:
+            nerf_encoder = IdenEnc()
+        if self.output_activation is None:
+            out_activation = None
+        elif self.output_activation == 'Normalization':
+            out_activation = Normalizer()
+        elif self.output_activation == 'Tanh':
+            out_activation = nn.Tanh()
+        mlp_blend_field = MLP(
+            in_dim=n_time_condition_dim + nerf_encoder.get_out_dim() if (self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
+            num_layers=self.n_layers,
+            layer_width=self.n_hidden_dims,
+            out_dim=n_hash_tables,
+            skip_connections=self.skip_connections,
+            out_activation=out_activation
+        )
+        return nerf_encoder, mlp_blend_field
+
+
 class HashEncodingEnsemble(nn.Module):
 
     def __init__(self,
@@ -49,7 +106,8 @@ class HashEncodingEnsemble(nn.Module):
                  mixing_type: HashEnsembleMixingType = 'blend',
                  dim_conditioning_code: Optional[int] = None,
                  n_heads: Optional[int] = None,
-                 only_render_hash_table: Optional[int] = None):
+                 only_render_hash_table: Optional[int] = None,
+                 blend_field_config: BlendFieldConfig = None):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -125,19 +183,23 @@ class HashEncodingEnsemble(nn.Module):
             else:
                 self.n_output_dims = dim_hash_encoding
         elif self.mixing_type == 'mlp_blend_field':
-            hidden_dim = 64
-            condition_dim = 32
-            self.n_blend_layers = 3
-            self.skips = [2]
-            self.blend_layers = nn.ModuleList(
-                [nn.Linear(3 + condition_dim, hidden_dim)] +
-                [nn.Linear(hidden_dim, hidden_dim) if i not in self.skips else
-                 nn.Linear(hidden_dim + 3 + condition_dim, hidden_dim) for i in range(self.n_blend_layers)]
-            )
-            self.out_layer = nn.Linear(hidden_dim, self.n_hash_encodings)
-
-
+            #hidden_dim = 64
+            #condition_dim = 32
+            #self.n_blend_layers = 3
+            #self.skips = [2]
+            #self.blend_layers = nn.ModuleList(
+            #    [nn.Linear(3 + condition_dim, hidden_dim)] +
+            #    [nn.Linear(hidden_dim, hidden_dim) if i not in self.skips else
+            #     nn.Linear(hidden_dim + 3 + condition_dim, hidden_dim) for i in range(self.n_blend_layers)]
+            #)
+            #self.out_layer = nn.Linear(hidden_dim, self.n_hash_encodings)
+#
+#
             self.n_output_dims = dim_hash_encoding
+            self.blend_field_config = blend_field_config
+            pos_encoder, blend_field = blend_field_config.setup(dim_conditioning_code, n_hash_encodings)
+            self.pos_encoder = pos_encoder
+            self.blend_field = blend_field
 
         else:
             self.n_output_dims = dim_hash_encoding
@@ -278,21 +340,22 @@ class HashEncodingEnsemble(nn.Module):
                 blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
                 blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
             elif self.mixing_type == 'mlp_blend_field':
-                # embdeggins: B x D x H
-                # conditioning_code: B x C
-                inp = torch.cat([in_tensor, conditioning_code], dim=-1)
-                hidden = inp
-                for i, layer in enumerate(self.blend_layers):
-                    hidden = layer(hidden)
-                    hidden = F.relu(hidden)
-                    if i in self.skips:
-                        hidden = torch.cat([inp, hidden], dim=-1)
+                ## embdeggins: B x D x H
+                ## conditioning_code: B x C
+                #inp = torch.cat([in_tensor, conditioning_code], dim=-1)
+                #hidden = inp
+                #for i, layer in enumerate(self.blend_layers):
+                #    hidden = layer(hidden)
+                #    hidden = F.relu(hidden)
+                #    if i in self.skips:
+                #        hidden = torch.cat([inp, hidden], dim=-1)
+#
+                #weights = F.normalize(self.out_layer(hidden), dim=-1) # B x H
+#
+                inp = torch.cat([self.pos_encoder(in_tensor), conditioning_code], dim=-1) # B x (pos_enc_dim + C)
 
-                weights = F.normalize(self.out_layer(hidden), dim=-1) # B x H
-
+                weights = self.blend_field(inp) # B x H
                 blended_embeddings = (embeddings * weights.unsqueeze(1)).sum(dim=-1) # B x D
-
-
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
