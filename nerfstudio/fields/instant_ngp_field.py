@@ -479,6 +479,11 @@ class TCNNInstantNGPField(Field):
         else:
             rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
 
+        if asfd:
+            # 1 gamma per camera
+            # 3 white-balancing channels per camera
+            rgb = (white_balancing * rgb).pow(gamma)
+
         return {FieldHeadNames.RGB: rgb}
 
     def forward(self,
