@@ -4,7 +4,7 @@ Adapted from the original implementation to allow configuration of more hyperpar
 """
 from collections import defaultdict
 from math import ceil
-from typing import List, Optional, Callable, Tuple, Dict
+from typing import List, Optional, Callable, Tuple, Dict, Literal
 
 import torch
 from nerfacc import ContractionType, contract
@@ -14,7 +14,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
-    HashEnsembleMixingType
+    HashEnsembleMixingType, BlendFieldConfig
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -94,6 +94,13 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_n_heads: Optional[int] = None,
             only_render_hash_table: Optional[int] = None,
 
+            # only used when mixing_type == 'mlp_blend_field'
+            blend_field_hidden_dim: int = 64,
+            blend_field_n_layers: int = 4,
+            blend_field_out_activation: Optional[Literal['Tanh', 'Normalization']] = None,
+            blend_field_n_freq_enc: int = 0,
+            blend_field_skip_connections: Optional[Tuple[int]] =  [2],
+
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
             density_threshold: Optional[float] = None,
@@ -151,7 +158,13 @@ class TCNNInstantNGPField(Field):
                 mixing_type=hash_encoding_ensemble_mixing_type,
                 dim_conditioning_code=latent_dim_time,
                 n_heads=hash_encoding_ensemble_n_heads,
-                only_render_hash_table=only_render_hash_table)
+                only_render_hash_table=only_render_hash_table,
+                blend_field_config=BlendFieldConfig(n_hidden_dims=blend_field_hidden_dim,
+                                                    n_layers=blend_field_n_layers,
+                                                    output_activation=blend_field_out_activation,
+                                                    n_freq_pos_enc=blend_field_n_freq_enc,
+                                                    skip_connections=blend_field_skip_connections
+                                                    ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None)
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
             hash_grid_encoding_config = {
