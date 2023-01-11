@@ -276,7 +276,7 @@ class RenderTrajectory:
             output_format=self.output_format,
             use_depth_culling=self.use_depth_culling,
             use_occupancy_grid_filtering=self.use_occupancy_grid_filtering,
-            debug_occupancy_grid_filtering=debug_occupancy_grid_filtering
+            debug_occupancy_grid_filtering=self.debug_occupancy_grid_filtering
         )
 
 
