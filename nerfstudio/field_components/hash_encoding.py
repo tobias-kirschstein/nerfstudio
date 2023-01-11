@@ -9,7 +9,12 @@ import torch
 from nerfstudio.field_components.encodings import posenc_window
 from torch import nn
 
-HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention', 'multihead_blend', 'multihead_blend++', 'mlp_blend_field']
+HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
+                                    'multihead_blend',
+                                    'multihead_blend_mixed',
+                                    'multihead_blend_attention_style',
+                                    'mlp_blend_field' # TODO
+]
 
 
 @dataclass
@@ -59,7 +64,7 @@ class HashEncodingEnsemble(nn.Module):
         self.hash_encodings = nn.ModuleList(self.hash_encodings)
 
         dim_hash_encoding = hash_encoding_config.n_levels * hash_encoding_config.n_features_per_level
-        if mixing_type == 'multihead_blend':
+        if mixing_type in ['multihead_blend', 'multihead_blend_mixed']:
             if n_heads is None:
                 # Assume, we just want one head per hash table level
                 n_heads = hash_encoding_config.n_levels
@@ -70,10 +75,11 @@ class HashEncodingEnsemble(nn.Module):
             self.n_features_per_head = int(dim_hash_encoding / self.n_heads)
             self.n_output_dims = dim_hash_encoding
 
-        elif mixing_type == 'multihead_blend++':
-            if n_heads is None:
-                # Assume, we just want one head per hash table level
-                n_heads = hash_encoding_config.n_levels
+            if mixing_type == 'multihead_blend_mixed':
+                raise ValueError('Not Implemented yet')
+
+        elif mixing_type == 'multihead_blend_attention_style':
+            n_heads = 8 # TODO expose parameter
             self.n_heads = n_heads
 
             self.n_features_per_head = dim_hash_encoding
@@ -182,11 +188,9 @@ class HashEncodingEnsemble(nn.Module):
                 weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
                 blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
 
-            elif self.mixing_type == 'multihead_blend++':
+            elif self.mixing_type == 'multihead_blend_attention_style':
                 #embdeggins: B x D x H
                 #conditioning_code: B x C
-                assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
-                    "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
 
                 B = conditioning_code.shape[0]
                 C = conditioning_code.shape[1]  # code dim
