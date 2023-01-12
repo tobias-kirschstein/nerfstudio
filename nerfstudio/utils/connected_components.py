@@ -3,6 +3,9 @@ import cc3d
 import scipy
 from typing import List
 
+import torch
+from nerfacc import OccupancyGrid
+
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -40,14 +43,14 @@ def extract_top_k_connected_component(density_grid: np.ndarray,
 
     """
 
-
     # maybe applying a sigmoid layer on the density scores is nicer
     # clamp_max = clamp
     # density_grid = np.clip(density_grid, 0, clamp_max)
     # density_grid = (density_grid*(255/clamp_max)).astype('uint8')
 
     density_grid = sigmoid(density_grid)
-    density_grid = ((density_grid - 0.5) * 2 * (255)).astype(np.uint8)  # rescaling to 255 and casting for commented pyvista volume rendering
+    density_grid = ((density_grid - 0.5) * 2 * (255)).astype(
+        np.uint8)  # rescaling to 255 and casting for commented pyvista volume rendering
 
     # apply gaussian filter to "break" narrow connections
     density_grid = scipy.ndimage.gaussian_filter(density_grid, sigma=sigma_thinning)
@@ -92,6 +95,46 @@ def extract_top_k_connected_component(density_grid: np.ndarray,
         # pl.show()
 
     return ccs
+
+
+def filter_occupancy_grid(occupancy_grid: OccupancyGrid,
+                          threshold: float = 0.6,
+                          sigma_thinning: float = 1,
+                          sigma_erosion: float = 5):
+    """
+    Filters the provided occupancy grid such that it only contains voxels that belong to the largest connected component
+    of active voxels in the grid.
+    This removes isolated islands of floaters for better visual quality.
+
+    Args:
+        occupancy_grid: the occupancy grid to filter
+        threshold: sigmoidal densities below that threshold will be truncated
+        sigma_thinning: removes thin connections between larger components to separate smaller floaters
+        sigma_erosion: enlarges the final component in the end to not crop away too much
+    """
+
+    resolution = occupancy_grid.resolution
+    try:
+        iter(resolution)
+    except TypeError:
+        # If resolution is not iterable, it probably was a single number
+        resolution = [resolution, resolution, resolution]
+
+    occupancy_grid_densities = occupancy_grid.occs
+    occupancy_grid_densities = occupancy_grid_densities.reshape(*resolution)
+    occupancy_grid_densities = occupancy_grid_densities.cpu().numpy()
+
+    largest_connected_component = \
+        extract_top_k_connected_component(occupancy_grid_densities,
+                                          threshold=threshold,
+                                          sigma_thinning=sigma_thinning,
+                                          sigma_erosion=sigma_erosion)[0]
+
+    filtered_occupancy_grid = largest_connected_component > 0  # Make binary
+    filtered_occupancy_grid = torch.tensor(filtered_occupancy_grid,
+                                           device=occupancy_grid.device,
+                                           dtype=occupancy_grid._binary.dtype)
+    occupancy_grid._binary = occupancy_grid._binary & filtered_occupancy_grid
 
 
 if __name__ == '__main__':

@@ -34,7 +34,7 @@ from nerfstudio.utils import install_checks
 from nerfstudio.utils.colormaps import apply_depth_colormap
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import ItersPerSecColumn
-from nerfstudio.utils.connected_components import extract_top_k_connected_component
+from nerfstudio.utils.connected_components import extract_top_k_connected_component, filter_occupancy_grid
 
 CONSOLE = Console(width=120)
 
@@ -72,29 +72,31 @@ def _render_trajectory_video(
 
     if use_occupancy_grid_filtering:
         occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
-        resolution = occupancy_grid.resolution
-        try:
-            iter(resolution)
-        except TypeError:
-            # If resolution is not iterable, it probably was a single number
-            resolution = [resolution, resolution, resolution]
+        filter_occupancy_grid(occupancy_grid)
 
-        occupancy_grid_densities = occupancy_grid.occs
-        occupancy_grid_densities = occupancy_grid_densities.reshape(*resolution)
-        occupancy_grid_densities = occupancy_grid_densities.cpu().numpy()
-
-        if debug_occupancy_grid_filtering:
-            np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid_densities)
-            print("Exiting rendering as debug_occupancy_grid_filtering was set")
-            exit(0)
-
-        largest_connected_component = extract_top_k_connected_component(occupancy_grid_densities, sigma_erosion=5)[0]
-
-        filtered_occupancy_grid = largest_connected_component > 0  # Make binary
-        filtered_occupancy_grid = torch.tensor(filtered_occupancy_grid,
-                                               device=occupancy_grid.device,
-                                               dtype=occupancy_grid._binary.dtype)
-        occupancy_grid._binary = occupancy_grid._binary & filtered_occupancy_grid
+        # resolution = occupancy_grid.resolution
+        # try:
+        #     iter(resolution)
+        # except TypeError:
+        #     # If resolution is not iterable, it probably was a single number
+        #     resolution = [resolution, resolution, resolution]
+        #
+        # occupancy_grid_densities = occupancy_grid.occs
+        # occupancy_grid_densities = occupancy_grid_densities.reshape(*resolution)
+        # occupancy_grid_densities = occupancy_grid_densities.cpu().numpy()
+        #
+        # if debug_occupancy_grid_filtering:
+        #     np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid_densities)
+        #     print("Exiting rendering as debug_occupancy_grid_filtering was set")
+        #     exit(0)
+        #
+        # largest_connected_component = extract_top_k_connected_component(occupancy_grid_densities, sigma_erosion=5)[0]
+        #
+        # filtered_occupancy_grid = largest_connected_component > 0  # Make binary
+        # filtered_occupancy_grid = torch.tensor(filtered_occupancy_grid,
+        #                                        device=occupancy_grid.device,
+        #                                        dtype=occupancy_grid._binary.dtype)
+        # occupancy_grid._binary = occupancy_grid._binary & filtered_occupancy_grid
 
     if use_depth_culling:
         depth_maps = []
