@@ -38,6 +38,7 @@ from nerfstudio.engine.callbacks import (
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.hypernerf_field import (
+    HashEnsemHyperNeRFField,
     HashHyperNeRFField,
     HyperNeRFField,
     HyperSlicingField,
@@ -115,6 +116,31 @@ class HyperNeRFModel(Model):
         self.sched_beta = None
 
         super().__init__(config=config, **kwargs)
+
+    def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
+        self.field_coarse = HyperNeRFField(
+            use_hyper_slicing=self.config.use_hyper_slicing,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
+            n_freq_pos=self.config.n_freq_pos,
+            n_freq_dir=self.config.n_freq_dir,
+            base_extra_dim=base_extra_dim,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
+        )
+
+        self.field_fine = HyperNeRFField(
+            use_hyper_slicing=self.config.use_hyper_slicing,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
+            n_freq_pos=self.config.n_freq_pos,
+            n_freq_dir=self.config.n_freq_dir,
+            base_extra_dim=base_extra_dim,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
+        )
 
     def populate_modules(self):
         """Set the fields and modules"""
@@ -199,29 +225,7 @@ class HyperNeRFModel(Model):
                     )
                 )
 
-        self.field_coarse = HyperNeRFField(
-            n_freq_pos=self.config.n_freq_pos,
-            n_freq_dir=self.config.n_freq_dir,
-            use_hyper_slicing=self.config.use_hyper_slicing,
-            n_freq_slice=self.config.n_freq_slice,
-            hyper_slice_dim=self.config.hyper_slice_dim,
-            base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
-            base_mlp_num_layers=self.config.n_layers,
-            base_mlp_layer_width=self.config.hidden_dim,
-        )
-
-        self.field_fine = HyperNeRFField(
-            n_freq_pos=self.config.n_freq_pos,
-            n_freq_dir=self.config.n_freq_dir,
-            use_hyper_slicing=self.config.use_hyper_slicing,
-            n_freq_slice=self.config.n_freq_slice,
-            hyper_slice_dim=self.config.hyper_slice_dim,
-            base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
-            base_mlp_num_layers=self.config.n_layers,
-            base_mlp_layer_width=self.config.hidden_dim,
-        )
+        self.populate_template_NeRF(base_extra_dim, head_extra_dim)
 
         # samplers
         self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
@@ -262,8 +266,17 @@ class HyperNeRFModel(Model):
 
         if self.field_coarse is None or self.field_fine is None:
             raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"].extend(self.field_coarse.parameters())
+
         param_groups["fields"].extend(self.field_fine.parameters())
+        if id(self.field_coarse) != id(self.field_fine):
+            param_groups["fields"].extend(self.field_coarse.parameters())
+
+        if self.warp_field is not None:
+            param_groups["fields"] += list(self.warp_field.parameters())
+
+        if self.slice_field is not None:
+            param_groups["fields"] += list(self.slice_field.parameters())
+
         param_groups["embeddings"] = []
 
         if self.warp_embeddings is not None:
@@ -274,12 +287,6 @@ class HyperNeRFModel(Model):
 
         if self.camera_embeddings is not None:
             param_groups["embeddings"] += list(self.camera_embeddings.parameters())
-
-        if self.warp_field is not None:
-            param_groups["fields"] += list(self.warp_field.parameters())
-
-        if self.slice_field is not None:
-            param_groups["fields"] += list(self.slice_field.parameters())
 
         return param_groups
 
@@ -388,15 +395,17 @@ class HyperNeRFModel(Model):
         device = outputs["rgb_coarse"].device
         image = batch["image"].to(device)
 
-        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
-        mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
-        beta_loss = self.get_beta_loss(outputs["accumulation_fine"])
+        loss_dict["rgb_loss_coarse"] = self.rgb_loss(image, outputs["rgb_coarse"])
+        loss_dict["rgb_loss_fine"] = self.rgb_loss(image, outputs["rgb_fine"])
 
-        loss_dict["rgb_loss_coarse"] = rgb_loss_coarse
-        loss_dict["rgb_loss_fine"] = rgb_loss_fine
+        if self.config.lambda_alpha_loss:
+            loss_dict["alpha_loss"] = self.get_alpha_loss(batch, outputs["accumulation_fine"])
+
+        mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
+
+        beta_loss = self.get_beta_loss(outputs["accumulation_fine"])
         if beta_loss is not None:
             loss_dict["beta_loss"] = beta_loss
 
@@ -509,310 +518,59 @@ class HyperNeRFModel(Model):
 
 
 @dataclass
-class MipHashHyperNeRFModelConfig(HyperNeRFModelConfig):
+class MipHyperNeRFModelConfig(HyperNeRFModelConfig):
     """HyperNeRF Model Config"""
 
-    _target: Type = field(default_factory=lambda: MipHashHyperNeRFModel)
+    _target: Type = field(default_factory=lambda: MipHyperNerfModel)
 
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
 
-    n_hashgrid_levels: int = 13
+    use_integrated_encoding: bool = True
 
-    window_gamma_begin: int = 0  # the number of steps before window_gamma changes from its initial value
-    window_gamma_end: int = 0  # the number of steps before window_gamma reaches its maximum
+    n_freq_pos_warping: int = 8
+    n_freq_pos_slicing: int = 8
 
-    lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
+    n_freq_pos: int = 10
+    n_freq_dir: int = 2
+    n_freq_slice: int = 2
 
 
-class MipHashHyperNeRFModel(HyperNeRFModel):
-    """HyperNeRF model
+class MipHyperNerfModel(HyperNeRFModel):
+    """mip-NeRF model
 
     Args:
-        config: Basic NeRF configuration to instantiate model
+        config: MipNerf configuration to instantiate model
     """
 
-    config: MipHashHyperNeRFModelConfig
+    config: MipHyperNeRFModelConfig
 
     def __init__(
         self,
-        config: MipHashHyperNeRFModelConfig,
+        config: MipHyperNeRFModelConfig,
         **kwargs,
     ) -> None:
-        self.field_coarse = None
-        self.field_fine = None
+        self.field = None
         self.warp_field = None
         self.slice_field = None
         self.sched_alpha = None
         self.sched_beta = None
-        self.sched_gamma = None
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
-    def populate_modules(self):
-        """Set the fields and modules"""
-        super(HyperNeRFModel, self).populate_modules()
-
-        base_extra_dim = 0
-        head_extra_dim = 0
-
-        # warp embeddings
-        self.warp_embeddings = None
-        if self.config.warp_code_dim > 0:
-            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
-            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
-
-        # appearance embeddings
-        self.appearance_embeddings = None
-        if self.config.appearance_code_dim > 0:
-            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
-            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.appearance_code_dim
-
-        # camera embeddings to model the difference of exposure, color, etc. between cameras
-        self.camera_embeddings = None
-        if self.config.camera_code_dim > 0:
-            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
-            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.camera_code_dim
-
-        # fields
-        if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            base_extra_dim = self.config.warp_code_dim
-
-        if self.config.use_se3_warping:
-            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
-            self.warp_field = SE3WarpingField(
-                n_freq_pos=self.config.n_freq_pos_warping,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=128,
-                warp_direction=self.config.warp_direction,
-            )
-            if self.config.window_alpha_end >= 1:
-                assert self.config.window_alpha_end > self.config.window_alpha_begin
-                self.sched_alpha = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_pos_warping,
-                    begin_step=self.config.window_alpha_begin,
-                    end_step=self.config.window_alpha_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_alpha, "alpha"],
-                    )
-                )
-
-        if self.config.use_hyper_slicing:
-            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
-            self.slice_field = HyperSlicingField(
-                n_freq_pos=self.config.n_freq_pos_slicing,
-                out_dim=self.config.hyper_slice_dim,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=64,
-            )
-            if self.config.window_beta_end >= 1:
-                assert self.config.window_beta_end > self.config.window_beta_begin
-                self.sched_beta = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_slice,
-                    begin_step=self.config.window_beta_begin,
-                    end_step=self.config.window_beta_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_beta, "beta"],
-                    )
-                )
-
-        self.field = HashHyperNeRFField(
-            aabb=self.scene_box.aabb,
-            n_hashgrid_levels=self.config.n_hashgrid_levels,
+    def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
+        self.field_coarse = HyperNeRFField(
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
+            n_freq_pos=self.config.n_freq_pos,
+            n_freq_dir=self.config.n_freq_dir,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
         )
-        if self.config.window_gamma_end >= 1:
-            assert self.config.window_gamma_end > self.config.window_gamma_begin
-            self.sched_gamma = GenericScheduler(
-                init_value=9,  # TODO: need update
-                final_value=self.config.n_freq_pos,
-                begin_step=self.config.window_gamma_begin,
-                end_step=self.config.window_gamma_end,
-            )
-            self.callbacks.append(
-                TrainingCallback(
-                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                    update_every_num_iters=1,
-                    func=self.update_window_param,
-                    args=[self.sched_gamma, "gamma"],
-                )
-            )
 
-        # samplers
-        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
-
-        # background
-        if self.config.use_backgrounds:
-            background_color = None
-        else:
-            if self.config.background_color == "black":
-                background_color = colors.BLACK
-            elif self.config.background_color == "white":
-                background_color = colors.WHITE
-            else:
-                background_color = self.config.background_color
-
-        # renderers
-        self.renderer_rgb = RGBRenderer(background_color=background_color)
-        self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer()
-
-        # metrics
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
-        self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
-
-    def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field.parameters())
-        param_groups["embeddings"] = []
-
-        if self.warp_embeddings is not None:
-            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
-
-        if self.appearance_embeddings is not None:
-            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
-
-        if self.camera_embeddings is not None:
-            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
-
-        if self.warp_field is not None:
-            param_groups["fields"] += list(self.warp_field.parameters())
-
-        if self.slice_field is not None:
-            param_groups["fields"] += list(self.slice_field.parameters())
-
-        return param_groups
-
-    def get_outputs(self, ray_bundle: RayBundle):
-
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_outputs")
-
-        # window parameters
-        window_alpha = self.sched_alpha.get_value() if self.sched_alpha is not None else None
-        window_beta = self.sched_beta.get_value() if self.sched_beta is not None else None
-        window_gamma = self.sched_gamma.get_value() if self.sched_gamma is not None else None
-
-        # uniform sampling
-        ray_samples_uniform = self.sampler_uniform(ray_bundle)
-
-        # First pass:
-        field_outputs_coarse = self.field.forward(
-            ray_samples_uniform,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
-            warp_field=self.warp_field,
-            slice_field=self.slice_field,
-            window_alpha=window_alpha,
-            window_beta=window_beta,
-            window_gamma=window_gamma,
-        )
-        weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
-        rgb_coarse = self.renderer_rgb(
-            rgb=field_outputs_coarse[FieldHeadNames.RGB],
-            weights=weights_coarse,
-        )
-        accumulation_coarse = self.renderer_accumulation(weights_coarse)
-        depth_coarse = self.renderer_depth(weights_coarse, ray_samples_uniform)
-
-        # pdf sampling
-        ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
-
-        # Second pass:
-        field_outputs_fine = self.field.forward(
-            ray_samples_pdf,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
-            warp_field=self.warp_field,
-            slice_field=self.slice_field,
-            window_alpha=window_alpha,
-            window_beta=window_beta,
-            window_gamma=window_gamma,
-        )
-        weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
-        rgb_fine = self.renderer_rgb(
-            rgb=field_outputs_fine[FieldHeadNames.RGB],
-            weights=weights_fine,
-        )
-        accumulation_fine = self.renderer_accumulation(weights_fine)
-        depth_fine = self.renderer_depth(weights_fine, ray_samples_pdf)
-
-        outputs = {
-            "rgb_coarse": rgb_coarse,
-            "rgb_fine": rgb_fine,
-            "accumulation_coarse": accumulation_coarse,
-            "accumulation_fine": accumulation_fine,
-            "depth_coarse": depth_coarse,
-            "depth_fine": depth_fine,
-        }
-        return outputs
-
-    def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
-        loss_dict = {}
-
-        self._apply_background_network(batch, outputs, overwrite_outputs=True)
-
-        background_adjustment_loss = self.get_background_adjustment_loss(outputs)
-        if background_adjustment_loss is not None:
-            loss_dict["background_adjustment_displacement"] = background_adjustment_loss
-
-        # Scaling metrics by coefficients to create the losses.
-        device = outputs["rgb_coarse"].device
-        image = batch["image"].to(device)
-
-        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
-        # rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
-
-        if self.config.lambda_alpha_loss:
-            loss_dict["alpha_loss"] = self.get_alpha_loss(batch, outputs["accumulation_fine"])
-            # TODO: why only for the fine level?
-        mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
-        beta_loss = self.get_beta_loss(outputs["accumulation_fine"])
-
-        loss_dict["rgb_loss_coarse"] = rgb_loss_coarse
-        loss_dict["rgb_loss_fine"] = rgb_loss_fine
-        if mask_loss is not None:
-            loss_dict["mask_loss"] = mask_loss
-        if beta_loss is not None:
-            loss_dict["beta_loss"] = beta_loss
-
-        if self.config.lambda_hash_level:
-            import ipdb
-
-            ipdb.set_trace()
-            pass
-
-        loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
-
-        return loss_dict
+        self.field_fine = self.field_coarse
 
 
 @dataclass
@@ -845,98 +603,16 @@ class HashHyperNeRFModel(HyperNeRFModel):
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
-    def populate_modules(self):
-        """Set the fields and modules"""
-        super(HyperNeRFModel, self).populate_modules()
-
-        base_extra_dim = 0
-        head_extra_dim = 0
-
-        # warp embeddings
-        self.warp_embeddings = None
-        if self.config.warp_code_dim > 0:
-            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
-            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
-
-        # appearance embeddings
-        self.appearance_embeddings = None
-        if self.config.appearance_code_dim > 0:
-            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
-            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.appearance_code_dim
-
-        # camera embeddings to model the difference of exposure, color, etc. between cameras
-        self.camera_embeddings = None
-        if self.config.camera_code_dim > 0:
-            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
-            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.camera_code_dim
-
-        # fields
-        if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            base_extra_dim = self.config.warp_code_dim
-
-        if self.config.use_se3_warping:
-            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
-            self.warp_field = SE3WarpingField(
-                n_freq_pos=self.config.n_freq_pos_warping,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=128,
-                warp_direction=self.config.warp_direction,
-            )
-            if self.config.window_alpha_end >= 1:
-                assert self.config.window_alpha_end > self.config.window_alpha_begin
-                self.sched_alpha = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_pos_warping,
-                    begin_step=self.config.window_alpha_begin,
-                    end_step=self.config.window_alpha_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_alpha, "alpha"],
-                    )
-                )
-
-        if self.config.use_hyper_slicing:
-            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
-            self.slice_field = HyperSlicingField(
-                n_freq_pos=self.config.n_freq_pos_slicing,
-                out_dim=self.config.hyper_slice_dim,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=64,
-            )
-            if self.config.window_beta_end >= 1:
-                assert self.config.window_beta_end > self.config.window_beta_begin
-                self.sched_beta = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_slice,
-                    begin_step=self.config.window_beta_begin,
-                    end_step=self.config.window_beta_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_beta, "beta"],
-                    )
-                )
-
+    def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HashHyperNeRFField(
             aabb=self.scene_box.aabb,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
         )
 
         self.field_fine = HashHyperNeRFField(
@@ -945,306 +621,111 @@ class HashHyperNeRFModel(HyperNeRFModel):
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
         )
-
-        # samplers
-        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
-
-        # background
-        if self.config.use_backgrounds:
-            background_color = None
-        else:
-            if self.config.background_color == "black":
-                background_color = colors.BLACK
-            elif self.config.background_color == "white":
-                background_color = colors.WHITE
-            else:
-                background_color = self.config.background_color
-
-        # renderers
-        self.renderer_rgb = RGBRenderer(background_color=background_color)
-        self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer()
-
-        # metrics
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
-        self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
 
 
 @dataclass
-class MipHyperNeRFModelConfig(HyperNeRFModelConfig):
+class MipHashHyperNeRFModelConfig(HyperNeRFModelConfig):
     """HyperNeRF Model Config"""
 
-    _target: Type = field(default_factory=lambda: MipHyperNerfModel)
+    _target: Type = field(default_factory=lambda: MipHashHyperNeRFModel)
 
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
+    lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
 
-    use_integrated_encoding: bool = True
-
-    n_freq_pos_warping: int = 8
-    n_freq_pos_slicing: int = 8
-
-    n_freq_pos: int = 10
-    window_gamma_begin: int = 0  # the number of steps before window_gamma changes from its initial value
-    window_gamma_end: int = 0  # the number of steps before window_gamma reaches its maximum
-    n_freq_dir: int = 2
-    n_freq_slice: int = 2
+    n_hashgrid_levels: int = 13
 
 
-class MipHyperNerfModel(HyperNeRFModel):
-    """mip-NeRF model
+class MipHashHyperNeRFModel(HyperNeRFModel):
+    """HyperNeRF model
 
     Args:
-        config: MipNerf configuration to instantiate model
+        config: Basic NeRF configuration to instantiate model
     """
 
-    config: MipHyperNeRFModelConfig
+    config: MipHashHyperNeRFModelConfig
 
     def __init__(
         self,
-        config: MipHyperNeRFModelConfig,
+        config: MipHashHyperNeRFModelConfig,
         **kwargs,
     ) -> None:
-        self.field = None
+        self.field_coarse = None
+        self.field_fine = None
         self.warp_field = None
         self.slice_field = None
         self.sched_alpha = None
         self.sched_beta = None
-        self.sched_gamma = None
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
-    def populate_modules(self):
-        """Set the fields and modules"""
-        super(HyperNeRFModel, self).populate_modules()
-
-        base_extra_dim = 0
-        head_extra_dim = 0
-
-        # warp embeddings
-        self.warp_embeddings = None
-        if self.config.warp_code_dim > 0:
-            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
-            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
-
-        # appearance embeddings
-        self.appearance_embeddings = None
-        if self.config.appearance_code_dim > 0:
-            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
-            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.appearance_code_dim
-
-        # camera embeddings to model the difference of exposure, color, etc. between cameras
-        self.camera_embeddings = None
-        if self.config.camera_code_dim > 0:
-            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
-            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
-            head_extra_dim += self.config.camera_code_dim
-
-        # fields
-        if not self.config.use_hyper_slicing and not self.config.use_se3_warping:
-            base_extra_dim = self.config.warp_code_dim
-
-        if self.config.use_se3_warping:
-            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
-            self.warp_field = SE3WarpingField(
-                n_freq_pos=self.config.n_freq_pos_warping,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=128,
-            )
-            if self.config.window_alpha_end >= 1:
-                assert self.config.window_alpha_end > self.config.window_alpha_begin
-                self.sched_alpha = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_pos_warping,
-                    begin_step=self.config.window_alpha_begin,
-                    end_step=self.config.window_alpha_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_alpha, "alpha"],
-                    )
-                )
-
-        if self.config.use_hyper_slicing:
-            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
-            self.slice_field = HyperSlicingField(
-                n_freq_pos=self.config.n_freq_pos_slicing,
-                out_dim=self.config.hyper_slice_dim,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=64,
-            )
-            if self.config.window_beta_end >= 1:
-                assert self.config.window_beta_end > self.config.window_beta_begin
-                self.sched_beta = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_slice,
-                    begin_step=self.config.window_beta_begin,
-                    end_step=self.config.window_beta_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_beta, "beta"],
-                    )
-                )
-
-        self.field = HyperNeRFField(
-            n_freq_pos=self.config.n_freq_pos,
-            n_freq_dir=self.config.n_freq_dir,
+    def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
+        self.field_coarse = HashHyperNeRFField(
+            aabb=self.scene_box.aabb,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
+            n_hashgrid_levels=self.config.n_hashgrid_levels,
             base_extra_dim=base_extra_dim,
-            head_extra_dim=head_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
-            use_integrated_encoding=self.config.use_integrated_encoding,
+            head_extra_dim=head_extra_dim,
         )
 
-        if self.config.window_gamma_end >= 1:
-            assert self.config.window_gamma_end > self.config.window_gamma_begin
-            self.sched_gamma = GenericScheduler(
-                init_value=9,
-                final_value=self.config.n_freq_pos,
-                begin_step=self.config.window_gamma_begin,
-                end_step=self.config.window_gamma_end,
-            )
-            self.callbacks.append(
-                TrainingCallback(
-                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                    update_every_num_iters=1,
-                    func=self.update_window_param,
-                    args=[self.sched_gamma, "gamma"],
-                )
-            )
+        self.field_fine = self.field_coarse
 
-        # samplers
-        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples, include_original=False)
 
-        # background
-        if self.config.use_background_network:
-            background_color = None
-        else:
-            if self.config.background_color == "black":
-                background_color = colors.BLACK
-            elif self.config.background_color == "white":
-                background_color = colors.WHITE
-            else:
-                background_color = self.config.background_color
+@dataclass
+class MipHashEnsemHyperNeRFModelConfig(HyperNeRFModelConfig):
+    """HyperNeRF Model Config"""
 
-        # renderers
-        self.renderer_rgb = RGBRenderer(background_color=background_color)
-        self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer()
+    _target: Type = field(default_factory=lambda: MipHashHyperNeRFModel)
 
-        # losses
-        self.rgb_loss = MSELoss()
+    loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
+    lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
 
-        # metrics
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
-        self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+    n_hashgrid_levels: int = 13
+    ensem_code_dim: int = 8  # dimension of the code for hash table ensemble
 
-    def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field.parameters())
-        param_groups["embeddings"] = []
 
-        if self.warp_embeddings is not None:
-            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
+class MipHashEnsemHyperNeRFModel(HyperNeRFModel):
+    """HyperNeRF model
 
-        if self.appearance_embeddings is not None:
-            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
+    Args:
+        config: Basic NeRF configuration to instantiate model
+    """
 
-        if self.camera_embeddings is not None:
-            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
+    config: MipHashEnsemHyperNeRFModelConfig
 
-        if self.warp_field is not None:
-            param_groups["fields"] += list(self.warp_field.parameters())
+    def __init__(
+        self,
+        config: MipHashEnsemHyperNeRFModelConfig,
+        **kwargs,
+    ) -> None:
+        self.field_coarse = None
+        self.field_fine = None
+        self.warp_field = None
+        self.slice_field = None
+        self.sched_alpha = None
+        self.sched_beta = None
 
-        if self.slice_field is not None:
-            param_groups["fields"] += list(self.slice_field.parameters())
+        super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
-        return param_groups
-
-    def get_outputs(self, ray_bundle: RayBundle):
-
-        if self.field is None:
-            raise ValueError("populate_fields() must be called before get_outputs")
-
-        # window parameters
-        window_alpha = self.sched_alpha.get_value() if self.sched_alpha is not None else None
-        window_beta = self.sched_beta.get_value() if self.sched_beta is not None else None
-        window_gamma = self.sched_gamma.get_value() if self.sched_gamma is not None else None
-
-        # uniform sampling
-        ray_samples_uniform = self.sampler_uniform(ray_bundle)
-
-        # First pass:
-        field_outputs_coarse = self.field.forward(
-            ray_samples_uniform,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
-            warp_field=self.warp_field,
-            slice_field=self.slice_field,
-            window_alpha=window_alpha,
-            window_beta=window_beta,
-            window_gamma=window_gamma,
+    def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
+        self.field_coarse = HashEnsemHyperNeRFField(
+            aabb=self.scene_box.aabb,
+            use_hyper_slicing=self.config.use_hyper_slicing,
+            n_freq_slice=self.config.n_freq_slice,
+            hyper_slice_dim=self.config.hyper_slice_dim,
+            ensem_code_dim=self.config.ensem_code_dim,
+            n_hashgrid_levels=self.config.n_hashgrid_levels,
+            base_extra_dim=base_extra_dim,
+            base_mlp_num_layers=self.config.n_layers,
+            base_mlp_layer_width=self.config.hidden_dim,
+            head_extra_dim=head_extra_dim,
         )
-        weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
-        rgb_coarse = self.renderer_rgb(
-            rgb=field_outputs_coarse[FieldHeadNames.RGB],
-            weights=weights_coarse,
-        )
-        accumulation_coarse = self.renderer_accumulation(weights_coarse)
-        depth_coarse = self.renderer_depth(weights_coarse, ray_samples_uniform)
 
-        # pdf sampling
-        ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
-
-        # Second pass:
-        field_outputs_fine = self.field.forward(
-            ray_samples_pdf,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
-            warp_field=self.warp_field,
-            slice_field=self.slice_field,
-            window_alpha=window_alpha,
-            window_beta=window_beta,
-            window_gamma=window_gamma,
-        )
-        weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
-        rgb_fine = self.renderer_rgb(
-            rgb=field_outputs_fine[FieldHeadNames.RGB],
-            weights=weights_fine,
-        )
-        accumulation_fine = self.renderer_accumulation(weights_fine)
-        depth_fine = self.renderer_depth(weights_fine, ray_samples_pdf)
-
-        outputs = {
-            "rgb_coarse": rgb_coarse,
-            "rgb_fine": rgb_fine,
-            "accumulation_coarse": accumulation_coarse,
-            "accumulation_fine": accumulation_fine,
-            "depth_coarse": depth_coarse,
-            "depth_fine": depth_fine,
-        }
-        return outputs
+        self.field_fine = self.field_coarse
