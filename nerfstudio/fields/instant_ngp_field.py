@@ -583,8 +583,9 @@ class TCNNInstantNGPField(Field):
         param_groups["fields"].extend(self.mlp_head.parameters())
 
         if self.use_hash_encoding_ensemble:
-            param_groups["fields"].extend(self.hash_encoding_ensemble.get_hash_params())
-            param_groups["blend_fields"].extend(self.hash_encoding_ensemble.get_blend_field_params())
+            param_groups_hash_ensemble = self.hash_encoding_ensemble.get_param_groups()
+            for name, param_group in param_groups_hash_ensemble.items():
+                param_groups[name].extend(param_group)
 
         if self.use_camera_embedding:
             param_groups["embeddings"].extend(self.camera_embedding.parameters())
