@@ -99,7 +99,7 @@ class TCNNInstantNGPField(Field):
             blend_field_n_layers: int = 4,
             blend_field_out_activation: Optional[Literal['Tanh', 'Normalization']] = None,
             blend_field_n_freq_enc: int = 0,
-            blend_field_skip_connections: Optional[Tuple[int]] =  [2],
+            blend_field_skip_connections: Optional[Tuple[int]] =  None,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,

@@ -74,6 +74,8 @@ class ModelConfig(InstantiateConfig):
     lambda_beta_loss: float = 0
     """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
 
+    n_parameters: int = implicit()  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
+
 
 class Model(nn.Module):
     """Model class
