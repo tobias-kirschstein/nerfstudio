@@ -10,6 +10,7 @@ import torch
 from nerfacc import ContractionType, contract
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
+from nerfstudio.field_components import MLP
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
@@ -66,6 +67,7 @@ class TCNNInstantNGPField(Field):
             appearance_embedding_dim: int = 32,
             use_camera_embedding: bool = False,
             camera_embedding_dim: int = 8,
+            use_affine_color_transformation: bool = False,
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
             n_hashgrid_levels: int = 16,
             log2_hashmap_size: int = 19,
@@ -133,11 +135,15 @@ class TCNNInstantNGPField(Field):
             self.appearance_embedding = Embedding(num_images, appearance_embedding_dim)
 
         self.use_camera_embedding = use_camera_embedding
+        self.use_affine_color_transformation = use_affine_color_transformation
         if use_camera_embedding:
             assert num_images is not None
             assert n_timesteps is not None, "Currently, camera embedding assumes hat cameras don't move. I.e., there is only 1 camera embedding per camera"
             self.camera_embedding = Embedding(int(num_images / n_timesteps), camera_embedding_dim)
             init.uniform_(self.camera_embedding.embedding.weight, a=-0.05, b=0.05)
+
+            if use_affine_color_transformation:
+                self.affine_color_transformation = MLP(camera_embedding_dim, 3, 64, 9 + 3)
 
         # ----------------------------------------------------------
         # Base network with hash encoding
@@ -274,7 +280,8 @@ class TCNNInstantNGPField(Field):
         if self.use_appearance_embedding:
             in_dim += self.appearance_embedding_dim
 
-        if self.use_camera_embedding:
+        if self.use_camera_embedding and not self.use_affine_color_transformation:
+            # If affine color transformation is used, we do not condition the RGB network on the camera embedding
             in_dim += self.camera_embedding.out_dim
 
         if use_time_conditioning_for_rgb_mlp:
@@ -286,7 +293,7 @@ class TCNNInstantNGPField(Field):
             network_config={
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
-                "output_activation": "Sigmoid",
+                "output_activation": "None" if use_camera_embedding and use_affine_color_transformation else "Sigmoid",
                 "n_neurons": hidden_dim_color,
                 "n_hidden_layers": num_layers_color - 1,
             },
@@ -441,10 +448,11 @@ class TCNNInstantNGPField(Field):
                 d = self.direction_encoding(directions_flat)
                 h = torch.cat([d, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
 
+        # Appearance embeddings
         if self.use_appearance_embedding:
             if ray_samples.camera_indices is None:
                 raise AttributeError("Camera indices are not provided.")
-            camera_indices = ray_samples.camera_indices.squeeze()
+            camera_indices = ray_samples.camera_indices.squeeze(dim=-1)
             if self.training:
                 embedded_appearance = self.appearance_embedding(camera_indices)
             else:
@@ -453,22 +461,29 @@ class TCNNInstantNGPField(Field):
                 )
             h = torch.cat([h, embedded_appearance.view(-1, self.appearance_embedding_dim)], dim=-1)
 
+        # Color correction with camera embeddings
+        predicted_color_transformation = None
         if self.use_camera_embedding:
             if ray_samples.camera_indices is None:
                 raise AttributeError("Camera indices are not provided.")
-            camera_indices = ray_samples.camera_indices.squeeze()
+            camera_indices = ray_samples.camera_indices.squeeze(dim=-1)
             if self.training:
                 camera_code = self.camera_embedding(camera_indices)
             else:
                 # During evaluation we use the mean over all camera embeddings
                 camera_code = self.camera_embedding.embedding.weight.mean(0)[None, :].repeat(*ray_samples.shape, 1)
 
-            h = torch.cat([h, camera_code.view(-1, self.camera_embedding.out_dim)], dim=-1)
+            if self.use_affine_color_transformation:
+                predicted_color_transformation = self.affine_color_transformation(camera_code)
+            else:
+                # Do not condition on camera embedding when affine color transformations are used
+                h = torch.cat([h, camera_code.view(-1, self.camera_embedding.out_dim)], dim=-1)
 
         if self.use_time_conditioning_for_rgb_mlp:
             assert time_codes is not None, "If use_time_conditioning_for_rgb_mlp is set, time_codes have to be provided"
             h = torch.cat([h, time_codes], dim=-1)
 
+        # RGB MLP
         if ray_samples.timesteps is not None and self.fix_canonical_space:
             # Ensure that only canonical space rays accumulate gradients
             assert self.timestep_canonical is not None
@@ -491,6 +506,15 @@ class TCNNInstantNGPField(Field):
             rgb = rgb.view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
         else:
             rgb = self.mlp_head(h).view(*ray_samples.frustums.directions.shape[:-1], -1).to(directions)
+
+        if self.use_camera_embedding and self.use_affine_color_transformation:
+            color_matrix = predicted_color_transformation[:, :9].reshape(-1, 3, 3)  # [B, 3, 3]
+            color_offset = predicted_color_transformation[:, 9:]  # [B, 3]
+            rgb = rgb.unsqueeze(2)  # [B, 3, 1]
+            rgb = torch.bmm(color_matrix, rgb)  # [B, 3, 1]
+            rgb = rgb.squeeze(2)  # [B, 3]
+            rgb = rgb + color_offset
+            rgb = rgb.sigmoid()
 
         return {FieldHeadNames.RGB: rgb}
 
@@ -561,6 +585,9 @@ class TCNNInstantNGPField(Field):
 
         if self.use_appearance_embedding:
             param_groups["embeddings"].extend(self.appearance_embedding.parameters())
+
+            if self.use_affine_color_transformation:
+                param_groups["fields"].extend(self.affine_color_transformation.parameters())
 
         return param_groups
 

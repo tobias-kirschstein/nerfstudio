@@ -79,6 +79,7 @@ class InstantNGPModelConfig(ModelConfig):
     appearance_embedding_dim: int = 32  # Dimension for every appearance embedding
     use_camera_embedding: bool = False  # Whether a camera-specific code (shared across timesteps) should be learned for RGB network
     camera_embedding_dim: int = 8
+    use_affine_color_transformation: bool = False  # If set, camera embedding won't directly condition RGB MLP but instead is used to decode an affine transformation of the predicted RGB values
 
     num_layers_base: int = 2  # Number of layers of the first MLP (both density and RGB)
     hidden_dim_base: int = 64  # Hidden dimensions of first MLP
@@ -195,6 +196,7 @@ class NGPModel(Model):
             appearance_embedding_dim=self.config.appearance_embedding_dim,
             use_camera_embedding=self.config.use_camera_embedding,
             camera_embedding_dim=self.config.camera_embedding_dim,
+            use_affine_color_transformation=self.config.use_affine_color_transformation,
 
             n_hashgrid_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,

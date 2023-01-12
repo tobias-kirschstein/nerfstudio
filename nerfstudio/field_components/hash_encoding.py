@@ -221,6 +221,7 @@ class HashEncodingEnsemble(nn.Module):
         for hash_encoding in self.hash_encodings:
             embedding = hash_encoding(in_tensor)
             embeddings.append(embedding)
+
         embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
 
         if windows_param is not None:
@@ -256,7 +257,7 @@ class HashEncodingEnsemble(nn.Module):
 
             elif self.mixing_type in ['multihead_blend', 'multihead_blend_mixed']:
                 assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
-                    "multihead_blend requries the conditioning code to have dimension n_tables * n_heads"
+                    "multihead_blend requires the conditioning code to have dimension n_tables * n_heads"
 
                 B = conditioning_code.shape[0]
                 C = conditioning_code.shape[1]  # code dim
