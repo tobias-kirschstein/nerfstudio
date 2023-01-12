@@ -15,7 +15,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
-    HashEnsembleMixingType, BlendFieldConfig
+    HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -170,7 +170,12 @@ class TCNNInstantNGPField(Field):
                                                     output_activation=blend_field_out_activation,
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
-                                                    ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None)
+                                                    ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None,
+                multi_deform_config=MultiDeformConfig(n_hidden_dims=64,
+                                                      n_layers=4,
+                                                      n_freq_pos_enc=4,
+                ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None
+            )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
             hash_grid_encoding_config = {
@@ -578,7 +583,8 @@ class TCNNInstantNGPField(Field):
         param_groups["fields"].extend(self.mlp_head.parameters())
 
         if self.use_hash_encoding_ensemble:
-            param_groups["fields"].extend(self.hash_encoding_ensemble.parameters())
+            param_groups["fields"].extend(self.hash_encoding_ensemble.get_hash_params())
+            param_groups["blend_fields"].extend(self.hash_encoding_ensemble.get_blend_field_params())
 
         if self.use_camera_embedding:
             param_groups["embeddings"].extend(self.camera_embedding.parameters())

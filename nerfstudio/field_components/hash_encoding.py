@@ -11,11 +11,13 @@ from torch import nn
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.encodings import NeRFEncoding
 
+
 HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                     'multihead_blend',
                                     'multihead_blend_mixed',
                                     'multihead_blend_attention_style',
-                                    'mlp_blend_field'
+                                    'mlp_blend_field',
+                                    'multi_deform_blend'
 ]
 
 
@@ -67,7 +69,7 @@ class TCNNHashEncodingConfig:
 class BlendFieldConfig:
     n_hidden_dims: int = 64
     n_layers: int = 4
-    output_activation: Optional[Literal['Normalization', 'Tanh']] = 'Tanh'
+    output_activation: Optional[Literal['Normalization', 'Tanh']] = 'Normalization'
     n_freq_pos_enc: int = 0
     skip_connections: Optional[Tuple[int]] = None
     input_dim: int = 3
@@ -98,6 +100,42 @@ class BlendFieldConfig:
         return nerf_encoder, mlp_blend_field
 
 
+@dataclass
+class MultiDeformConfig:
+    n_hidden_dims: int = 64
+    n_layers: int = 4
+    #output_activation: Optional[Literal['Normalization', 'Tanh']] = 'Normalization'
+    n_freq_pos_enc: int = 0
+    skip_connections: Optional[Tuple[int]] = None
+    input_dim: int = 3
+    blend_weight_dim: int = 1
+
+    def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> (NeRFEncoding, MLP):
+        if self.n_freq_pos_enc > 0:
+            nerf_encoder = NeRFEncoding(in_dim=self.input_dim,
+                                        num_frequencies=self.n_freq_pos_enc,
+                                        min_freq_exp=0,
+                                        max_freq_exp=self.n_freq_pos_enc - 1,
+                                        include_input=True)
+        else:
+            nerf_encoder = IdenEnc()
+        #if self.output_activation is None:
+        #    out_activation = None
+        #elif self.output_activation == 'Normalization':
+        #    out_activation = Normalizer()
+        #elif self.output_activation == 'Tanh':
+        #    out_activation = nn.Tanh()
+        mlp_blend_field = MLP(
+            in_dim=n_time_condition_dim + nerf_encoder.get_out_dim() if (self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
+            num_layers=self.n_layers,
+            layer_width=self.n_hidden_dims,
+            out_dim=n_hash_tables*(self.input_dim + self.blend_weight_dim),
+            skip_connections=self.skip_connections,
+            out_activation=None  # out_activation
+        )
+        return nerf_encoder, mlp_blend_field
+
+
 class HashEncodingEnsemble(nn.Module):
 
     def __init__(self,
@@ -107,7 +145,8 @@ class HashEncodingEnsemble(nn.Module):
                  dim_conditioning_code: Optional[int] = None,
                  n_heads: Optional[int] = None,
                  only_render_hash_table: Optional[int] = None,
-                 blend_field_config: BlendFieldConfig = None):
+                 blend_field_config: BlendFieldConfig = None,
+                 multi_deform_config: MultiDeformConfig = None):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -193,9 +232,6 @@ class HashEncodingEnsemble(nn.Module):
             #     nn.Linear(hidden_dim + 3 + condition_dim, hidden_dim) for i in range(self.n_blend_layers)]
             #)
             #self.out_layer = nn.Linear(hidden_dim, self.n_hash_encodings)
-#
-
-#
 
             self.extra_weight_factor = 4
             self.n_output_dims = dim_hash_encoding
@@ -203,6 +239,16 @@ class HashEncodingEnsemble(nn.Module):
             pos_encoder, blend_field = blend_field_config.setup(dim_conditioning_code, n_hash_encodings*self.extra_weight_factor)
             self.pos_encoder = pos_encoder
             self.blend_field = blend_field
+
+        elif self.mixing_type == 'multi_deform_blend':
+            assert multi_deform_config.input_dim == hash_encoding_config.n_dims_to_encode
+            self.n_output_dims = dim_hash_encoding
+
+
+            self.mulit_deform_config = multi_deform_config
+            pos_encoder, multi_deform_mlp = self.mulit_deform_config.setup(dim_conditioning_code, n_hash_encodings)
+            self.pos_encoder = pos_encoder
+            self.multi_deform_mlp = multi_deform_mlp
 
         else:
             self.n_output_dims = dim_hash_encoding
@@ -217,9 +263,22 @@ class HashEncodingEnsemble(nn.Module):
                 conditioning_code: torch.Tensor,
                 windows_param: Optional[float] = None) -> torch.Tensor:
 
+        B = in_tensor.shape[0]
+
+        # deform query positions for each hash table in multi_deform_mode
+        # (multi-deform_mlp also gives blend weights)
+        if self.mixing_type == 'multi_deform_blend':
+            inp_multi_deform = torch.cat([self.pos_encoder(in_tensor), conditioning_code], dim=-1)
+            offsets_and_weights = self.multi_deform_mlp(inp_multi_deform).view(B, self.n_hash_encodings, -1) # B x H x (3 + weight_dim)
+            offsets = offsets_and_weights[:, :, :self.mulit_deform_config.input_dim]
+            blend_weights = offsets_and_weights[:, :, self.mulit_deform_config.input_dim] # for now only use one weight dim !!!!
+            in_tensor_deformed = in_tensor.unsqueeze(1) + offsets
+        else:
+            in_tensor_deformed = in_tensor.unsqueeze(1).repeat(1, self.n_hash_encodings, 1)
+
         embeddings = []
-        for hash_encoding in self.hash_encodings:
-            embedding = hash_encoding(in_tensor)
+        for h, hash_encoding in enumerate(self.hash_encodings):
+            embedding = hash_encoding(in_tensor_deformed[:, h, :])
             embeddings.append(embedding)
 
         embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
@@ -259,7 +318,6 @@ class HashEncodingEnsemble(nn.Module):
                 assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
                     "multihead_blend requires the conditioning code to have dimension n_tables * n_heads"
 
-                B = conditioning_code.shape[0]
                 C = conditioning_code.shape[1]  # code dim
                 H = embeddings.shape[2]  # number of hash tables
                 nH = self.n_heads
@@ -279,7 +337,6 @@ class HashEncodingEnsemble(nn.Module):
                 #embdeggins: B x D x H
                 #conditioning_code: B x C
 
-                B = conditioning_code.shape[0]
                 C = conditioning_code.shape[1]  # code dim
                 H = embeddings.shape[2]  # number of hash tables
 
@@ -303,7 +360,6 @@ class HashEncodingEnsemble(nn.Module):
                 keys = self.attention_keys.weight  # [H, T]
                 queries = conditioning_code  # [B, T]
                 values = embeddings  # [B, D, H]
-                B = queries.shape[0]
 
                 queries = queries.unsqueeze(1)  # [B, 1, T]
                 values = values.to(queries)  # Make values normal precision
@@ -317,8 +373,6 @@ class HashEncodingEnsemble(nn.Module):
                 attended_embeddings = torch.bmm(attentions, values)  # [B, 1, D]
                 blended_embeddings = attended_embeddings.squeeze(1)  # [B, D]
             elif self.mixing_type == 'multihead_attention':
-                B = conditioning_code.shape[0]  # batch dim: number of samples
-
                 queries = conditioning_code  # [B, C]
                 keys = self.attention_keys.weight  # [H, C]
                 values = embeddings  # [B, D, H]
@@ -357,13 +411,19 @@ class HashEncodingEnsemble(nn.Module):
                 #weights = F.normalize(self.out_layer(hidden), dim=-1) # B x H
 #
                 inp = torch.cat([self.pos_encoder(in_tensor), conditioning_code], dim=-1) # B x (pos_enc_dim + C)
-                B = in_tensor.shape[0]
                 D = embeddings.shape[1]
                 weights = self.blend_field(inp).reshape(B, self.n_hash_encodings, self.extra_weight_factor) # B x H x self.extra_weight_factor
                 embeddings = embeddings.permute(0, 2, 1) # B H D
                 embeddings = embeddings.reshape(B, self.n_hash_encodings, D//self.extra_weight_factor, self.extra_weight_factor)  # B x H x D//factor x factor
                 blended_embeddings = (embeddings * weights.unsqueeze(2)).sum(dim=1) # B x D//self.extra_weight_factor x self.extra_weight_factor
                 blended_embeddings = blended_embeddings.reshape(B, -1) # B x self.n_output_dims
+
+            elif self.mixing_type == 'multi_deform_blend':
+                assert self.mulit_deform_config.blend_weight_dim == 1, "multi-level blending not implemented yet"
+                # curretnly blend_weights: B x H
+                # embeddings B x D x H
+                blended_embeddings = (blend_weights.unsqueeze(1) * embeddings).sum(dim=-1)
+
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
@@ -371,3 +431,16 @@ class HashEncodingEnsemble(nn.Module):
 
     def get_out_dim(self) -> int:
         return self.n_output_dims
+
+    def get_hash_params(self):
+        return self.hash_encodings.parameters()
+
+    def get_blend_field_params(self):
+        if self.mixing_type == 'mlp_blend_field':
+            return self.multi_deform_mlp.parameters()
+        elif self.mixing_type == 'multi_deform_blend':
+            return self.multi_deform_mlp.parameters()
+        else:
+            return iter(())
+
+
