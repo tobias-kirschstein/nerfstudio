@@ -40,6 +40,7 @@ from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.hypernerf_field import (
     HashEnsemHyperNeRFField,
     HashHyperNeRFField,
+    HashSE3WarpingField,
     HyperNeRFField,
     HyperSlicingField,
     SE3WarpingField,
@@ -117,6 +118,56 @@ class HyperNeRFModel(Model):
 
         super().__init__(config=config, **kwargs)
 
+    def populate_warping_field(self):
+        self.warp_field = SE3WarpingField(
+            n_freq_pos=self.config.n_freq_pos_warping,
+            warp_code_dim=self.config.warp_code_dim,
+            mlp_num_layers=6,
+            mlp_layer_width=128,
+            warp_direction=self.config.warp_direction,
+        )
+        if self.config.window_alpha_end >= 1:
+            assert self.config.window_alpha_end > self.config.window_alpha_begin
+            self.sched_alpha = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_pos_warping,
+                begin_step=self.config.window_alpha_begin,
+                end_step=self.config.window_alpha_end,
+            )
+            self.callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=self.update_window_param,
+                    args=[self.sched_alpha, "alpha"],
+                )
+            )
+
+    def populate_slicing_field(self):
+        self.slice_field = HyperSlicingField(
+            n_freq_pos=self.config.n_freq_pos_slicing,
+            out_dim=self.config.hyper_slice_dim,
+            warp_code_dim=self.config.warp_code_dim,
+            mlp_num_layers=6,
+            mlp_layer_width=64,
+        )
+        if self.config.window_beta_end >= 1:
+            assert self.config.window_beta_end > self.config.window_beta_begin
+            self.sched_beta = GenericScheduler(
+                init_value=0,
+                final_value=self.config.n_freq_slice,
+                begin_step=self.config.window_beta_begin,
+                end_step=self.config.window_beta_end,
+            )
+            self.callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=self.update_window_param,
+                    args=[self.sched_beta, "beta"],
+                )
+            )
+
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HyperNeRFField(
             use_hyper_slicing=self.config.use_hyper_slicing,
@@ -149,24 +200,23 @@ class HyperNeRFModel(Model):
         base_extra_dim = 0
         head_extra_dim = 0
 
+        self.embeddings = nn.ModuleDict()
         # warp embeddings
-        self.warp_embeddings = None
         if self.config.warp_code_dim > 0:
-            self.warp_embeddings = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
-            init.uniform_(self.warp_embeddings.weight, a=-0.05, b=0.05)
+            self.embeddings["warp"] = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
+            init.uniform_(self.embeddings["warp"].weight, a=-0.05, b=0.05)
 
         # appearance embeddings
-        self.appearance_embeddings = None
         if self.config.appearance_code_dim > 0:
-            self.appearance_embeddings = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
-            init.uniform_(self.appearance_embeddings.weight, a=-0.05, b=0.05)
+            self.embeddings["appearance"] = nn.Embedding(self.config.n_timesteps, self.config.appearance_code_dim)
+            init.uniform_(self.embeddings["appearance"].weight, a=-0.05, b=0.05)
             head_extra_dim += self.config.appearance_code_dim
 
         # camera embeddings to model the difference of exposure, color, etc. between cameras
         self.camera_embeddings = None
         if self.config.camera_code_dim > 0:
-            self.camera_embeddings = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
-            init.uniform_(self.camera_embeddings.weight, a=-0.05, b=0.05)
+            self.embeddings["camera"] = nn.Embedding(self.config.n_cameras, self.config.camera_code_dim)
+            init.uniform_(self.embeddings["camera"].weight, a=-0.05, b=0.05)
             head_extra_dim += self.config.camera_code_dim
 
         # fields
@@ -174,56 +224,12 @@ class HyperNeRFModel(Model):
             base_extra_dim = self.config.warp_code_dim
 
         if self.config.use_se3_warping:
-            assert self.warp_embeddings is not None, "SE3WarpingField requires warp_code_dim > 0."
-            self.warp_field = SE3WarpingField(
-                n_freq_pos=self.config.n_freq_pos_warping,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=128,
-                warp_direction=self.config.warp_direction,
-            )
-            if self.config.window_alpha_end >= 1:
-                assert self.config.window_alpha_end > self.config.window_alpha_begin
-                self.sched_alpha = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_pos_warping,
-                    begin_step=self.config.window_alpha_begin,
-                    end_step=self.config.window_alpha_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_alpha, "alpha"],
-                    )
-                )
+            assert self.embeddings["warp"] is not None, "SE3WarpingField requires warp_code_dim > 0."
+            self.populate_warping_field()
 
         if self.config.use_hyper_slicing:
-            assert self.warp_embeddings is not None, "HyperSlicingField requires warp_code_dim > 0."
-            self.slice_field = HyperSlicingField(
-                n_freq_pos=self.config.n_freq_pos_slicing,
-                out_dim=self.config.hyper_slice_dim,
-                warp_code_dim=self.config.warp_code_dim,
-                mlp_num_layers=6,
-                mlp_layer_width=64,
-            )
-            if self.config.window_beta_end >= 1:
-                assert self.config.window_beta_end > self.config.window_beta_begin
-                self.sched_beta = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_slice,
-                    begin_step=self.config.window_beta_begin,
-                    end_step=self.config.window_beta_end,
-                )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_beta, "beta"],
-                    )
-                )
+            assert self.embeddings["warp"] is not None, "HyperSlicingField requires warp_code_dim > 0."
+            self.populate_slicing_field()
 
         self.populate_template_NeRF(base_extra_dim, head_extra_dim)
 
@@ -277,16 +283,7 @@ class HyperNeRFModel(Model):
         if self.slice_field is not None:
             param_groups["fields"] += list(self.slice_field.parameters())
 
-        param_groups["embeddings"] = []
-
-        if self.warp_embeddings is not None:
-            param_groups["embeddings"] += list(self.warp_embeddings.parameters())
-
-        if self.appearance_embeddings is not None:
-            param_groups["embeddings"] += list(self.appearance_embeddings.parameters())
-
-        if self.camera_embeddings is not None:
-            param_groups["embeddings"] += list(self.camera_embeddings.parameters())
+        param_groups["embeddings"] = list(self.embeddings.parameters())
 
         return param_groups
 
@@ -305,9 +302,7 @@ class HyperNeRFModel(Model):
         # coarse field:
         field_outputs_coarse = self.field_coarse.forward(
             ray_samples_uniform,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
+            embeddings=self.embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,
@@ -327,9 +322,7 @@ class HyperNeRFModel(Model):
         # fine field:
         field_outputs_fine = self.field_fine.forward(
             ray_samples_pdf,
-            warp_embeddings=self.warp_embeddings,
-            appearance_embeddings=self.appearance_embeddings,
-            camera_embeddings=self.camera_embeddings,
+            embeddings=self.embeddings,
             warp_field=self.warp_field,
             slice_field=self.slice_field,
             window_alpha=window_alpha,
@@ -682,7 +675,7 @@ class MipHashHyperNeRFModel(HyperNeRFModel):
 class MipHashEnsemHyperNeRFModelConfig(HyperNeRFModelConfig):
     """HyperNeRF Model Config"""
 
-    _target: Type = field(default_factory=lambda: MipHashHyperNeRFModel)
+    _target: Type = field(default_factory=lambda: MipHashEnsemHyperNeRFModel)
 
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
     lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
@@ -714,7 +707,37 @@ class MipHashEnsemHyperNeRFModel(HyperNeRFModel):
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
+    # def populate_warping_field(self):
+    #     self.warp_field = HashSE3WarpingField(
+    #         n_freq_pos=self.config.n_freq_pos_warping,
+    #         warp_code_dim=self.config.warp_code_dim,
+    #         mlp_num_layers=6,
+    #         mlp_layer_width=128,
+    #         warp_direction=self.config.warp_direction,
+    #     )
+    #     # if self.config.window_alpha_end >= 1:
+    #     #     assert self.config.window_alpha_end > self.config.window_alpha_begin
+    #     #     self.sched_alpha = GenericScheduler(
+    #     #         init_value=0,
+    #     #         final_value=self.config.n_freq_pos_warping,
+    #     #         begin_step=self.config.window_alpha_begin,
+    #     #         end_step=self.config.window_alpha_end,
+    #     #     )
+    #     #     self.callbacks.append(
+    #     #         TrainingCallback(
+    #     #             where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+    #     #             update_every_num_iters=1,
+    #     #             func=self.update_window_param,
+    #     #             args=[self.sched_alpha, "alpha"],
+    #     #         )
+    #     #     )
+
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
+        # ensemble embeddings
+        if self.config.ensem_code_dim > 0:
+            self.embeddings["ensemble"] = nn.Embedding(self.config.n_timesteps, self.config.ensem_code_dim)
+            init.uniform_(self.embeddings["ensemble"].weight, a=-0.05, b=0.05)
+
         self.field_coarse = HashEnsemHyperNeRFField(
             aabb=self.scene_box.aabb,
             use_hyper_slicing=self.config.use_hyper_slicing,
