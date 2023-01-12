@@ -171,9 +171,9 @@ class TCNNInstantNGPField(Field):
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
                                                     ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None,
-                multi_deform_config=MultiDeformConfig(n_hidden_dims=64,
-                                                      n_layers=4,
-                                                      n_freq_pos_enc=4,
+                multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
+                                                      n_layers=blend_field_n_layers,
+                                                      n_freq_pos_enc=blend_field_n_freq_enc,
                 ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None
             )
 
@@ -307,6 +307,7 @@ class TCNNInstantNGPField(Field):
     def get_density(self,
                     ray_samples: RaySamples,
                     window_canonical: Optional[float] = None,
+                    window_blend: Optional[float] = None,
                     time_codes: Optional[torch.Tensor] = None):
 
         densities = []
@@ -361,7 +362,8 @@ class TCNNInstantNGPField(Field):
                     time_codes_chunk = time_codes[i_chunk * max_chunk_size: (i_chunk + 1) * max_chunk_size]
                     embeddings = self.hash_encoding_ensemble(positions_flat,
                                                              conditioning_code=time_codes_chunk,
-                                                             windows_param=window_canonical
+                                                             windows_param=window_canonical,
+                                                             windows_param_blend_field=window_blend
                                                              )
                     base_inputs = [embeddings]
                 else:
@@ -527,6 +529,7 @@ class TCNNInstantNGPField(Field):
                 ray_samples: RaySamples,
                 compute_normals: bool = False,
                 window_canonical: Optional[float] = None,
+                window_blend: Optional[float] = None,
                 time_codes: Optional[TensorType] = None):
         """Evaluates the field at points along the ray.
 
@@ -535,10 +538,14 @@ class TCNNInstantNGPField(Field):
         """
         if compute_normals:
             with torch.enable_grad():
-                density, density_embedding = self.get_density(ray_samples, window_canonical=window_canonical,
+                density, density_embedding = self.get_density(ray_samples,
+                                                              window_canonical=window_canonical,
+                                                              window_blend=window_blend,
                                                               time_codes=time_codes)
         else:
-            density, density_embedding = self.get_density(ray_samples, window_canonical=window_canonical,
+            density, density_embedding = self.get_density(ray_samples,
+                                                          window_canonical=window_canonical,
+                                                          window_blend=window_blend,
                                                           time_codes=time_codes)
 
         field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
