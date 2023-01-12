@@ -129,9 +129,7 @@ class SE3WarpingField(nn.Module):
         nn.init.zeros_(self.mlp_r.layers[-1].bias)
         nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
-    def forward(self, positions, directions=None, warp_code=None, windows_param=None, covs=None):
-        if warp_code is None:
-            return None
+    def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
 
         if self.use_hash_encoding_ensemble:
             encoded_xyz = self.position_encoding(positions, conditioning_code=warp_code, windows_param=windows_param)
@@ -154,7 +152,9 @@ class SE3WarpingField(nn.Module):
         screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
         screw_axis = screw_axis.to(positions.dtype)
         transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
-        transforms = transforms.permute(0, 2, 1)
+        return transforms.permute(0, 2, 1)
+
+    def apply_transform(self, positions, transforms, directions=None, covs=None):
         rots = transforms[:, :3, :3]
 
         p = positions.reshape(-1, 3)
@@ -201,6 +201,119 @@ class SE3WarpingField(nn.Module):
         else:
             return warped_p, warped_d
 
+    def forward(self, positions, directions=None, warp_code=None, windows_param=None, covs=None):
+        if warp_code is None:
+            return None
+
+        transforms = self.get_transform(positions, warp_code, windows_param, covs)
+        return self.apply_transform(positions, transforms, directions, covs)
+
+
+class HashSE3WarpingField(SE3WarpingField):
+    """Optimizable temporal deformation using an MLP.
+    Args:
+        mlp_num_layers: Number of layers in distortion MLP
+        mlp_layer_width: Size of hidden layer for the MLP
+        skip_connections: Number of layers for skip connections in the MLP
+    """
+
+    def __init__(
+        self,
+        n_freq_pos=7,
+        warp_code_dim: int = 8,
+        mlp_num_layers: int = 6,
+        mlp_layer_width: int = 128,
+        skip_connections: Tuple[int] = (4,),
+        warp_direction: bool = True,
+        use_hash_encoding_ensemble: bool = False,
+        hash_encoding_ensemble_n_levels: int = 16,
+        hash_encoding_ensemble_features_per_level: int = 2,
+        hash_encoding_ensemble_n_tables: Optional[int] = None,
+        hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = "blend",
+        hash_encoding_ensemble_n_heads: Optional[int] = None,
+        only_render_hash_table: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        self.warp_direction = warp_direction
+        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
+
+        if use_hash_encoding_ensemble:
+            if hash_encoding_ensemble_mixing_type == "blend":
+                # When blending, cannot decouple number of hash tables and warp_code_dim
+                hash_encoding_ensemble_n_tables = warp_code_dim
+
+            self.position_encoding = HashEncodingEnsemble(
+                hash_encoding_ensemble_n_tables,
+                TCNNHashEncodingConfig(
+                    n_levels=hash_encoding_ensemble_n_levels,
+                    n_features_per_level=hash_encoding_ensemble_features_per_level,
+                ),
+                mixing_type=hash_encoding_ensemble_mixing_type,
+                dim_conditioning_code=warp_code_dim,
+                n_heads=hash_encoding_ensemble_n_heads,
+                only_render_hash_table=only_render_hash_table,
+            )
+        else:
+            self.position_encoding = WindowedNeRFEncoding(
+                in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+            )
+
+        in_dim = self.position_encoding.get_out_dim()
+        if not use_hash_encoding_ensemble:
+            # Hash encoding ensemble is already conditioned on warp code
+            in_dim += warp_code_dim
+
+        self.mlp_stem = MLP(
+            in_dim=in_dim,
+            out_dim=mlp_layer_width,
+            num_layers=mlp_num_layers,
+            layer_width=mlp_layer_width,
+            skip_connections=skip_connections,
+            out_activation=nn.ReLU(),
+        )
+        self.mlp_r = MLP(
+            in_dim=mlp_layer_width,
+            out_dim=3,
+            num_layers=1,
+            layer_width=mlp_layer_width,
+        )
+        self.mlp_v = MLP(
+            in_dim=mlp_layer_width,
+            out_dim=3,
+            num_layers=1,
+            layer_width=mlp_layer_width,
+        )
+
+        # diminish the last layer of SE3 Field to approximate an identity transformation
+        nn.init.uniform_(self.mlp_r.layers[-1].weight, a=-1e-5, b=1e-5)
+        nn.init.uniform_(self.mlp_v.layers[-1].weight, a=-1e-5, b=1e-5)
+        nn.init.zeros_(self.mlp_r.layers[-1].bias)
+        nn.init.zeros_(self.mlp_v.layers[-1].bias)
+
+    def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
+
+        if self.use_hash_encoding_ensemble:
+            encoded_xyz = self.position_encoding(positions, conditioning_code=warp_code, windows_param=windows_param)
+            encoded_xyz = encoded_xyz.to(positions)  # Potentially cast encoded values from Half to Float
+            feat = self.mlp_stem(encoded_xyz)  # (R, S, D)
+        else:
+
+            encoded_xyz = self.position_encoding(
+                positions,
+                windows_param=windows_param,
+                covs=covs,
+                # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
+            )  # (R, S, 3)
+
+            feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
+
+        r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
+        v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
+
+        screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
+        screw_axis = screw_axis.to(positions.dtype)
+        transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
+        return transforms.permute(0, 2, 1)
 
 class DeformationField(nn.Module):
     """Optimizable temporal deformation using an MLP.
