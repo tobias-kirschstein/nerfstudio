@@ -788,7 +788,12 @@ class MipHashHyperNeRFModel(HyperNeRFModel):
         image = batch["image"].to(device)
 
         rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
-        rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
+        rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+        # rgb_loss_fine = self.get_masked_rgb_loss(batch, outputs["rgb_fine"])
+
+        if self.config.lambda_alpha_loss:
+            loss_dict["alpha_loss"] = self.get_alpha_loss(batch, outputs["accumulation_fine"])
+            # TODO: why only for the fine level?
         mask_loss = self.get_mask_loss(batch, outputs["accumulation_fine"])
         beta_loss = self.get_beta_loss(outputs["accumulation_fine"])
 

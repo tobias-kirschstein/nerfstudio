@@ -116,8 +116,9 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend'
     hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
 
-    blend_field_hidden_dim: int = 64,
-    blend_field_n_freq_enc: int = 0,
+    blend_field_hidden_dim: int = 64
+    blend_field_n_freq_enc: int = 0
+    blend_field_skip_connections: Optional[Tuple[int]] = None
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
@@ -228,6 +229,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
             only_render_hash_table=self.config.only_render_hash_table,
+            blend_field_skip_connections=self.config.blend_field_skip_connections,
 
             blend_field_hidden_dim=self.config.blend_field_hidden_dim,
             blend_field_n_freq_enc=self.config.blend_field_n_freq_enc,

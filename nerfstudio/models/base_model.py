@@ -66,12 +66,15 @@ class ModelConfig(InstantiateConfig):
     num_layers_background: int = 3
 
     lambda_mask_loss: float = 0
+    lambda_alpha_loss: Optional[float] = None
     mask_rgb_loss: bool = False  # Whether to only compute the RGB loss on foreground pixels if a mask is provided
     enforce_non_masked_density: bool = False
     """Whether the mask loss should enforce density in non-masked regions to be high"""
 
     lambda_beta_loss: float = 0
     """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
+
+    n_parameters: int = implicit()  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
 
 
 class Model(nn.Module):
@@ -87,12 +90,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-            self,
-            config: ModelConfig,
-            scene_box: SceneBox,
-            num_train_data: int,
-            camera_frustums: Optional[List[Frustum]] = None,
-            **kwargs,
+        self,
+        config: ModelConfig,
+        scene_box: SceneBox,
+        num_train_data: int,
+        camera_frustums: Optional[List[Frustum]] = None,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -113,7 +116,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -258,7 +261,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -283,11 +286,11 @@ class Model(nn.Module):
         self.load_state_dict(state)  # type: ignore
 
     def apply_background_network(
-            self,
-            batch: Dict[str, torch.Tensor],
-            rgb: torch.Tensor,
-            accumulation: torch.Tensor,
-            background_adjustments: Optional[torch.Tensor] = None,
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        background_adjustments: Optional[torch.Tensor] = None,
     ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
@@ -334,7 +337,7 @@ class Model(nn.Module):
         return rgb
 
     def apply_background_adjustment(
-            self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
     ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
@@ -373,6 +376,21 @@ class Model(nn.Module):
         else:
             return None
 
+    def get_alpha_per_ray(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        assert "alpha_map" in batch
+        pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
+        alpha_maps = batch["alpha_map"].squeeze(3)  # [B, H, W]
+        a = (
+            alpha_maps[
+                pixel_indices_per_ray[:, 0],
+                pixel_indices_per_ray[:, 1],
+                pixel_indices_per_ray[:, 2],
+            ].float()
+            / 255
+        )
+
+        return a
+
     def get_masked_rgb_loss(self, batch: Dict[str, torch.Tensor], rgb_pred: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -400,13 +418,13 @@ class Model(nn.Module):
 
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
         if (
-                self.config.use_background_network
-                and "background_adjustments" in outputs
-                and self.config.lambda_background_adjustment_regularization > 0
+            self.config.use_background_network
+            and "background_adjustments" in outputs
+            and self.config.lambda_background_adjustment_regularization > 0
         ):
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = (
-                    self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
             )
 
             if background_adjustment_displacement.isnan().any():
@@ -446,6 +464,12 @@ class Model(nn.Module):
 
         return mask_loss
 
+    def get_alpha_loss(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
+        accumulation_per_ray = accumulation.squeeze(1)  # [R]
+        alpha_per_ray = self.get_alpha_per_ray(batch)
+        alpha_loss = ((accumulation_per_ray - alpha_per_ray) ** 2).mean() * self.config.lambda_alpha_loss
+        return alpha_loss
+
     def get_floaters_metric(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
         mask = self.get_mask_per_ray(batch)
         if mask is not None:
@@ -472,13 +496,15 @@ class Model(nn.Module):
         else:
             window_deform = None
 
-        landmarks_a = batch["landmarks"] # B x N_lm x 3
+        landmarks_a = batch["landmarks"]  # B x N_lm x 3
         rnd_perm = torch.randperm(landmarks_a.shape[0], device=landmarks_a.device)
         landmarks_b = batch["landmarks"][rnd_perm]
-        time_embeddings_a = self.time_embedding(batch["timesteps"]).unsqueeze(1).repeat(1, landmarks_a.shape[1], 1) # B x N_LM  x embed_dim
-        time_embeddings_b = self.time_embedding(batch["timesteps"][rnd_perm]).unsqueeze(1).repeat(1,
-                                                                                                  landmarks_b.shape[1],
-                                                                                                  1)
+        time_embeddings_a = (
+            self.time_embedding(batch["timesteps"]).unsqueeze(1).repeat(1, landmarks_a.shape[1], 1)
+        )  # B x N_LM  x embed_dim
+        time_embeddings_b = (
+            self.time_embedding(batch["timesteps"][rnd_perm]).unsqueeze(1).repeat(1, landmarks_b.shape[1], 1)
+        )
 
         valid_a = ~(landmarks_a.isnan().any(dim=-1))
         valid_b = ~(landmarks_b.isnan().any(dim=-1))
@@ -491,32 +517,28 @@ class Model(nn.Module):
         time_embeddings_a = time_embeddings_a[valid_a, :].view(landmarks_a.shape[0], -1)
         time_embeddings_b = time_embeddings_b[valid_b, :].view(landmarks_b.shape[0], -1)
 
-
-        #landmarks_a = contract(x=landmarks_a,
+        # landmarks_a = contract(x=landmarks_a,
         #                          roi=self.temporal_distortion.aabb,
         #                          type=self.temporal_distortion.contraction_type)
 
-        #landmarks_b = contract(x=landmarks_b,
+        # landmarks_b = contract(x=landmarks_b,
         #                          roi=self.temporal_distortion.aabb,
         #                          type=self.temporal_distortion.contraction_type)
 
-        landmarks_a = (landmarks_a - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
-        landmarks_b = (landmarks_b - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+        landmarks_a = (landmarks_a - self.temporal_distortion.aabb[0]) / (
+            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+        )
+        landmarks_b = (landmarks_b - self.temporal_distortion.aabb[0]) / (
+            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+        )
 
+        warped_landmarks_a, _ = self.temporal_distortion.se3_field(
+            landmarks_a, directions=None, warp_code=time_embeddings_a, windows_param=window_deform
+        )
 
-
-
-        warped_landmarks_a, _ = self.temporal_distortion.se3_field(landmarks_a,
-                                                                   directions=None,
-                                                                   warp_code=time_embeddings_a,
-                                                                   windows_param=window_deform
-                                                                   )
-
-        warped_landmarks_b, _ = self.temporal_distortion.se3_field(landmarks_b,
-                                                                   directions=None,
-                                                                   warp_code=time_embeddings_b,
-                                                                   windows_param=window_deform
-                                                                   )
+        warped_landmarks_b, _ = self.temporal_distortion.se3_field(
+            landmarks_b, directions=None, warp_code=time_embeddings_b, windows_param=window_deform
+        )
 
         valid_ab = ~(landmarks_a_clone[valid_b, :].isnan().any(dim=-1))
         valid_ba = ~(landmarks_b_clone[valid_a, :].isnan().any(dim=-1))
@@ -528,7 +550,6 @@ class Model(nn.Module):
         assert not loss.isnan().any()
         return loss
 
-
     def get_landmark_loss_direct(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
         if self.sched_window_deform is not None:
             # TODO: Maybe go back to using get_value() which outputs final_value for evaluation
@@ -537,58 +558,63 @@ class Model(nn.Module):
         else:
             window_deform = None
 
-
         canonical_timestep_mask = batch["timesteps"] == 1
 
+        landmarks_src = batch["landmarks"][~canonical_timestep_mask, :, :]  # T_non_can x N_lm x 3
+        landmarks_tgt = batch["landmarks"][canonical_timestep_mask, :, :]  # T_can x N_lm x 3
+        landmarks_tgt = landmarks_tgt[0:1, ...].repeat(
+            landmarks_src.shape[0], 1, 1
+        )  # there is only one canoncial timestep
 
-        landmarks_src = batch["landmarks"][~canonical_timestep_mask, :, :] # T_non_can x N_lm x 3
-        landmarks_tgt = batch["landmarks"][canonical_timestep_mask, :, :] # T_can x N_lm x 3
-        landmarks_tgt = landmarks_tgt[0:1, ...].repeat(landmarks_src.shape[0], 1, 1) #there is only one canoncial timestep
+        landmarks = torch.stack([landmarks_tgt, landmarks_src], dim=0)  # 2 x T_non_can x N_lm x 3
 
-        landmarks = torch.stack([landmarks_tgt, landmarks_src], dim=0) # 2 x T_non_can x N_lm x 3
+        time_embeddings = (
+            self.time_embedding(batch["timesteps"][~canonical_timestep_mask])
+            .unsqueeze(1)
+            .repeat(1, landmarks_src.shape[1], 1)
+        )  # T_non_can x N_lm x embed_dim
 
+        valid = ~torch.isnan(landmarks).any(-1).any(0)  # T_non_can x N_lm
 
-        time_embeddings = self.time_embedding(batch["timesteps"][~canonical_timestep_mask]).unsqueeze(1).repeat(1, landmarks_src.shape[1], 1) # T_non_can x N_lm x embed_dim
+        landmarks_src = landmarks[1][valid, :]  # N_valid_lms x 3
+        landmarks_tgt = landmarks[0][valid, :]  # N_valid_lms x 3
 
+        time_embeddings = time_embeddings[valid, :]  # N_valid_lms x 3
 
-        valid = ~torch.isnan(landmarks).any(-1).any(0) # T_non_can x N_lm
-
-        landmarks_src = landmarks[1][valid, :] # N_valid_lms x 3
-        landmarks_tgt = landmarks[0][valid, :] # N_valid_lms x 3
-
-        time_embeddings = time_embeddings[valid, :] #N_valid_lms x 3
-
-
-
-        #landmarks_src = contract(x=landmarks_src,
+        # landmarks_src = contract(x=landmarks_src,
         #                          roi=self.temporal_distortion.aabb,
         #                          type=self.temporal_distortion.contraction_type)
-        #landmarks_tgt = contract(x=landmarks_tgt,
+        # landmarks_tgt = contract(x=landmarks_tgt,
         #                         roi=self.temporal_distortion.aabb,
         #                         type=self.temporal_distortion.contraction_type)
-        landmarks_src = (landmarks_src - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
-        landmarks_tgt = (landmarks_tgt - self.temporal_distortion.aabb[0]) / (self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0])
+        landmarks_src = (landmarks_src - self.temporal_distortion.aabb[0]) / (
+            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+        )
+        landmarks_tgt = (landmarks_tgt - self.temporal_distortion.aabb[0]) / (
+            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+        )
 
-        warped_landmarks_src, _ = self.temporal_distortion.se3_field(landmarks_src,
-                                                                   directions=None,
-                                                                   warp_code=time_embeddings,
-                                                                   windows_param=window_deform
-                                                                   )
+        warped_landmarks_src, _ = self.temporal_distortion.se3_field(
+            landmarks_src, directions=None, warp_code=time_embeddings, windows_param=window_deform
+        )
 
         loss = ((warped_landmarks_src - landmarks_tgt)).abs()
         assert not loss.isnan().any()
         return loss
 
-
     def get_temporal_tv_loss(self):
-        timesteps1 = self.time_embedding(torch.arange(self.time_embedding.num_embeddings-1, device=self.time_embedding.weight.device))
-        timesteps2 = self.time_embedding(torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.weight.device))
+        timesteps1 = self.time_embedding(
+            torch.arange(self.time_embedding.num_embeddings - 1, device=self.time_embedding.weight.device)
+        )
+        timesteps2 = self.time_embedding(
+            torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.weight.device)
+        )
 
         temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
         return temporal_difference
 
     def apply_mask(
-            self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
+        self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
 
         if "mask" in batch:
@@ -610,11 +636,11 @@ class Model(nn.Module):
         return None, None, None
 
     def apply_mask_and_combine_images(
-            self,
-            batch: Dict[str, torch.Tensor],
-            rgb: torch.Tensor,
-            accumulation: torch.Tensor,
-            rgb_without_bg: Optional[torch.Tensor],
+        self,
+        batch: Dict[str, torch.Tensor],
+        rgb: torch.Tensor,
+        accumulation: torch.Tensor,
+        rgb_without_bg: Optional[torch.Tensor],
     ):
 
         image = batch["image"].to(self.device)
