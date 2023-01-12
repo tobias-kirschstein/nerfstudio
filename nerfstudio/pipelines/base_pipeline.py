@@ -238,10 +238,24 @@ class VanillaPipeline(Pipeline):
         )
         self.model.to(device)
 
+        config.model.n_parameters = sum([p.numel() for p in self.model.parameters() if p.requires_grad])
+        self.print_trainable_parameters()
+
         self.world_size = world_size
         if world_size > 1:
             self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
             dist.barrier(device_ids=[local_rank])
+
+    def print_trainable_parameters(self):
+        print()
+        print("=======================================================================================================")
+        print("Overview of trainable parameters:")
+        print("=======================================================================================================")
+        for name, p in self.model.named_parameters():
+            if p.requires_grad:
+                print(f" - {name}: {p.numel()}")
+        print("=======================================================================================================")
+        print()
 
     @property
     def device(self):
