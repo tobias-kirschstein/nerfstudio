@@ -194,10 +194,13 @@ class HashEncodingEnsemble(nn.Module):
             #)
             #self.out_layer = nn.Linear(hidden_dim, self.n_hash_encodings)
 #
+
 #
+
+            self.extra_weight_factor = 4
             self.n_output_dims = dim_hash_encoding
             self.blend_field_config = blend_field_config
-            pos_encoder, blend_field = blend_field_config.setup(dim_conditioning_code, n_hash_encodings)
+            pos_encoder, blend_field = blend_field_config.setup(dim_conditioning_code, n_hash_encodings*self.extra_weight_factor)
             self.pos_encoder = pos_encoder
             self.blend_field = blend_field
 
@@ -353,9 +356,13 @@ class HashEncodingEnsemble(nn.Module):
                 #weights = F.normalize(self.out_layer(hidden), dim=-1) # B x H
 #
                 inp = torch.cat([self.pos_encoder(in_tensor), conditioning_code], dim=-1) # B x (pos_enc_dim + C)
-
-                weights = self.blend_field(inp) # B x H
-                blended_embeddings = (embeddings * weights.unsqueeze(1)).sum(dim=-1) # B x D
+                B = in_tensor.shape[0]
+                D = embeddings.shape[1]
+                weights = self.blend_field(inp).reshape(B, self.n_hash_encodings, self.extra_weight_factor) # B x H x self.extra_weight_factor
+                embeddings = embeddings.permute(0, 2, 1) # B H D
+                embeddings = embeddings.reshape(B, self.n_hash_encodings, D//self.extra_weight_factor, self.extra_weight_factor)  # B x H x D//factor x factor
+                blended_embeddings = (embeddings * weights.unsqueeze(2)).sum(dim=1) # B x D//self.extra_weight_factor x self.extra_weight_factor
+                blended_embeddings = blended_embeddings.reshape(B, -1) # B x self.n_output_dims
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
 
