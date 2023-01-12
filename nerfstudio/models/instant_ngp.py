@@ -120,6 +120,7 @@ class InstantNGPModelConfig(ModelConfig):
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
     blend_field_skip_connections: Optional[Tuple[int]] = None
+    window_blend_end: int = 0
 
     use_deformation_field: bool = False
     n_layers_deformation_field: int = 6
@@ -364,6 +365,16 @@ class NGPModel(Model):
         else:
             self.sched_window_canonical = None
 
+        if self.config.use_hash_encoding_ensemble and self.config.window_blend_end > 0:
+            self.sched_window_blend = GenericScheduler(
+                init_value=0,
+                final_value=self.config.blend_field_n_freq_enc,
+                begin_step=0,
+                end_step=self.config.window_blend_end,
+            )
+        else:
+            self.sched_window_blend = None
+
         # background
         if self.config.use_backgrounds:
             background_color = None
@@ -445,7 +456,13 @@ class NGPModel(Model):
         else:
             time_codes = None
 
-        density, _ = self.field.get_density(ray_samples, time_codes=time_codes)
+        window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+        window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
+
+        density, _ = self.field.get_density(ray_samples,
+                                            window_canonical=window_canonical,
+                                            window_blend=window_blend,
+                                            time_codes=time_codes)
         return density
 
     def get_training_callbacks(
@@ -505,6 +522,16 @@ class NGPModel(Model):
                     update_every_num_iters=1,
                     func=update_window_param,
                     args=[self.sched_window_canonical, "sched_window_canonical"],
+                )
+            )
+
+        if self.sched_window_blend is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_blend, "sched_window_blend"],
                 )
             )
 
@@ -669,8 +696,12 @@ class NGPModel(Model):
             time_codes = None
 
         window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+        window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
 
-        field_outputs = self.field(ray_samples, window_canonical=window_canonical, time_codes=time_codes)
+        field_outputs = self.field(ray_samples,
+                                   window_canonical=window_canonical,
+                                   window_blend=window_blend,
+                                   time_codes=time_codes)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(
@@ -852,6 +883,7 @@ class NGPModel(Model):
                     )
 
                 window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+                window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
                 if random_ray_samples.timesteps is not None:
                     # Detach time codes as we only want to supervise the actual field
                     time_codes = self.time_embedding(random_ray_samples.timesteps.squeeze(1)).detach()
@@ -860,6 +892,7 @@ class NGPModel(Model):
 
                 density, _ = self.field.get_density(random_ray_samples,
                                                     window_canonical=window_canonical,
+                                                    window_blend=window_blend,
                                                     time_codes=time_codes)
 
                 random_weights = nerfacc.render_weight_from_density(
@@ -905,13 +938,16 @@ class NGPModel(Model):
                                         device=random_points.device)
             )
             window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
+            window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
             if ray_samples_random.timesteps is not None:
                 # Detach time codes as we only want to supervise the actual field
                 time_codes = self.time_embedding(ray_samples_random.timesteps.squeeze(1)).detach()
             else:
                 time_codes = None
 
-            density, _ = self.field.get_density(ray_samples_random, window_canonical=window_canonical,
+            density, _ = self.field.get_density(ray_samples_random,
+                                                window_canonical=window_canonical,
+                                                window_blend=window_blend,
                                                 time_codes=time_codes)
             assert density.min() >= 0
             global_sparsity_loss = density.mean()
