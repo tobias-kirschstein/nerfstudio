@@ -1013,12 +1013,9 @@ class NGPModel(Model):
                                          landmark_loss.mean()
 
         if self.config.lambda_temporal_tv_loss > 0:
-            temoral_tv_loss = self.get_temporal_tv_loss()
-            loss_dict[
-                "temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  # (self.sched_temporal_tv_loss.value if
-            # self.sched_temporal_tv_loss is not None
-            # else self.config.lambda_temporal_tv_loss) * \
-            # temoral_tv_loss.mean()
+            temoral_tv_loss, l1_sparsity_loss = self.get_temporal_tv_loss(return_sparsity_prior=True)
+            loss_dict["temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  + \
+                                            (self.config.lambda_temporal_tv_loss / 10) * l1_sparsity_loss.mean()
 
         # import numpy as np
         # out_dir = '/mnt/hdd/debug/famudy_debug2/'

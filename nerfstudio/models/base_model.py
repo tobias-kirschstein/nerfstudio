@@ -74,7 +74,9 @@ class ModelConfig(InstantiateConfig):
     lambda_beta_loss: float = 0
     """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
 
-    n_parameters: int = implicit()  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
+    n_parameters: int = (
+        implicit()
+    )  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
 
 
 class Model(nn.Module):
@@ -602,7 +604,7 @@ class Model(nn.Module):
         assert not loss.isnan().any()
         return loss
 
-    def get_temporal_tv_loss(self):
+    def get_temporal_tv_loss(self, return_sparsity_prior=True):
         timesteps1 = self.time_embedding(
             torch.arange(self.time_embedding.num_embeddings - 1, device=self.time_embedding.weight.device)
         )
@@ -611,7 +613,10 @@ class Model(nn.Module):
         )
 
         temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
-        return temporal_difference
+        if return_sparsity_prior:
+            return temporal_difference, timesteps1.abs().sum(dim=-1)
+        else:
+            return temporal_difference
 
     def apply_mask(
         self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
@@ -624,8 +629,8 @@ class Model(nn.Module):
             image_masked = batch["image"].clone().to(self.device)
             rgb_masked = rgb.clone()
 
-            image_masked[~mask] = 0
-            rgb_masked[~mask] = 0
+            image_masked[~mask] = 1
+            rgb_masked[~mask] = 1
 
             # Density that is in the masked-out area will be summarized in a "floaters" metric
             # "floaters" is high when there is a lot of density in the masked-out region
