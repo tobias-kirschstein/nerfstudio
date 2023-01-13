@@ -15,6 +15,7 @@
 """HyperNeRF field"""
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import pytorch3d
 import pytorch3d.transforms
 import tinycudann as tcnn
@@ -220,11 +221,11 @@ class HashSE3WarpingField(SE3WarpingField):
     def __init__(
         self,
         base_in_dim: int = 3,
-        n_hashgrid_levels: int = 14,
-        base_resolution: int = 4,
+        n_hashgrid_levels: int = 12,
+        base_resolution: int = 16,
         mlp_num_layers: int = 3,
         mlp_layer_width: int = 64,
-        n_freq_time: int = 6,
+        n_freq_time: int = 7,
         warp_direction: bool = True,
     ) -> None:
         super().__init__()
@@ -259,10 +260,11 @@ class HashSE3WarpingField(SE3WarpingField):
         feat = self.mlp_base(p)
         feat = feat.reshape(-1, 6, self.n_freq_time, 2)  # (R*S, 6, n_freq_time, 2)
 
-        freq = torch.linspace(0, self.n_freq_time - 1, self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
+        # freq = torch.linspace(0, self.n_freq_time - 1, self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
+        freq = torch.linspace(0, np.exp2(self.n_freq_time - 1), self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
 
         assert warp_code is not None
-        t = warp_code.reshape(-1, 1, 1) / 400  # (R*S, 1, 1)
+        t = warp_code.reshape(-1, 1, 1) * (2 * torch.pi / 512)  # (R*S, 1, 1), lowest period = 512 frames
 
         rv = (feat[..., 0] * torch.sin(freq * t + feat[..., 1])).sum(-1)
         r = rv[:, :3]
@@ -749,7 +751,7 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         ensem_code_dim: int = 8,
         ensem_mixing_type: str = "blend",
         ensem_n_tables: int = 16,
-        n_hashgrid_levels: int = 13,
+        n_hashgrid_levels: int = 14,
         base_in_dim: int = 3,
         base_extra_dim: int = 0,
         base_out_dim: int = 15,
