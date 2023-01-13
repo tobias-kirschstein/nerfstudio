@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import tinycudann as tcnn
 import torch
 from nerfstudio.field_components.encodings import posenc_window
+from nerfstudio.fields.hypernerf_field import SE3WarpingField
 from torch import nn
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.encodings import WindowedNeRFEncoding
@@ -35,7 +36,7 @@ class IdenEnc(nn.Module):
         super().__init__()
         self.out_dim = 3
 
-    def forward(self, x):
+    def forward(self, x, windows_param: Optional[float] = None):
         return x
 
     def get_out_dim(self):
@@ -75,14 +76,13 @@ class BlendFieldConfig:
     skip_connections: Optional[Tuple[int]] = None
     input_dim: int = 3
 
-
     def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> (WindowedNeRFEncoding, MLP):
         if self.n_freq_pos_enc > 0:
             nerf_encoder = WindowedNeRFEncoding(in_dim=self.input_dim,
-                                        num_frequencies=self.n_freq_pos_enc,
-                                        min_freq_exp=0,
-                                        max_freq_exp=self.n_freq_pos_enc - 1,
-                                        include_input=True)
+                                                num_frequencies=self.n_freq_pos_enc,
+                                                min_freq_exp=0,
+                                                max_freq_exp=self.n_freq_pos_enc - 1,
+                                                include_input=True)
         else:
             nerf_encoder = IdenEnc()
         if self.output_activation is None:
@@ -93,7 +93,7 @@ class BlendFieldConfig:
             out_activation = nn.Tanh()
         mlp_blend_field = MLP(
             in_dim=n_time_condition_dim + nerf_encoder.get_out_dim() if (
-                        self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
+                    self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
             num_layers=self.n_layers,
             layer_width=self.n_hidden_dims,
             out_dim=n_hash_tables,
@@ -116,10 +116,10 @@ class MultiDeformConfig:
     def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> (WindowedNeRFEncoding, MLP):
         if self.n_freq_pos_enc > 0:
             nerf_encoder = WindowedNeRFEncoding(in_dim=self.input_dim,
-                                        num_frequencies=self.n_freq_pos_enc,
-                                        min_freq_exp=0,
-                                        max_freq_exp=self.n_freq_pos_enc - 1,
-                                        include_input=True)
+                                                num_frequencies=self.n_freq_pos_enc,
+                                                min_freq_exp=0,
+                                                max_freq_exp=self.n_freq_pos_enc - 1,
+                                                include_input=True)
         else:
             nerf_encoder = IdenEnc()
         # if self.output_activation is None:
@@ -130,7 +130,7 @@ class MultiDeformConfig:
         #    out_activation = nn.Tanh()
         mlp_blend_field = MLP(
             in_dim=n_time_condition_dim + nerf_encoder.get_out_dim() if (
-                        self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
+                    self.n_freq_pos_enc > 0) else n_time_condition_dim + self.input_dim,
             num_layers=self.n_layers,
             layer_width=self.n_hidden_dims,
             out_dim=n_hash_tables * (self.input_dim + self.blend_weight_dim),
@@ -138,6 +138,24 @@ class MultiDeformConfig:
             out_activation=None  # out_activation
         )
         return nerf_encoder, mlp_blend_field
+
+
+@dataclass
+class MultiDeformSE3Config:
+    n_hidden_dims: int = 128
+    n_layers: int = 6
+    n_freq_pos_enc: int = 7
+
+    def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> SE3WarpingField:
+        se3_warp_field = SE3WarpingField(
+            n_freq_pos=self.n_freq_pos_enc,
+            mlp_num_layers=self.n_layers,
+            mlp_layer_width=self.n_hidden_dims,
+            warp_code_dim=n_time_condition_dim,
+            warp_direction=False,
+            n_output_deformations=n_hash_tables
+        )
+        return se3_warp_field
 
 
 class HashEncodingEnsemble(nn.Module):
@@ -150,13 +168,16 @@ class HashEncodingEnsemble(nn.Module):
                  n_heads: Optional[int] = None,
                  only_render_hash_table: Optional[int] = None,
                  blend_field_config: BlendFieldConfig = None,
-                 multi_deform_config: MultiDeformConfig = None):
+                 multi_deform_config: MultiDeformConfig = None,
+                 multi_deform_se3_config: MultiDeformSE3Config = None,
+                 disable_initial_hash_ensemble: bool = False):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
         self.n_hash_encodings = n_hash_encodings
         self.hash_encoding_config = hash_encoding_config
         self.only_render_hash_table = only_render_hash_table
+        self.disable_initial_hash_ensemble = disable_initial_hash_ensemble
 
         self.hash_encodings = []
         for i_hash_encoding in range(n_hash_encodings):
@@ -217,7 +238,7 @@ class HashEncodingEnsemble(nn.Module):
 
             else:
                 self.n_output_dims = dim_hash_encoding
-        elif self.mixing_type == 'mlp_blend_field':
+        elif self.mixing_type == 'mlp_blend_field' or self.mixing_type == 'multi_deform_blend':
             self.extra_weight_factor = 4
             self.n_output_dims = dim_hash_encoding
             self.blend_field_config = blend_field_config
@@ -226,14 +247,16 @@ class HashEncodingEnsemble(nn.Module):
             self.pos_encoder = pos_encoder
             self.blend_field = blend_field
 
-        elif self.mixing_type == 'multi_deform_blend':
+        if self.mixing_type == 'multi_deform_blend':
             assert multi_deform_config.input_dim == hash_encoding_config.n_dims_to_encode
             self.n_output_dims = dim_hash_encoding
 
-            self.mulit_deform_config = multi_deform_config
-            pos_encoder, multi_deform_mlp = self.mulit_deform_config.setup(dim_conditioning_code, n_hash_encodings)
-            self.pos_encoder = pos_encoder
-            self.multi_deform_mlp = multi_deform_mlp
+            self.multi_deform_se3_field = multi_deform_se3_config.setup(dim_conditioning_code, n_hash_encodings)
+
+            # self.multi_deform_config = multi_deform_config
+            # pos_encoder, multi_deform_mlp = self.mulit_deform_config.setup(dim_conditioning_code, n_hash_encodings)
+            # self.pos_encoder = pos_encoder
+            # self.multi_deform_mlp = multi_deform_mlp
 
         else:
             self.n_output_dims = dim_hash_encoding
@@ -247,32 +270,60 @@ class HashEncodingEnsemble(nn.Module):
                 in_tensor: torch.Tensor,
                 conditioning_code: torch.Tensor,
                 windows_param: Optional[float] = None,
-                windows_param_blend_field: Optional[float] = None) -> torch.Tensor:
+                windows_param_blend_field: Optional[float] = None,
+                windows_param_tables: Optional[float] = None,
+                windows_param_deform: Optional[float] = None) -> torch.Tensor:
 
         B = in_tensor.shape[0]
 
         # deform query positions for each hash table in multi_deform_mode
         # (multi-deform_mlp also gives blend weights)
         if self.mixing_type == 'multi_deform_blend':
-            encoded_xyz = self.pos_encoder(in_tensor, windows_param=windows_param_blend_field)
-            inp_multi_deform = torch.cat([encoded_xyz, conditioning_code], dim=-1)
-            offsets_and_weights = self.multi_deform_mlp(inp_multi_deform).view(B, self.n_hash_encodings,
-                                                                               -1)  # B x H x (3 + weight_dim)
-            offsets = offsets_and_weights[:, :, :self.mulit_deform_config.input_dim]
-            blend_weights = offsets_and_weights[:, :,
-                            self.mulit_deform_config.input_dim]  # for now only use one weight dim !!!!
-            in_tensor_deformed = in_tensor.unsqueeze(1) + offsets
-        else:
-            in_tensor_deformed = in_tensor.unsqueeze(1).repeat(1, self.n_hash_encodings, 1)
 
-        embeddings = []
-        for h, hash_encoding in enumerate(self.hash_encodings):
-            embedding = hash_encoding(in_tensor_deformed[:, h, :])
-            embeddings.append(embedding)
+            warped_positions, _ = self.multi_deform_se3_field(
+                in_tensor,
+                warp_code=conditioning_code,
+                windows_param=windows_param_deform)
+
+            in_tensor_deformed = warped_positions
+
+            embeddings = []
+            for h, hash_encoding in enumerate(self.hash_encodings):
+                embedding = hash_encoding(in_tensor_deformed[:, h, :])
+                embeddings.append(embedding)
+
+            # encoded_xyz = self.pos_encoder(in_tensor, windows_param=windows_param_blend_field)
+            # inp_multi_deform = torch.cat([encoded_xyz, conditioning_code], dim=-1)
+            # offsets_and_weights = self.multi_deform_mlp(inp_multi_deform).view(B, self.n_hash_encodings,
+            #                                                                    -1)  # B x H x (3 + weight_dim)
+            # offsets = offsets_and_weights[:, :, :self.mulit_deform_config.input_dim]
+            # blend_weights = offsets_and_weights[:, :,
+            #                 self.mulit_deform_config.input_dim]  # for now only use one weight dim !!!!
+            # in_tensor_deformed = in_tensor.unsqueeze(1) + offsets
+        else:
+            embeddings = []
+            for h, hash_encoding in enumerate(self.hash_encodings):
+                embedding = hash_encoding(in_tensor)
+                embeddings.append(embedding)
 
         embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
 
+        if windows_param_tables is not None:
+            # Gradually add more tables
+
+            if windows_param_tables == 1 and self.disable_initial_hash_ensemble:
+                # Force deformation network to learn correspondences as long as only one table is active
+                conditioning_code = torch.ones_like(conditioning_code)
+
+            window = posenc_window(windows_param_tables,
+                                   0,
+                                   self.n_hash_encodings - 1,
+                                   self.n_hash_encodings)  # [H]
+            window = window.unsqueeze(0).unsqueeze(1).to(embeddings)  # [1, 1, H]
+            embeddings = window * embeddings
+
         if windows_param is not None:
+            # Gradually add higher frequency detail
             window = posenc_window(windows_param,
                                    0,
                                    self.hash_encoding_config.n_levels - 1,
@@ -388,8 +439,8 @@ class HashEncodingEnsemble(nn.Module):
                 # the return attention weights and perform the weighted combination ourselves
                 blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
                 blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
-            elif self.mixing_type == 'mlp_blend_field':
-                ## embdeggins: B x D x H
+            elif self.mixing_type == 'mlp_blend_field' or self.mixing_type == 'multi_deform_blend':
+                ## embeddins: B x D x H
                 ## conditioning_code: B x C
                 encoded_xyz = self.pos_encoder(in_tensor, windows_param=windows_param_blend_field)
                 inp = torch.cat([encoded_xyz, conditioning_code], dim=-1)  # B x (pos_enc_dim + C)
@@ -403,11 +454,11 @@ class HashEncodingEnsemble(nn.Module):
                     dim=1)  # B x D//self.extra_weight_factor x self.extra_weight_factor
                 blended_embeddings = blended_embeddings.reshape(B, -1)  # B x self.n_output_dims
 
-            elif self.mixing_type == 'multi_deform_blend':
-                assert self.mulit_deform_config.blend_weight_dim == 1, "multi-level blending not implemented yet"
-                # curretnly blend_weights: B x H
-                # embeddings B x D x H
-                blended_embeddings = (blend_weights.unsqueeze(1) * embeddings).sum(dim=-1)
+            # elif self.mixing_type == 'multi_deform_blend':
+            #     assert self.mulit_deform_config.blend_weight_dim == 1, "multi-level blending not implemented yet"
+            #     # curretnly blend_weights: B x H
+            #     # embeddings B x D x H
+            #     blended_embeddings = (blend_weights.unsqueeze(1) * embeddings).sum(dim=-1)
 
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
@@ -425,6 +476,7 @@ class HashEncodingEnsemble(nn.Module):
         if self.mixing_type == 'mlp_blend_field':
             param_groups["blend_fields"] = list(self.blend_field.parameters())
         elif self.mixing_type == 'multi_deform_blend':
-            param_groups["blend_fields"] = list(self.multi_deform_mlp.parameters())
+            param_groups["blend_fields"] = list(self.blend_field.parameters())
+            param_groups["blend_fields"] = list(self.multi_deform_se3_field.parameters())
 
         return param_groups

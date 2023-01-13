@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """HyperNeRF field"""
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import pytorch3d
 import pytorch3d.transforms
@@ -29,11 +29,6 @@ from nerfstudio.field_components.field_heads import (
     FieldHead,
     FieldHeadNames,
     RGBFieldHead,
-)
-from nerfstudio.field_components.hash_encoding import (
-    HashEncodingEnsemble,
-    HashEnsembleMixingType,
-    TCNNHashEncodingConfig,
 )
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
@@ -68,15 +63,23 @@ class SE3WarpingField(nn.Module):
         hash_encoding_ensemble_n_levels: int = 16,
         hash_encoding_ensemble_features_per_level: int = 2,
         hash_encoding_ensemble_n_tables: Optional[int] = None,
-        hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = "blend",
+        hash_encoding_ensemble_mixing_type: 'HashEnsembleMixingType' = "blend",
         hash_encoding_ensemble_n_heads: Optional[int] = None,
         only_render_hash_table: Optional[int] = None,
+            n_output_deformations: int = 1,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
         self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
+        self.n_output_deformations = n_output_deformations
 
         if use_hash_encoding_ensemble:
+            # Avoid circular import
+            from nerfstudio.field_components.hash_encoding import (
+                HashEncodingEnsemble,
+                TCNNHashEncodingConfig,
+            )
+
             if hash_encoding_ensemble_mixing_type == "blend":
                 # When blending, cannot decouple number of hash tables and warp_code_dim
                 hash_encoding_ensemble_n_tables = warp_code_dim
@@ -112,13 +115,13 @@ class SE3WarpingField(nn.Module):
         )
         self.mlp_r = MLP(
             in_dim=mlp_layer_width,
-            out_dim=3,
+            out_dim=3 * n_output_deformations,
             num_layers=1,
             layer_width=mlp_layer_width,
         )
         self.mlp_v = MLP(
             in_dim=mlp_layer_width,
-            out_dim=3,
+            out_dim=3 * n_output_deformations,
             num_layers=1,
             layer_width=mlp_layer_width,
         )
@@ -146,27 +149,56 @@ class SE3WarpingField(nn.Module):
 
             feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
 
-        r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
-        v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
+        B = positions.shape[0]
+        O = self.n_output_deformations
 
-        screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
-        screw_axis = screw_axis.to(positions.dtype)
-        transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
-        return transforms.permute(0, 2, 1)
+        r = self.mlp_r(feat)
+        v = self.mlp_v(feat)
+
+        r = r.reshape(B, 3 * O)  # (R*S, 3)
+        v = v.reshape(B, 3 * O)  # (R*S, 3)
+
+        if self.n_output_deformations > 1:
+            screw_axis = torch.stack([v, r], dim=-1)  # [B, 3*O, 2]
+            screw_axis = screw_axis.reshape((B * O, 3, 2))  # [B*O, 3, 2]
+            screw_axis = screw_axis.transpose(1, 2)  # [B*O, 2, 3]
+            screw_axis = screw_axis.reshape((B * O, 6))  # [B*O, 6]
+
+            transforms = pytorch3d.transforms.se3_exp_map(screw_axis)  # [B * O, 4, 4]
+            transforms = transforms.permute(0, 2, 1)
+        else:
+            screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
+            screw_axis = screw_axis.to(positions.dtype)
+            transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
+            transforms = transforms.permute(0, 2, 1)
+
+        return transforms
 
     def apply_transform(self, positions, transforms, directions=None, covs=None):
         rots = transforms[:, :3, :3]
 
         p = positions.reshape(-1, 3)
 
+        B = positions.shape[0]
+        O = self.n_output_deformations
+
+        p = p.repeat_interleave(self.n_output_deformations, 0)  # Potentially repeat points so they can be transformed with their respective deformation
+
         warped_p = from_homogenous((transforms @ to_homogenous(p).unsqueeze(-1)).squeeze(-1))
+        warped_p = warped_p.reshape((B, O, 3))  # [B, O, 3]
+
         warped_p = warped_p.to(positions.dtype)
 
         idx_nan = warped_p.isnan()
-        warped_p[idx_nan] = p[idx_nan]  # if deformation is NaN, just use original point
+        warped_p[idx_nan] = p.reshape(B, O, 3)[idx_nan]  # if deformation is NaN, just use original point
+
 
         # Reshape to shape of input positions tensor
-        warped_p = warped_p.reshape(*positions.shape[: positions.ndim - 1], 3)
+        if self.n_output_deformations > 1:
+            warped_p = warped_p.reshape(*positions.shape[: positions.ndim - 1], O, 3)
+        else:
+            warped_p = warped_p.squeeze(-2)  # [..., 3] in case only one output deformation was requested
+            warped_p = warped_p.reshape(*positions.shape[: positions.ndim - 1], 3)
 
         if self.warp_direction:
             assert directions is not None
@@ -229,7 +261,7 @@ class HashSE3WarpingField(SE3WarpingField):
         hash_encoding_ensemble_n_levels: int = 16,
         hash_encoding_ensemble_features_per_level: int = 2,
         hash_encoding_ensemble_n_tables: Optional[int] = None,
-        hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = "blend",
+        hash_encoding_ensemble_mixing_type: 'HashEnsembleMixingType' = "blend",
         hash_encoding_ensemble_n_heads: Optional[int] = None,
         only_render_hash_table: Optional[int] = None,
     ) -> None:
@@ -238,6 +270,12 @@ class HashSE3WarpingField(SE3WarpingField):
         self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
         if use_hash_encoding_ensemble:
+            # Avoid circular import
+            from nerfstudio.field_components.hash_encoding import (
+                HashEncodingEnsemble,
+                TCNNHashEncodingConfig,
+            )
+
             if hash_encoding_ensemble_mixing_type == "blend":
                 # When blending, cannot decouple number of hash tables and warp_code_dim
                 hash_encoding_ensemble_n_tables = warp_code_dim
