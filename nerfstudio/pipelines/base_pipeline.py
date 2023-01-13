@@ -432,6 +432,7 @@ class VanillaPipeline(Pipeline):
             state.pop("datamanager.train_ray_generator.pose_optimizer.pose_adjustment", None)
             state.pop("datamanager.eval_ray_generator.image_coords", None)
             state.pop("datamanager.eval_ray_generator.pose_optimizer.pose_adjustment", None)
+
         self.load_state_dict(state)  # type: ignore
 
     def get_training_callbacks(

@@ -22,7 +22,7 @@ from nerfstudio.field_components.temporal_distortions import SE3Distortion, View
 from nerfstudio.fields.hypernerf_field import HyperSlicingField
 from torch import nn, TensorType
 from torch.nn import Parameter, init
-from torch.nn.modules.module import T
+from torch.nn.modules.module import T, _IncompatibleKeys
 from torch_efficient_distloss import flatten_eff_distloss
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -403,6 +403,8 @@ class NGPModel(Model):
         self.lpips = LearnedPerceptualImagePatchSimilarity()
 
         self.train_step = 0
+
+        self.register_load_state_dict_post_hook(self.load_state_dict_post_hook)
 
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
@@ -1050,10 +1052,10 @@ class NGPModel(Model):
             lpips_masked = self.lpips(image_masked, rgb_masked)
             mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
 
-            metrics_dict["psnr_masked"] = psnr_masked
-            metrics_dict["ssim_masked"] = ssim_masked
-            metrics_dict["lpips_masked"] = lpips_masked
-            metrics_dict["mse_masked"] = mse_masked
+            metrics_dict["psnr_masked"] = float(psnr_masked)
+            metrics_dict["ssim_masked"] = float(ssim_masked)
+            metrics_dict["lpips_masked"] = float(lpips_masked)
+            metrics_dict["mse_masked"] = float(mse_masked)
             metrics_dict["floaters"] = float(floaters)
 
             images_dict["img_masked"] = combined_rgb_masked
@@ -1081,3 +1083,27 @@ class NGPModel(Model):
             rgb = outputs["rgb"]
 
         return rgb
+
+    def load_state_dict_post_hook(self, module: 'NGPModel', incompatible_keys: _IncompatibleKeys) -> None:
+        if '_model.occupancy_grid_eval._binary' in incompatible_keys.missing_keys:
+            # Backward compatibility, because occupancy_grid_eval was introduced that defaults to occupancy_grid
+            # However, the keys for occupancy_grid_eval are missing in already stored checkpoints even though they
+            # are of course just the same as the keys for occupancy_grid
+            module.occupancy_grid_eval = module.occupancy_grid
+            for missing_key in list(incompatible_keys.missing_keys):
+                if missing_key.startswith('_model.occupancy_grid_eval'):
+                    incompatible_keys.missing_keys.remove(missing_key)
+
+        if '_model.sampler.occupancy_grid.occupancy_grid._binary' in incompatible_keys.missing_keys:
+            # Model was saved in train mode but is loaded in eval mode
+            # the sampler attribute holds the state of sampler_train, but sample_eval is requested
+            # Can just ignore keys in checkpoint as sampler_eval is already loaded
+            module.sampler = module.sampler_eval
+            for missing_key in list(incompatible_keys.missing_keys):
+                if missing_key.startswith('_model.sampler.occupancy_grid.occupancy_grid'):
+                    incompatible_keys.missing_keys.remove(missing_key)
+
+            for unexpected_key in list(incompatible_keys.unexpected_keys):
+                if unexpected_key.startswith('_model.sampler.occupancy_grid'):
+                    incompatible_keys.unexpected_keys.remove(unexpected_key)
+

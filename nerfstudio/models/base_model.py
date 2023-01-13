@@ -74,7 +74,9 @@ class ModelConfig(InstantiateConfig):
     lambda_beta_loss: float = 0
     """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
 
-    n_parameters: int = implicit()  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
+    n_parameters: int = (
+        implicit()
+    )  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
 
 
 class Model(nn.Module):
@@ -627,8 +629,8 @@ class Model(nn.Module):
             image_masked = batch["image"].clone().to(self.device)
             rgb_masked = rgb.clone()
 
-            image_masked[~mask] = 0
-            rgb_masked[~mask] = 0
+            image_masked[~mask] = 1
+            rgb_masked[~mask] = 1
 
             # Density that is in the masked-out area will be summarized in a "floaters" metric
             # "floaters" is high when there is a lot of density in the masked-out region

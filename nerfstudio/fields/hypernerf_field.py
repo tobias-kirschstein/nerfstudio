@@ -219,93 +219,27 @@ class HashSE3WarpingField(SE3WarpingField):
 
     def __init__(
         self,
-        n_freq_pos=7,
-        warp_code_dim: int = 8,
-        mlp_num_layers: int = 6,
-        mlp_layer_width: int = 128,
-        skip_connections: Tuple[int] = (4,),
+        n_hashgrid_levels: int = 13,
+        n_freq_pos: int = 7,
         warp_direction: bool = True,
-        use_hash_encoding_ensemble: bool = False,
-        hash_encoding_ensemble_n_levels: int = 16,
-        hash_encoding_ensemble_features_per_level: int = 2,
-        hash_encoding_ensemble_n_tables: Optional[int] = None,
-        hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = "blend",
-        hash_encoding_ensemble_n_heads: Optional[int] = None,
-        only_render_hash_table: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.warp_direction = warp_direction
-        self.use_hash_encoding_ensemble = use_hash_encoding_ensemble
 
-        if use_hash_encoding_ensemble:
-            if hash_encoding_ensemble_mixing_type == "blend":
-                # When blending, cannot decouple number of hash tables and warp_code_dim
-                hash_encoding_ensemble_n_tables = warp_code_dim
-
-            self.position_encoding = HashEncodingEnsemble(
-                hash_encoding_ensemble_n_tables,
-                TCNNHashEncodingConfig(
-                    n_levels=hash_encoding_ensemble_n_levels,
-                    n_features_per_level=hash_encoding_ensemble_features_per_level,
-                ),
-                mixing_type=hash_encoding_ensemble_mixing_type,
-                dim_conditioning_code=warp_code_dim,
-                n_heads=hash_encoding_ensemble_n_heads,
-                only_render_hash_table=only_render_hash_table,
-            )
-        else:
-            self.position_encoding = WindowedNeRFEncoding(
-                in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
-            )
-
-        in_dim = self.position_encoding.get_out_dim()
-        if not use_hash_encoding_ensemble:
-            # Hash encoding ensemble is already conditioned on warp code
-            in_dim += warp_code_dim
-
-        self.mlp_stem = MLP(
-            in_dim=in_dim,
-            out_dim=mlp_layer_width,
-            num_layers=mlp_num_layers,
-            layer_width=mlp_layer_width,
-            skip_connections=skip_connections,
-            out_activation=nn.ReLU(),
+        self.hashtable = tcnn.Encoding(
+            3,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": n_hashgrid_levels,
+                "n_features_per_level": 2,
+                "log2_hashmap_size": 19,
+                "base_resolution": 16,
+                "per_level_scale": 1.4472692012786865,
+                "interpolation": "Smoothstep",
+            },
         )
-        self.mlp_r = MLP(
-            in_dim=mlp_layer_width,
-            out_dim=3,
-            num_layers=1,
-            layer_width=mlp_layer_width,
-        )
-        self.mlp_v = MLP(
-            in_dim=mlp_layer_width,
-            out_dim=3,
-            num_layers=1,
-            layer_width=mlp_layer_width,
-        )
-
-        # diminish the last layer of SE3 Field to approximate an identity transformation
-        nn.init.uniform_(self.mlp_r.layers[-1].weight, a=-1e-5, b=1e-5)
-        nn.init.uniform_(self.mlp_v.layers[-1].weight, a=-1e-5, b=1e-5)
-        nn.init.zeros_(self.mlp_r.layers[-1].bias)
-        nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
     def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
-
-        if self.use_hash_encoding_ensemble:
-            encoded_xyz = self.position_encoding(positions, conditioning_code=warp_code, windows_param=windows_param)
-            encoded_xyz = encoded_xyz.to(positions)  # Potentially cast encoded values from Half to Float
-            feat = self.mlp_stem(encoded_xyz)  # (R, S, D)
-        else:
-
-            encoded_xyz = self.position_encoding(
-                positions,
-                windows_param=windows_param,
-                covs=covs,
-                # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
-            )  # (R, S, 3)
-
-            feat = self.mlp_stem(torch.cat([encoded_xyz, warp_code], dim=-1))  # (R, S, D)
 
         r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
         v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
@@ -314,6 +248,7 @@ class HashSE3WarpingField(SE3WarpingField):
         screw_axis = screw_axis.to(positions.dtype)
         transforms = pytorch3d.transforms.se3_exp_map(screw_axis)
         return transforms.permute(0, 2, 1)
+
 
 class DeformationField(nn.Module):
     """Optimizable temporal deformation using an MLP.
@@ -413,18 +348,18 @@ class HyperNeRFField(Field):
 
     def __init__(
         self,
-        n_freq_pos: int = 9,
-        n_freq_dir: int = 5,
         use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
+        n_freq_pos: int = 9,
+        n_freq_dir: int = 5,
         base_extra_dim: int = 0,
-        head_extra_dim: int = 0,
         base_mlp_num_layers: int = 8,
         base_mlp_layer_width: int = 256,
+        skip_connections: Tuple[int] = (4,),
+        head_extra_dim: int = 0,
         head_mlp_num_layers: int = 2,
         head_mlp_layer_width: int = 128,
-        skip_connections: Tuple[int] = (4,),
         field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
         use_integrated_encoding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
@@ -435,12 +370,6 @@ class HyperNeRFField(Field):
         self.spatial_distortion = spatial_distortion
 
         # template NeRF
-        self.position_encoding = WindowedNeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
-        )
-        self.direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
-        )
         if use_hyper_slicing and hyper_slice_dim > 0:
             self.slicing_encoding = WindowedNeRFEncoding(
                 in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
@@ -449,6 +378,9 @@ class HyperNeRFField(Field):
         else:
             self.slicing_encoding = None
 
+        self.position_encoding = WindowedNeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_pos, min_freq_exp=0.0, max_freq_exp=n_freq_pos - 1, include_input=True
+        )
         self.mlp_base = MLP(
             in_dim=self.position_encoding.get_out_dim() + base_extra_dim,
             num_layers=base_mlp_num_layers,
@@ -457,6 +389,9 @@ class HyperNeRFField(Field):
             out_activation=nn.ReLU(),
         )
 
+        self.direction_encoding = NeRFEncoding(
+            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
+        )
         self.mlp_head = MLP(
             in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim() + head_extra_dim,
             num_layers=head_mlp_num_layers,
@@ -472,7 +407,7 @@ class HyperNeRFField(Field):
     def get_density(
         self,
         ray_samples: RaySamples,
-        warp_code: Optional[torch.Tensor] = None,
+        code_dict: dict = {},
         warp_field: Optional[SE3WarpingField] = None,
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
@@ -493,14 +428,15 @@ class HyperNeRFField(Field):
                     gaussian_samples.mean, windows_param=window_gamma, covs=gaussian_samples.cov
                 )
                 base_inputs.append(encoded_xyz)
-                if warp_code is not None:
-                    base_inputs.append(warp_code)
+                if "warp" in code_dict:
+                    base_inputs.append(code_dict["warp"])
 
             if warp_field is not None:
+                assert "warp" in code_dict
                 warped_positions, warped_directions, warped_cov = warp_field(
                     gaussian_samples.mean,
                     directions,
-                    warp_code,
+                    code_dict["warp"],
                     window_alpha,
                     covs=gaussian_samples.cov,
                 )
@@ -508,9 +444,10 @@ class HyperNeRFField(Field):
                 encoded_xyz = self.position_encoding(warped_positions, windows_param=window_gamma, covs=warped_cov)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
+                assert "warp" in code_dict
                 w = slice_field(
                     gaussian_samples.mean,
-                    warp_code,
+                    code_dict["warp"],
                     covs=gaussian_samples.cov,
                     # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
                 )
@@ -525,16 +462,18 @@ class HyperNeRFField(Field):
             if warp_field is None and slice_field is None:
                 encoded_xyz = self.position_encoding(positions, windows_param=window_gamma)
                 base_inputs.append(encoded_xyz)
-                if warp_code is not None:
-                    base_inputs.append(warp_code)
+                if "warp" in code_dict:
+                    base_inputs.append(code_dict["warp"])
 
             if warp_field is not None:
-                warped_positions, warped_directions = warp_field(positions, directions, warp_code, window_alpha)
+                assert "warp" in code_dict
+                warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
                 encoded_xyz = self.position_encoding(warped_positions, windows_param=window_gamma)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
-                w = slice_field(positions, warp_code)
+                assert "warp" in code_dict
+                w = slice_field(positions, code_dict["warp"])
 
                 assert self.slicing_encoding is not None
                 encoded_w = self.slicing_encoding(w, windows_param=window_beta)
@@ -550,8 +489,7 @@ class HyperNeRFField(Field):
         ray_samples: RaySamples,
         warped_direction: Optional[TensorType] = None,
         density_embedding: Optional[TensorType] = None,
-        appearance_code: Optional[torch.Tensor] = None,
-        camera_code: Optional[torch.Tensor] = None,
+        code_dict: dict = {},
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
@@ -561,10 +499,10 @@ class HyperNeRFField(Field):
                 encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
             head_inputs = [encoded_dir, density_embedding]
 
-            if appearance_code is not None:
-                head_inputs.append(appearance_code)
-            if camera_code is not None:
-                head_inputs.append(camera_code)
+            if "appearance" in code_dict:
+                head_inputs.append(code_dict["appearance"])
+            if "camera" in code_dict:
+                head_inputs.append(code_dict["camera"])
 
             mlp_out = self.mlp_head(torch.cat(head_inputs, dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out)
@@ -574,9 +512,7 @@ class HyperNeRFField(Field):
         self,
         ray_samples: RaySamples,
         compute_normals: bool = False,
-        warp_embeddings: Optional[nn.Embedding] = None,
-        appearance_embeddings: Optional[nn.Embedding] = None,
-        camera_embeddings: Optional[nn.Embedding] = None,
+        embeddings: nn.ModuleDict = nn.ModuleDict(),
         warp_field: Optional[SE3WarpingField] = None,
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
@@ -588,43 +524,34 @@ class HyperNeRFField(Field):
         Args:
             ray_samples: Samples to evaluate field on.
         """
-        if warp_embeddings is not None:
-            timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
-            warp_code = warp_embeddings(timesteps)  # [R, S, D]
-        else:
-            warp_code = None
 
-        if appearance_embeddings is not None:
-            timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
-            appearance_code = appearance_embeddings(timesteps)  # [R, S, D]
-        else:
-            appearance_code = None
-
-        if camera_embeddings is not None:
-            if self.training:
-                camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
-                camera_code = camera_embeddings(camera_indices)  # [R, S, D]
+        code_dict = {}
+        for k in embeddings:
+            if k == "camera":
+                if self.training:
+                    camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
+                    code_dict[k] = embeddings[k](camera_indices)  # [R, S, D]
+                else:
+                    code_dict[k] = embeddings[k].weight.mean(0)[None, None, :].repeat(*ray_samples.shape, 1)
             else:
-                camera_code = camera_embeddings.weight.mean(0)[None, None, :].repeat(*ray_samples.shape, 1)
-        else:
-            camera_code = None
+                timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
+                code_dict[k] = embeddings[k](timesteps)  # [R, S, D]
 
         if compute_normals:
             with torch.enable_grad():
                 density, density_embedding, warped_directions = self.get_density(
-                    ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta, window_gamma
+                    ray_samples, code_dict, warp_field, slice_field, window_alpha, window_beta, window_gamma
                 )
         else:
             density, density_embedding, warped_directions = self.get_density(
-                ray_samples, warp_code, warp_field, slice_field, window_alpha, window_beta, window_gamma
+                ray_samples, code_dict, warp_field, slice_field, window_alpha, window_beta, window_gamma
             )
 
         field_outputs = self.get_outputs(
             ray_samples,
             warped_directions,
             density_embedding=density_embedding,
-            appearance_code=appearance_code,
-            camera_code=camera_code,
+            code_dict=code_dict,
         )
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 
@@ -652,16 +579,16 @@ class HashHyperNeRFField(HyperNeRFField):
     def __init__(
         self,
         aabb: TensorType,
-        n_hashgrid_levels: int = 13,
         use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
-        base_extra_dim: int = 0,
-        head_extra_dim: int = 0,
+        n_hashgrid_levels: int = 13,
         base_in_dim: int = 3,
+        base_extra_dim: int = 0,
         base_out_dim: int = 15,
         base_mlp_num_layers: int = 2,
         base_mlp_layer_width: int = 64,
+        head_extra_dim: int = 0,
         head_mlp_num_layers: int = 2,
         head_mlp_layer_width: int = 128,
         field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
@@ -671,21 +598,6 @@ class HashHyperNeRFField(HyperNeRFField):
         self.aabb = nn.Parameter(aabb, requires_grad=False)
 
         # template NeRF
-        self.direction_encoding = tcnn.Encoding(
-            n_input_dims=3,
-            encoding_config={
-                "otype": "SphericalHarmonics",
-                "degree": 1,
-            },
-        )
-        if use_hyper_slicing and hyper_slice_dim > 0:
-            self.slicing_encoding = WindowedNeRFEncoding(
-                in_dim=hyper_slice_dim, num_frequencies=n_freq_slice, min_freq_exp=0.0, max_freq_exp=n_freq_slice - 1
-            )
-            base_extra_dim += self.slicing_encoding.get_out_dim()
-        else:
-            self.slicing_encoding = None
-
         hash_grid_encoding_config = {
             "n_dims_to_encode": base_in_dim,
             "otype": "HashGrid",
@@ -711,9 +623,14 @@ class HashHyperNeRFField(HyperNeRFField):
             },
         )
 
-        head_in_dim = base_out_dim
-        if self.direction_encoding is not None:
-            head_in_dim += self.direction_encoding.n_output_dims
+        self.direction_encoding = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": 1,
+            },
+        )
+        head_in_dim = base_out_dim + self.direction_encoding.n_output_dims
 
         self.mlp_head = MLP(
             in_dim=head_in_dim + head_extra_dim,
@@ -730,7 +647,7 @@ class HashHyperNeRFField(HyperNeRFField):
     def get_density(
         self,
         ray_samples: RaySamples,
-        warp_code: Optional[torch.Tensor] = None,
+        code_dict: dict = {},
         warp_field: Optional[SE3WarpingField] = None,
         slice_field: Optional[HyperSlicingField] = None,
         window_alpha: Optional[float] = None,
@@ -742,32 +659,21 @@ class HashHyperNeRFField(HyperNeRFField):
         positions = ray_samples.frustums.get_positions()
         directions = ray_samples.frustums.directions
 
-        if warp_field is None and slice_field is None:
-            encoded_xyz = self.position_encoding(positions)
-            base_inputs = [encoded_xyz]
-            if warp_code is not None:
-                base_inputs.append(warp_code)
-        else:
-            base_inputs = []
-
         if warp_field is not None:
-            warped_positions, warped_directions = warp_field(positions, directions, warp_code, window_alpha)
+            assert "warp" in code_dict
+            warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
-            warped_positions = warped_positions.view(-1, 3)
+            warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
-            warped_directions = warped_directions.view(-1, 3)
+            warped_directions = warped_directions.reshape(-1, 3)
 
-            base_inputs.append(warped_positions)
-        if slice_field is not None:
-            w = slice_field(positions, warp_code)
+        else:
+            warped_positions = positions.reshape(-1, 3)
+            warped_directions = directions.reshape(-1, 3)
 
-            assert self.slicing_encoding is not None
-            encoded_w = self.slicing_encoding(w, windows_param=window_beta)
-            base_inputs.append(encoded_w)
+        base_mlp_out = self.mlp_base(warped_positions).to(positions)
 
-        base_inputs = torch.concat(base_inputs, dim=-1)
-        base_mlp_out = self.mlp_base(base_inputs).to(base_inputs)
         density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
         return density, base_mlp_out, warped_directions
 
@@ -776,8 +682,7 @@ class HashHyperNeRFField(HyperNeRFField):
         ray_samples: RaySamples,
         warped_direction: Optional[TensorType] = None,
         density_embedding: Optional[TensorType] = None,
-        appearance_code: Optional[torch.Tensor] = None,
-        camera_code: Optional[torch.Tensor] = None,
+        code_dict: dict = {},
     ) -> Dict[FieldHeadNames, TensorType]:
         outputs = {}
         for field_head in self.field_heads:
@@ -787,11 +692,138 @@ class HashHyperNeRFField(HyperNeRFField):
                 encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
             head_inputs = [encoded_dir, density_embedding]
 
-            if appearance_code is not None:
-                head_inputs.append(appearance_code)
-            if camera_code is not None:
-                head_inputs.append(camera_code.view(-1, camera_code.shape[-1]))
+            if "appearance" in code_dict:
+                head_inputs.append(code_dict["appearance"].view(-1, code_dict["appearance"].shape[-1]))
+            if "camera" in code_dict:
+                head_inputs.append(code_dict["camera"].view(-1, code_dict["camera"].shape[-1]))
 
             mlp_out = self.mlp_head(torch.cat(head_inputs, dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out).reshape([*ray_samples.shape, -1])
         return outputs
+
+
+class HashEnsemHyperNeRFField(HashHyperNeRFField):
+    """HyperNeRF Field with HashEncodingEnsemble
+
+    Args:
+        n_freq_pos: Number of frequencies for position in positional encoding.
+        n_freq_dir: Number of frequencies for direction in positional encoding..
+        base_mlp_num_layers: Number of layers for base MLP.
+        base_mlp_layer_width: Width of base MLP layers.
+        head_mlp_num_layers: Number of layer for ourput head MLP.
+        head_mlp_layer_width: Width of output head MLP layers.
+        skip_connections: Where to add skip connection in base MLP.
+        spatial_distortion: Spatial distortion.
+    """
+
+    def __init__(
+        self,
+        aabb: TensorType,
+        use_hyper_slicing: bool = True,
+        n_freq_slice: int = 2,
+        hyper_slice_dim: int = 2,
+        ensem_code_dim: int = 8,
+        ensem_mixing_type: str = "blend",
+        ensem_n_tables: int = 16,
+        n_hashgrid_levels: int = 13,
+        base_in_dim: int = 3,
+        base_extra_dim: int = 0,
+        base_out_dim: int = 15,
+        base_mlp_num_layers: int = 2,
+        base_mlp_layer_width: int = 64,
+        head_extra_dim: int = 0,
+        head_mlp_num_layers: int = 2,
+        head_mlp_layer_width: int = 128,
+        field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
+    ) -> None:
+        super(HyperNeRFField, self).__init__()
+
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+
+        # template NeRF
+        self.hash_encoding_ensemble = HashEncodingEnsemble(
+            n_hash_encodings=ensem_code_dim if ensem_mixing_type == "blend" else ensem_n_tables,
+            hash_encoding_config=TCNNHashEncodingConfig(
+                n_dims_to_encode=base_in_dim,  # Can be 3 or 4
+                n_levels=n_hashgrid_levels,
+                n_features_per_level=2,
+                log2_hashmap_size=19,
+                base_resolution=16,
+                per_level_scale=1.4472692012786865,
+                interpolation="Smoothstep",
+            ),
+            mixing_type=ensem_mixing_type,
+            dim_conditioning_code=ensem_code_dim,
+            blend_field_config=None,
+            multi_deform_config=None,
+        )
+
+        self.mlp_base = tcnn.Network(
+            n_input_dims=self.hash_encoding_ensemble.get_out_dim(),
+            n_output_dims=base_out_dim,
+            network_config={
+                "otype": "FullyFusedMLP" if base_mlp_layer_width <= 128 else "CutlassMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": base_mlp_layer_width,
+                "n_hidden_layers": base_mlp_num_layers - 1,
+            },
+        )
+
+        self.direction_encoding = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": 1,
+            },
+        )
+        head_in_dim = base_out_dim + self.direction_encoding.n_output_dims
+
+        self.mlp_head = MLP(
+            in_dim=head_in_dim + head_extra_dim,
+            num_layers=head_mlp_num_layers,
+            layer_width=head_mlp_layer_width,
+            out_activation=nn.ReLU(),
+        )
+
+        self.field_output_density = DensityFieldHead(in_dim=self.mlp_base.n_output_dims)
+        self.field_heads = nn.ModuleList(field_heads)
+        for field_head in self.field_heads:
+            field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
+
+    def get_density(
+        self,
+        ray_samples: RaySamples,
+        code_dict: dict = {},
+        warp_field: Optional[SE3WarpingField] = None,
+        slice_field: Optional[HyperSlicingField] = None,
+        window_alpha: Optional[float] = None,
+        window_beta: Optional[float] = None,
+        window_gamma: Optional[float] = None,
+    ):
+        warped_directions = None
+
+        positions = ray_samples.frustums.get_positions()
+        directions = ray_samples.frustums.directions
+
+        if warp_field is not None:
+            assert "warp" in code_dict
+            warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
+
+            warped_positions = warped_positions.reshape(-1, 3)
+            warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+
+            warped_directions = warped_directions.reshape(-1, 3)
+
+        else:
+            warped_positions = positions.reshape(-1, 3)
+            warped_directions = directions.reshape(-1, 3)
+
+        assert "ensemble" in code_dict
+        base_inputs = self.hash_encoding_ensemble(
+            warped_positions, code_dict["ensemble"].reshape(-1, code_dict["ensemble"].shape[-1])
+        )
+        base_mlp_out = self.mlp_base(base_inputs).to(positions)
+
+        density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
+        return density, base_mlp_out, warped_directions

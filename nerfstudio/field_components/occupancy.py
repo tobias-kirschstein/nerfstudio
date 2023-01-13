@@ -26,6 +26,10 @@ class FilteredOccupancyGrid(Grid):
     def contraction_type(self) -> ContractionType:
         return self.occupancy_grid.contraction_type
 
+    @property
+    def occs(self) -> torch.Tensor:
+        return self.occupancy_grid.occs
+
     def update(self):
         resolution = self.occupancy_grid.resolution
         try:
