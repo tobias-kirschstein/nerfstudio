@@ -659,27 +659,21 @@ class HashHyperNeRFField(HyperNeRFField):
         positions = ray_samples.frustums.get_positions()
         directions = ray_samples.frustums.directions
 
-        if warp_field is None and slice_field is None:
-            encoded_xyz = self.position_encoding(positions)
-            base_inputs = [encoded_xyz]
-            if "warp" in code_dict:
-                base_inputs.append(code_dict["warp"])
-        else:
-            base_inputs = []
-
         if warp_field is not None:
             assert "warp" in code_dict
             warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
-            warped_positions = warped_positions.view(-1, 3)
+            warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
-            warped_directions = warped_directions.view(-1, 3)
+            warped_directions = warped_directions.reshape(-1, 3)
 
-            base_inputs.append(warped_positions)
+        else:
+            warped_positions = positions.reshape(-1, 3)
+            warped_directions = directions.reshape(-1, 3)
 
-        base_inputs = torch.concat(base_inputs, dim=-1)
-        base_mlp_out = self.mlp_base(base_inputs).to(base_inputs)
+        base_mlp_out = self.mlp_base(warped_positions).to(positions)
+
         density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
         return density, base_mlp_out, warped_directions
 
@@ -812,32 +806,24 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         positions = ray_samples.frustums.get_positions()
         directions = ray_samples.frustums.directions
 
-        if warp_field is None and slice_field is None:
-            encoded_xyz = self.position_encoding(positions)
-            inputs = [encoded_xyz]
-            if "warp" in code_dict:
-                inputs.append(code_dict["warp"])
-        else:
-            inputs = []
-
         if warp_field is not None:
             assert "warp" in code_dict
             warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
-            warped_positions = warped_positions.view(-1, 3)
+            warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
-            warped_directions = warped_directions.view(-1, 3)
+            warped_directions = warped_directions.reshape(-1, 3)
 
-            inputs.append(warped_positions)
-
-        inputs = torch.concat(inputs, dim=-1)
+        else:
+            warped_positions = positions.reshape(-1, 3)
+            warped_directions = directions.reshape(-1, 3)
 
         assert "ensemble" in code_dict
         base_inputs = self.hash_encoding_ensemble(
-            inputs, code_dict["ensemble"].reshape(-1, code_dict["ensemble"].shape[-1])
+            warped_positions, code_dict["ensemble"].reshape(-1, code_dict["ensemble"].shape[-1])
         )
-        base_mlp_out = self.mlp_base(base_inputs).to(inputs)
+        base_mlp_out = self.mlp_base(base_inputs).to(positions)
 
         density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
         return density, base_mlp_out, warped_directions
