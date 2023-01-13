@@ -680,6 +680,8 @@ class MipHashEnsemHyperNeRFModelConfig(HyperNeRFModelConfig):
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
     lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
 
+    n_freq_time: int = 6
+
     n_hashgrid_levels: int = 13
     ensem_code_dim: int = 8  # dimension of the code for hash table ensemble
 
@@ -707,30 +709,27 @@ class MipHashEnsemHyperNeRFModel(HyperNeRFModel):
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
-    # def populate_warping_field(self):
-    #     self.warp_field = HashSE3WarpingField(
-    #         n_freq_pos=self.config.n_freq_pos_warping,
-    #         warp_code_dim=self.config.warp_code_dim,
-    #         mlp_num_layers=6,
-    #         mlp_layer_width=128,
-    #         warp_direction=self.config.warp_direction,
-    #     )
-    #     # if self.config.window_alpha_end >= 1:
-    #     #     assert self.config.window_alpha_end > self.config.window_alpha_begin
-    #     #     self.sched_alpha = GenericScheduler(
-    #     #         init_value=0,
-    #     #         final_value=self.config.n_freq_pos_warping,
-    #     #         begin_step=self.config.window_alpha_begin,
-    #     #         end_step=self.config.window_alpha_end,
-    #     #     )
-    #     #     self.callbacks.append(
-    #     #         TrainingCallback(
-    #     #             where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-    #     #             update_every_num_iters=1,
-    #     #             func=self.update_window_param,
-    #     #             args=[self.sched_alpha, "alpha"],
-    #     #         )
-    #     #     )
+    def populate_warping_field(self):
+        self.warp_field = HashSE3WarpingField(
+            n_freq_time=self.config.n_freq_time,
+            warp_direction=self.config.warp_direction,
+        )
+        # if self.config.window_alpha_end >= 1:
+        #     assert self.config.window_alpha_end > self.config.window_alpha_begin
+        #     self.sched_alpha = GenericScheduler(
+        #         init_value=0,
+        #         final_value=self.config.n_freq_pos_warping,
+        #         begin_step=self.config.window_alpha_begin,
+        #         end_step=self.config.window_alpha_end,
+        #     )
+        #     self.callbacks.append(
+        #         TrainingCallback(
+        #             where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+        #             update_every_num_iters=1,
+        #             func=self.update_window_param,
+        #             args=[self.sched_alpha, "alpha"],
+        #         )
+        #     )
 
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         # ensemble embeddings

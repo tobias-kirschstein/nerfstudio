@@ -219,30 +219,54 @@ class HashSE3WarpingField(SE3WarpingField):
 
     def __init__(
         self,
-        n_hashgrid_levels: int = 13,
-        n_freq_pos: int = 7,
+        base_in_dim: int = 3,
+        n_hashgrid_levels: int = 14,
+        base_resolution: int = 4,
+        mlp_num_layers: int = 3,
+        mlp_layer_width: int = 64,
+        n_freq_time: int = 6,
         warp_direction: bool = True,
     ) -> None:
         super().__init__()
+        self.n_freq_time = n_freq_time
         self.warp_direction = warp_direction
 
-        self.hashtable = tcnn.Encoding(
-            3,
+        self.mlp_base = tcnn.NetworkWithInputEncoding(
+            n_input_dims=base_in_dim,
+            n_output_dims=6 * (n_freq_time * 2),
             encoding_config={
+                "n_dims_to_encode": base_in_dim,
                 "otype": "HashGrid",
                 "n_levels": n_hashgrid_levels,
                 "n_features_per_level": 2,
-                "log2_hashmap_size": 19,
-                "base_resolution": 16,
+                "log2_hashmap_size": 19,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
+                "base_resolution": base_resolution,
                 "per_level_scale": 1.4472692012786865,
-                "interpolation": "Smoothstep",
+                "interpolation": "Smoothstep",  # How to interpolate nearby grid lookups. Can be "Nearest", "Linear", or "Smoothstep" (for smooth derivatives).
+            },
+            network_config={
+                "otype": "FullyFusedMLP" if mlp_layer_width <= 128 else "CutlassMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": mlp_layer_width,
+                "n_hidden_layers": mlp_num_layers - 1,
             },
         )
 
     def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
+        p = positions.reshape(-1, 3)  # (R*S, 3)
 
-        r = self.mlp_r(feat).reshape(-1, 3)  # (R*S, 3)
-        v = self.mlp_v(feat).reshape(-1, 3)  # (R*S, 3)
+        feat = self.mlp_base(p)
+        feat = feat.reshape(-1, 6, self.n_freq_time, 2)  # (R*S, 6, n_freq_time, 2)
+
+        freq = torch.linspace(0, self.n_freq_time - 1, self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
+
+        assert warp_code is not None
+        t = warp_code.reshape(-1, 1, 1) / 400  # (R*S, 1, 1)
+
+        rv = (feat[..., 0] * torch.sin(freq * t + feat[..., 1])).sum(-1)
+        r = rv[:, :3]
+        v = rv[:, :3]
 
         screw_axis = torch.concat([v, r], dim=-1)  # (R*S, 6)
         screw_axis = screw_axis.to(positions.dtype)
@@ -776,6 +800,13 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
                 "otype": "SphericalHarmonics",
                 "degree": 1,
             },
+            # encoding_config={
+            #     "otype": "Frequency",
+            #     "n_frequencies": 1,
+            # },
+            # encoding_config={
+            #     "otype": "Identity",
+            # },
         )
         head_in_dim = base_out_dim + self.direction_encoding.n_output_dims
 
@@ -807,8 +838,11 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         directions = ray_samples.frustums.directions
 
         if warp_field is not None:
-            assert "warp" in code_dict
-            warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
+            # assert "warp" in code_dict
+            # warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
+
+            timesteps = ray_samples.timesteps
+            warped_positions, warped_directions = warp_field(positions, directions, timesteps, window_alpha)
 
             warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
