@@ -96,6 +96,7 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
             hash_encoding_ensemble_n_heads: Optional[int] = None,
             hash_encoding_ensemble_disable_initial: bool = False,
+            hash_encoding_ensemble_disable_table_chunking: bool = False,
             only_render_hash_table: Optional[int] = None,
             n_freq_pos_warping: int = 7,
 
@@ -186,7 +187,8 @@ class TCNNInstantNGPField(Field):
                 multi_deform_se3_config=MultiDeformSE3Config(
                     n_freq_pos_enc=n_freq_pos_warping
                 ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend', 'multi_deform_blend++'] else None,
-                disable_initial_hash_ensemble=hash_encoding_ensemble_disable_initial
+                disable_initial_hash_ensemble=hash_encoding_ensemble_disable_initial,
+                disable_table_chunking=hash_encoding_ensemble_disable_table_chunking,
             )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding

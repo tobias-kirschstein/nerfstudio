@@ -118,6 +118,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend'
     hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
     hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
+    hash_encoding_ensemble_disable_table_chunking: bool = False  # Backward compatibility, disables performance improvement that chunks hashtables together
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0

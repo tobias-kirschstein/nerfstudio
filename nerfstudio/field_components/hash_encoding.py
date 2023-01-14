@@ -173,7 +173,8 @@ class HashEncodingEnsemble(nn.Module):
                  blend_field_config: BlendFieldConfig = None,
                  multi_deform_config: MultiDeformConfig = None,
                  multi_deform_se3_config: MultiDeformSE3Config = None,
-                 disable_initial_hash_ensemble: bool = False):
+                 disable_initial_hash_ensemble: bool = False,
+                 disable_table_chunking: bool = False):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -181,8 +182,9 @@ class HashEncodingEnsemble(nn.Module):
         self.hash_encoding_config = hash_encoding_config
         self.only_render_hash_table = only_render_hash_table
         self.disable_initial_hash_ensemble = disable_initial_hash_ensemble
+        self.disable_table_chunking = disable_table_chunking
 
-        if mixing_type in {'multi_deform_blend', 'multi_deform_blend_offset'}:
+        if mixing_type in {'multi_deform_blend', 'multi_deform_blend_offset'} or disable_table_chunking:
             # Multi-deform mixing types cannot chunk the hash tables as the deformed inputs vary for every hash table
             self.hash_encodings = []
             for i_hash_encoding in range(n_hash_encodings):
@@ -324,20 +326,30 @@ class HashEncodingEnsemble(nn.Module):
 
             embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
         else:
-            embeddings = []
-            for h, hash_encoding in enumerate(self.hash_encodings):
-                embedding = hash_encoding(in_tensor)
-                embeddings.append(embedding)
+            if self.disable_table_chunking:
+                # backwards compatibility
+                embeddings = []
+                for h, hash_encoding in enumerate(self.hash_encodings):
+                    embedding = hash_encoding(in_tensor)
+                    embeddings.append(embedding)
 
-            embeddings = torch.stack(embeddings, dim=1)  # [B, C, 8 * L]
-            C = embeddings.shape[1]
-            L = self.hash_encoding_config.n_levels
-            F = self.hash_encoding_config.n_features_per_level
-            P = int(8 / F) if F * self.n_hash_encodings >= 8 else self.n_hash_encodings
-            embeddings = embeddings.reshape((B, C, L, P, F))
-            embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
-            embeddings = embeddings.reshape((B, C*P, L*F))
-            embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+                embeddings = torch.stack(embeddings, dim=-1)  # [B, D, H]
+            else:
+
+                embeddings = []
+                for h, hash_encoding in enumerate(self.hash_encodings):
+                    embedding = hash_encoding(in_tensor)
+                    embeddings.append(embedding)
+
+                embeddings = torch.stack(embeddings, dim=1)  # [B, C, 8 * L]
+                C = embeddings.shape[1]
+                L = self.hash_encoding_config.n_levels
+                F = self.hash_encoding_config.n_features_per_level
+                P = int(8 / F) if F * self.n_hash_encodings >= 8 else self.n_hash_encodings
+                embeddings = embeddings.reshape((B, C, L, P, F))
+                embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
+                embeddings = embeddings.reshape((B, C*P, L*F))
+                embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
 
         if windows_param_tables is not None:
