@@ -174,7 +174,7 @@ class TCNNInstantNGPField(Field):
                 multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
                                                       n_layers=blend_field_n_layers,
                                                       n_freq_pos_enc=blend_field_n_freq_enc,
-                ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None
+                ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend' ,'multi_deform_blend++'] else None
             )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding

@@ -18,7 +18,8 @@ HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                  'multihead_blend_mixed',
                                  'multihead_blend_attention_style',
                                  'mlp_blend_field',
-                                 'multi_deform_blend'
+                                 'multi_deform_blend',
+                                 'multi_deform_blend++'
 ]
 
 
@@ -217,6 +218,7 @@ class HashEncodingEnsemble(nn.Module):
 
             else:
                 self.n_output_dims = dim_hash_encoding
+
         elif self.mixing_type == 'mlp_blend_field':
             self.extra_weight_factor = 4
             self.n_output_dims = dim_hash_encoding
@@ -226,11 +228,13 @@ class HashEncodingEnsemble(nn.Module):
             self.pos_encoder = pos_encoder
             self.blend_field = blend_field
 
-        elif self.mixing_type == 'multi_deform_blend':
+        elif self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
             assert multi_deform_config.input_dim == hash_encoding_config.n_dims_to_encode
             self.n_output_dims = dim_hash_encoding
 
             self.mulit_deform_config = multi_deform_config
+            if self.mixing_type == 'multi_deform_blend++':
+                dim_conditioning_code -= self.n_hash_encodings
             pos_encoder, multi_deform_mlp = self.mulit_deform_config.setup(dim_conditioning_code, n_hash_encodings)
             self.pos_encoder = pos_encoder
             self.multi_deform_mlp = multi_deform_mlp
@@ -253,9 +257,12 @@ class HashEncodingEnsemble(nn.Module):
 
         # deform query positions for each hash table in multi_deform_mode
         # (multi-deform_mlp also gives blend weights)
-        if self.mixing_type == 'multi_deform_blend':
+        if self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
             encoded_xyz = self.pos_encoder(in_tensor, windows_param=windows_param_blend_field)
-            inp_multi_deform = torch.cat([encoded_xyz, conditioning_code], dim=-1)
+            if self.mixing_type == 'multi_deform_blend++':
+                inp_multi_deform = torch.cat([encoded_xyz, conditioning_code[..., :-self.n_hash_encodings]], dim=-1)
+            else:
+                inp_multi_deform = torch.cat([encoded_xyz, conditioning_code], dim=-1)
             offsets_and_weights = self.multi_deform_mlp(inp_multi_deform).view(B, self.n_hash_encodings,
                                                                                -1)  # B x H x (3 + weight_dim)
             offsets = offsets_and_weights[:, :, :self.mulit_deform_config.input_dim]
@@ -408,6 +415,14 @@ class HashEncodingEnsemble(nn.Module):
                 # curretnly blend_weights: B x H
                 # embeddings B x D x H
                 blended_embeddings = (blend_weights.unsqueeze(1) * embeddings).sum(dim=-1)
+            elif self.mixing_type == 'multi_deform_blend++':
+                assert self.mulit_deform_config.blend_weight_dim == 1, "multi-level blending not implemented yet"
+                # curretnly blend_weights: B x H
+                # embeddings B x D x H
+
+                # add directly optimized blend weights as correctives
+                blend_weights = blend_weights + conditioning_code[..., -self.n_hash_encodings:]
+                blended_embeddings = (blend_weights.unsqueeze(1) * embeddings).sum(dim=-1)
 
             else:
                 raise ValueError(f"Unsupported mixing type: {self.mixing_type}")
@@ -424,7 +439,7 @@ class HashEncodingEnsemble(nn.Module):
 
         if self.mixing_type == 'mlp_blend_field':
             param_groups["blend_fields"] = list(self.blend_field.parameters())
-        elif self.mixing_type == 'multi_deform_blend':
+        elif self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
             param_groups["blend_fields"] = list(self.multi_deform_mlp.parameters())
 
         return param_groups
