@@ -314,6 +314,8 @@ class TCNNInstantNGPField(Field):
                     ray_samples: RaySamples,
                     window_canonical: Optional[float] = None,
                     window_blend: Optional[float] = None,
+                    window_hash_tables: Optional[float] = None,
+                    window_deform: Optional[float] = None,
                     time_codes: Optional[torch.Tensor] = None):
 
         densities = []
@@ -369,7 +371,9 @@ class TCNNInstantNGPField(Field):
                     embeddings = self.hash_encoding_ensemble(positions_flat,
                                                              conditioning_code=time_codes_chunk,
                                                              windows_param=window_canonical,
-                                                             windows_param_blend_field=window_blend
+                                                             windows_param_blend_field=window_blend,
+                                                             windows_param_tables=window_hash_tables,
+                                                             windows_param_deform=window_deform,
                                                              )
                     base_inputs = [embeddings]
                 else:
@@ -536,6 +540,8 @@ class TCNNInstantNGPField(Field):
                 compute_normals: bool = False,
                 window_canonical: Optional[float] = None,
                 window_blend: Optional[float] = None,
+                window_hash_tables: Optional[float] = None,
+                window_deform: Optional[float] = None,
                 time_codes: Optional[TensorType] = None):
         """Evaluates the field at points along the ray.
 
@@ -547,11 +553,15 @@ class TCNNInstantNGPField(Field):
                 density, density_embedding = self.get_density(ray_samples,
                                                               window_canonical=window_canonical,
                                                               window_blend=window_blend,
+                                                              window_hash_tables=window_hash_tables,
+                                                              window_deform=window_deform,
                                                               time_codes=time_codes)
         else:
             density, density_embedding = self.get_density(ray_samples,
                                                           window_canonical=window_canonical,
                                                           window_blend=window_blend,
+                                                          window_hash_tables=window_hash_tables,
+                                                          window_deform=window_deform,
                                                           time_codes=time_codes)
 
         field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
