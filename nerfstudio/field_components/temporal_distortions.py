@@ -15,18 +15,18 @@
 """Space distortions which occur as a function of time."""
 
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple, Literal
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import torch
-from nerfacc import contract, ContractionType
-from nerfstudio.cameras.rays import RaySamples
-from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
-from nerfstudio.fields.hypernerf_field import SE3WarpingField
+from nerfacc import ContractionType, contract
 from torch import nn
 from torchtyping import TensorType
 
+from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.field_components.encodings import Encoding, NeRFEncoding
+from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.field_components.mlp import MLP
+from nerfstudio.fields.hypernerf_field import SE3WarpingFieldEnsem
 
 ViewDirectionWarpType = Literal[None, 'rotation', 'samples']
 
@@ -124,7 +124,7 @@ class SE3Distortion(nn.Module):
         self.contraction_type = contraction_type
         self.view_direction_warping = view_direction_warping
 
-        self.se3_field = SE3WarpingField(
+        self.se3_field = SE3WarpingFieldEnsem(
             n_freq_pos=n_freq_pos,
             warp_code_dim=warp_code_dim,
             mlp_num_layers=mlp_num_layers,

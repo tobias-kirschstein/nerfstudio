@@ -2,17 +2,17 @@ import dataclasses
 from collections import defaultdict
 from dataclasses import dataclass
 from math import sqrt
-from typing import Literal, Optional, Tuple, Dict, List
+from typing import Dict, List, Literal, Optional, Tuple
 
-import torch.nn.functional as F
 import tinycudann as tcnn
 import torch
-from nerfstudio.field_components.encodings import posenc_window
-from nerfstudio.fields.hypernerf_field import SE3WarpingField
+import torch.nn.functional as F
 from torch import nn
-from nerfstudio.field_components.mlp import MLP
-from nerfstudio.field_components.encodings import WindowedNeRFEncoding
 from torch.nn import Parameter
+
+from nerfstudio.field_components.encodings import WindowedNeRFEncoding, posenc_window
+from nerfstudio.field_components.mlp import MLP
+from nerfstudio.fields.hypernerf_field import SE3WarpingFieldEnsem
 
 HashEnsembleMixingType = Literal['blend', 'attention', 'multihead_attention',
                                  'multihead_blend',
@@ -148,8 +148,8 @@ class MultiDeformSE3Config:
     n_layers: int = 6
     n_freq_pos_enc: int = 7
 
-    def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> SE3WarpingField:
-        se3_warp_field = SE3WarpingField(
+    def setup(self, n_time_condition_dim: int, n_hash_tables: int) -> SE3WarpingFieldEnsem:
+        se3_warp_field = SE3WarpingFieldEnsem(
             n_freq_pos=self.n_freq_pos_enc,
             mlp_num_layers=self.n_layers,
             mlp_layer_width=self.n_hidden_dims,
