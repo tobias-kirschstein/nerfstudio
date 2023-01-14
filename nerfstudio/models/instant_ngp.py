@@ -237,6 +237,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
             hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
+            hash_encoding_ensemble_disable_table_chunking=self.config.hash_encoding_ensemble_disable_table_chunking,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
             n_freq_pos_warping=self.config.n_freq_pos_warping,
