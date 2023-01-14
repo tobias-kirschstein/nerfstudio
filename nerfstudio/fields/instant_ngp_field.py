@@ -172,7 +172,7 @@ class TCNNInstantNGPField(Field):
                                                     output_activation=blend_field_out_activation,
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
-                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field', 'multi_deform_blend'} else None,
+                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field', 'multi_deform_blend', 'multi_deform_blend++'} else None,
                 multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
                                                       n_layers=blend_field_n_layers,
                                                       n_freq_pos_enc=blend_field_n_freq_enc,

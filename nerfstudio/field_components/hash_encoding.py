@@ -240,7 +240,7 @@ class HashEncodingEnsemble(nn.Module):
 
             else:
                 self.n_output_dims = dim_hash_encoding
-        elif self.mixing_type == 'mlp_blend_field' or self.mixing_type == 'multi_deform_blend':
+        elif self.mixing_type == 'mlp_blend_field' or self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
             self.extra_weight_factor = 4
             self.n_output_dims = dim_hash_encoding
             self.blend_field_config = blend_field_config
@@ -254,7 +254,7 @@ class HashEncodingEnsemble(nn.Module):
             self.n_output_dims = dim_hash_encoding
 
             if self.mixing_type == 'multi_deform_blend++':
-                dim_conditioning_code -= self.n_hash_encodings
+                dim_conditioning_code -= self.n_hash_encodings * self.extra_weight_factor
             self.multi_deform_se3_field = multi_deform_se3_config.setup(dim_conditioning_code, n_hash_encodings)
 
             # self.multi_deform_config = multi_deform_config
@@ -282,14 +282,11 @@ class HashEncodingEnsemble(nn.Module):
 
         # deform query positions for each hash table in multi_deform_mode
         # (multi-deform_mlp also gives blend weights)
-        if self.mixing_type in ['multi_deform_blend', 'multi_deform_blend']:
-
-            if self.mixing_type == 'multi_deform_blend++':
-         
+        if self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
             warped_positions, _ = self.multi_deform_se3_field(
                 in_tensor,
-                warp_code=conditioning_code if self.mixing_type == 'muli_deform_blend' 
-                    else conditioning_code[..., :-self.n_hash_encodings],
+                warp_code=conditioning_code if self.mixing_type == 'multi_deform_blend'
+                    else conditioning_code[..., :-self.n_hash_encodings*self.extra_weight_factor],
                 windows_param=windows_param_deform)
 
             in_tensor_deformed = warped_positions
@@ -446,7 +443,7 @@ class HashEncodingEnsemble(nn.Module):
                 # the return attention weights and perform the weighted combination ourselves
                 blended_embeddings, _ = self.multihead_attn(queries, keys, values, need_weights=False)  # [B, 1, C]
                 blended_embeddings = blended_embeddings.squeeze(1)  # [B, C]
-            elif self.mixing_type == 'mlp_blend_field' or self.mixing_type == 'multi_deform_blend':
+            elif self.mixing_type == 'mlp_blend_field' or self.mixing_type in ['multi_deform_blend', 'multi_deform_blend++']:
                 ## embeddins: B x D x H
                 ## conditioning_code: B x C
                 encoded_xyz = self.pos_encoder(in_tensor, windows_param=windows_param_blend_field)
@@ -456,7 +453,7 @@ class HashEncodingEnsemble(nn.Module):
                                                         self.extra_weight_factor)  # B x H x self.extra_weight_factor
                 if self.mixing_type == 'multi_head_blend++':
                     # add directly optimized blend weights as correctives
-                    weight_correctives = conditioning_code[..., -self.n_hash_encodings:].reshape(B, self.n_hash_encodings,
+                    weight_correctives = conditioning_code[..., -self.n_hash_encodings*self.extra_weight_factor:].reshape(B, self.n_hash_encodings,
                                                         self.extra_weight_factor)  # B x H x self.extra_weight_factor
                     weights += weight_correctives
 
