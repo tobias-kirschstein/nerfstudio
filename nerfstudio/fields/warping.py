@@ -188,9 +188,11 @@ class SE3Field(nn.Module):
                  n_layers_trunk=3,
                  n_layers_w_head=3,
                  n_layers_v_head=3,
-                 n_frequencies: int = 4):
+                 n_frequencies: int = 4,
+                 n_output_deformations: int = 1):
         super(SE3Field, self).__init__()
 
+        self.n_output_deformations = n_output_deformations
         n_input_dims_trunk = 3 + dim_latent_code
         self.trunk = tcnn.NetworkWithInputEncoding(
             n_input_dims=n_input_dims_trunk,
@@ -220,7 +222,7 @@ class SE3Field(nn.Module):
         n_input_dims_w_head = hidden_dim
         self.w_head = tcnn.Network(
             n_input_dims=n_input_dims_w_head,
-            n_output_dims=3,
+            n_output_dims=3 * n_output_deformations,
             network_config={
                 "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
@@ -233,7 +235,7 @@ class SE3Field(nn.Module):
         n_input_dims_v_head = hidden_dim
         self.v_head = tcnn.Network(
             n_input_dims=n_input_dims_v_head,
-            n_output_dims=3,
+            n_output_dims=3 * n_output_deformations,
             network_config={
                 "otype": "FullyFusedMLP" if hidden_dim <= 128 else "CutlassMLP",
                 "activation": "ReLU",
@@ -255,14 +257,16 @@ class SE3Field(nn.Module):
         assert len(latent_codes.shape) == 2
 
         B = points.shape[0]
+        O = self.n_output_deformations
+
         trunk_inputs = torch.concat([points, latent_codes], dim=1)
         trunk_output = self.trunk(trunk_inputs)  # [B, D]
 
         # TODO: maximum scale is somewhat arbitrary
         # w = (self.w_head(trunk_output) - 0.5) * 4 * np.pi  # [B, 3]
         # v = (self.v_head(trunk_output) - 0.5) * 2 # [B, 3]
-        w = self.w_head(trunk_output)  # [B, 3]
-        v = self.v_head(trunk_output)  # [B, 3]
+        w = self.w_head(trunk_output)  # [B, 3 * O]
+        v = self.v_head(trunk_output)  # [B, 3 * O]
 
         # theta = w.norm(dim=1, p=2)
         # w = w / theta[:, None]
@@ -271,11 +275,18 @@ class SE3Field(nn.Module):
         # screw_axis = torch.concat([w, v], dim=1)  # [B, 6]
         # transforms = exp_se3(screw_axis, theta).to(points.dtype)
 
-        screw_axis = torch.concat([v, w], dim=1)  # [B, 6]
-        transforms = pytorch3d.transforms.se3_exp_map(screw_axis).to(points.dtype)
-        transforms = transforms.permute(0, 2, 1)
+        screw_axis = torch.stack([v, w], dim=-1)  # [B, 3*O, 2]
+        screw_axis = screw_axis.reshape((B * O, 3, 2))  # [B*O, 3, 2]
+        screw_axis = screw_axis.transpose(1, 2)  # [B*O, 2, 3]
+        screw_axis = screw_axis.reshape((B*O, 6))  # [B*O, 6]
 
-        warped_points = from_homogenous((transforms @ to_homogenous(points).unsqueeze(-1)).squeeze(-1))
+        # screw_axis = torch.concat([v, w], dim=1)  # [B, 6]
+        transforms = pytorch3d.transforms.se3_exp_map(screw_axis).to(points.dtype)  # [B * O, 4, 4]
+        transforms = transforms.permute(0, 2, 1)  # Not sure why this permute is necessary
+
+        warped_points = from_homogenous((transforms @ to_homogenous(points).unsqueeze(-1)).squeeze(-1))  # [B * O, 3]
+        warped_points = warped_points.reshape((B, O, 3))  # [B, O, 3]
+        warped_points = warped_points.squeeze(1)  # [B, 3] in case only one output deformation was requested
         warped_points = warped_points.to(points.dtype)
         idx_nan = warped_points.isnan()
         warped_points[idx_nan] = points[idx_nan]  # If deformation is NaN, just use original point

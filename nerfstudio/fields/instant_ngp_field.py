@@ -15,7 +15,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
-    HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig
+    HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig, MultiDeformSE3Config
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -94,7 +94,9 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_n_tables: Optional[int] = None,
             hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
             hash_encoding_ensemble_n_heads: Optional[int] = None,
+            hash_encoding_ensemble_disable_initial: bool = False,
             only_render_hash_table: Optional[int] = None,
+            n_freq_pos_warping: int = 7,
 
             # only used when mixing_type == 'mlp_blend_field'
             blend_field_hidden_dim: int = 64,
@@ -170,11 +172,15 @@ class TCNNInstantNGPField(Field):
                                                     output_activation=blend_field_out_activation,
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
-                                                    ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None,
+                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field', 'multi_deform_blend'} else None,
                 multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
                                                       n_layers=blend_field_n_layers,
                                                       n_freq_pos_enc=blend_field_n_freq_enc,
-                ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend' ,'multi_deform_blend++'] else None
+                ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend', 'multi_deform_blend++'] else None,
+                multi_deform_se3_config=MultiDeformSE3Config(
+                    n_freq_pos_enc=n_freq_pos_warping
+                ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend', 'multi_deform_blend++'] else None,
+                disable_initial_hash_ensemble=hash_encoding_ensemble_disable_initial
             )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
