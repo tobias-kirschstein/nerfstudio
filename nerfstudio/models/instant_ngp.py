@@ -116,6 +116,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_n_tables: Optional[int] = None,
     hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend'
     hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
+    hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
@@ -136,6 +137,8 @@ class InstantNGPModelConfig(ModelConfig):
     window_canonical_begin: int = 0  # Iteration at which allowing more complexity for canonical space should be started
     window_canonical_end: int = 0  # Iteration at which all complexity for canonical space should be there
     window_canonical_initial: int = 3  # How many levels of the canonical hash encoding should be active initially
+    window_hash_tables_begin: int = 0  # Step when more hash tables should be gradually added
+    window_hash_tables_end: int = 0  # Step when all hash tables should be present
 
     n_ambient_dimensions: int = 0  # How many ambient dimensions should be used
     fix_canonical_space: bool = False  # If True, only canonical space ray can optimize the reconstruction and all other timesteps can only affect the deformation field
@@ -231,8 +234,10 @@ class NGPModel(Model):
             hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
             hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
+            hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
+            n_freq_pos_warping=self.config.n_freq_pos_warping,
 
             blend_field_hidden_dim=self.config.blend_field_hidden_dim,
             blend_field_n_freq_enc=self.config.blend_field_n_freq_enc,
@@ -375,6 +380,16 @@ class NGPModel(Model):
         else:
             self.sched_window_blend = None
 
+        if self.config.use_hash_encoding_ensemble and self.config.window_hash_tables_end > 0:
+            self.sched_window_hash_tables = GenericScheduler(
+                init_value=1,
+                final_value=self.field.hash_encoding_ensemble.n_hash_encodings,
+                begin_step=self.config.window_hash_tables_begin,
+                end_step=self.config.window_hash_tables_end,
+            )
+        else:
+            self.sched_window_hash_tables = None
+
         # background
         if self.config.use_backgrounds:
             background_color = None
@@ -458,10 +473,14 @@ class NGPModel(Model):
 
         window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
         window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
+        window_hash_tables = self.sched_window_hash_tables.value if self.sched_window_hash_tables is not None else None
+        window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
 
         density, _ = self.field.get_density(ray_samples,
                                             window_canonical=window_canonical,
                                             window_blend=window_blend,
+                                            window_hash_tables=window_hash_tables,
+                                            window_deform=window_deform,
                                             time_codes=time_codes)
         return density
 
@@ -532,6 +551,16 @@ class NGPModel(Model):
                     update_every_num_iters=1,
                     func=update_window_param,
                     args=[self.sched_window_blend, "sched_window_blend"],
+                )
+            )
+
+        if self.sched_window_hash_tables is not None:
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=update_window_param,
+                    args=[self.sched_window_hash_tables, "sched_window_hash_tables"],
                 )
             )
 
@@ -697,10 +726,14 @@ class NGPModel(Model):
 
         window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
         window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
+        window_hash_tables = self.sched_window_hash_tables.value if self.sched_window_hash_tables is not None else None
+        window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
 
         field_outputs = self.field(ray_samples,
                                    window_canonical=window_canonical,
                                    window_blend=window_blend,
+                                   window_hash_tables=window_hash_tables,
+                                   window_deform=window_deform,
                                    time_codes=time_codes)
 
         # accumulation
@@ -884,6 +917,8 @@ class NGPModel(Model):
 
                 window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
                 window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
+                window_hash_tables = self.sched_window_hash_tables.value if self.sched_window_hash_tables is not None else None
+                window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
                 if random_ray_samples.timesteps is not None:
                     # Detach time codes as we only want to supervise the actual field
                     time_codes = self.time_embedding(random_ray_samples.timesteps.squeeze(1)).detach()
@@ -893,6 +928,8 @@ class NGPModel(Model):
                 density, _ = self.field.get_density(random_ray_samples,
                                                     window_canonical=window_canonical,
                                                     window_blend=window_blend,
+                                                    window_hash_tables=window_hash_tables,
+                                                    window_deform=window_deform,
                                                     time_codes=time_codes)
 
                 random_weights = nerfacc.render_weight_from_density(
@@ -939,6 +976,9 @@ class NGPModel(Model):
             )
             window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
             window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None
+            window_hash_tables = self.sched_window_hash_tables.value if self.sched_window_hash_tables is not None else None
+            window_deform = self.sched_window_deform.value if self.sched_window_deform is not None else None
+
             if ray_samples_random.timesteps is not None:
                 # Detach time codes as we only want to supervise the actual field
                 time_codes = self.time_embedding(ray_samples_random.timesteps.squeeze(1)).detach()
@@ -948,6 +988,8 @@ class NGPModel(Model):
             density, _ = self.field.get_density(ray_samples_random,
                                                 window_canonical=window_canonical,
                                                 window_blend=window_blend,
+                                                window_hash_tables=window_hash_tables,
+                                                window_deform=window_deform,
                                                 time_codes=time_codes)
             assert density.min() >= 0
             global_sparsity_loss = density.mean()
@@ -971,12 +1013,9 @@ class NGPModel(Model):
                                          landmark_loss.mean()
 
         if self.config.lambda_temporal_tv_loss > 0:
-            temoral_tv_loss = self.get_temporal_tv_loss()
-            loss_dict[
-                "temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  # (self.sched_temporal_tv_loss.value if
-            # self.sched_temporal_tv_loss is not None
-            # else self.config.lambda_temporal_tv_loss) * \
-            # temoral_tv_loss.mean()
+            temoral_tv_loss, l1_sparsity_loss = self.get_temporal_tv_loss(return_sparsity_prior=True)
+            loss_dict["temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  + \
+                                            (self.config.lambda_temporal_tv_loss / 10) * l1_sparsity_loss.mean()
 
         # import numpy as np
         # out_dir = '/mnt/hdd/debug/famudy_debug2/'

@@ -604,7 +604,7 @@ class Model(nn.Module):
         assert not loss.isnan().any()
         return loss
 
-    def get_temporal_tv_loss(self):
+    def get_temporal_tv_loss(self, return_sparsity_prior=True):
         timesteps1 = self.time_embedding(
             torch.arange(self.time_embedding.num_embeddings - 1, device=self.time_embedding.weight.device)
         )
@@ -613,7 +613,10 @@ class Model(nn.Module):
         )
 
         temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
-        return temporal_difference
+        if return_sparsity_prior:
+            return temporal_difference, timesteps1.abs().sum(dim=-1)
+        else:
+            return temporal_difference
 
     def apply_mask(
         self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor

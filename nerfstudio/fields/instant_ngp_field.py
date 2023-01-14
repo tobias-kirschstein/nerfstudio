@@ -15,7 +15,7 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
-    HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig
+    HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig, MultiDeformSE3Config
 from nerfstudio.fields.base_field import Field
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
@@ -94,7 +94,9 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_n_tables: Optional[int] = None,
             hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend',
             hash_encoding_ensemble_n_heads: Optional[int] = None,
+            hash_encoding_ensemble_disable_initial: bool = False,
             only_render_hash_table: Optional[int] = None,
+            n_freq_pos_warping: int = 7,
 
             # only used when mixing_type == 'mlp_blend_field'
             blend_field_hidden_dim: int = 64,
@@ -170,11 +172,15 @@ class TCNNInstantNGPField(Field):
                                                     output_activation=blend_field_out_activation,
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
-                                                    ) if hash_encoding_ensemble_mixing_type == 'mlp_blend_field' else None,
+                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field', 'multi_deform_blend'} else None,
                 multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
                                                       n_layers=blend_field_n_layers,
                                                       n_freq_pos_enc=blend_field_n_freq_enc,
-                ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None
+                ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None,
+                multi_deform_se3_config=MultiDeformSE3Config(
+                    n_freq_pos_enc=n_freq_pos_warping
+                ) if hash_encoding_ensemble_mixing_type == 'multi_deform_blend' else None,
+                disable_initial_hash_ensemble=hash_encoding_ensemble_disable_initial
             )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding
@@ -308,6 +314,8 @@ class TCNNInstantNGPField(Field):
                     ray_samples: RaySamples,
                     window_canonical: Optional[float] = None,
                     window_blend: Optional[float] = None,
+                    window_hash_tables: Optional[float] = None,
+                    window_deform: Optional[float] = None,
                     time_codes: Optional[torch.Tensor] = None):
 
         densities = []
@@ -363,7 +371,9 @@ class TCNNInstantNGPField(Field):
                     embeddings = self.hash_encoding_ensemble(positions_flat,
                                                              conditioning_code=time_codes_chunk,
                                                              windows_param=window_canonical,
-                                                             windows_param_blend_field=window_blend
+                                                             windows_param_blend_field=window_blend,
+                                                             windows_param_tables=window_hash_tables,
+                                                             windows_param_deform=window_deform,
                                                              )
                     base_inputs = [embeddings]
                 else:
@@ -530,6 +540,8 @@ class TCNNInstantNGPField(Field):
                 compute_normals: bool = False,
                 window_canonical: Optional[float] = None,
                 window_blend: Optional[float] = None,
+                window_hash_tables: Optional[float] = None,
+                window_deform: Optional[float] = None,
                 time_codes: Optional[TensorType] = None):
         """Evaluates the field at points along the ray.
 
@@ -541,12 +553,16 @@ class TCNNInstantNGPField(Field):
                 density, density_embedding = self.get_density(ray_samples,
                                                               window_canonical=window_canonical,
                                                               window_blend=window_blend,
+                                                              window_hash_tables=window_hash_tables,
+                                                              window_deform=window_deform,
                                                               time_codes=time_codes)
         else:
             density, density_embedding = self.get_density(ray_samples,
                                                           window_canonical=window_canonical,
                                                           window_blend=window_blend,
-                                                          time_codes=time_codes)
+                                                          window_deform=window_deform,
+                                                          time_codes=time_codes,
+                                                          window_hash_tables=window_hash_tables)
 
         field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
