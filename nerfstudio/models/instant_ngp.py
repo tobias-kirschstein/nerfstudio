@@ -843,6 +843,10 @@ class NGPModel(Model):
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
 
+        alpha_loss = self.get_alpha_loss(batch, outputs["accumulation"])
+        if alpha_loss is not None:
+            loss_dict["alpha_loss"] = alpha_loss
+
         beta_loss = self.get_beta_loss(outputs["accumulation"])
         if beta_loss is not None:
             loss_dict["beta_loss"] = beta_loss

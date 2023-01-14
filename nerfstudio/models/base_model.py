@@ -467,9 +467,22 @@ class Model(nn.Module):
         return mask_loss
 
     def get_alpha_loss(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
-        accumulation_per_ray = accumulation.squeeze(1)  # [R]
-        alpha_per_ray = self.get_alpha_per_ray(batch)
-        alpha_loss = ((accumulation_per_ray - alpha_per_ray) ** 2).mean() * self.config.lambda_alpha_loss
+        alpha_loss = None
+
+        if self.config.lambda_alpha_loss > 0:
+
+            accumulation_per_ray = accumulation.squeeze(1)  # [R]
+            alpha_per_ray = self.get_alpha_per_ray(batch)
+            if self.config.enforce_non_masked_density:
+                # Compute alpha loss everywhere
+                alpha_loss = ((accumulation_per_ray - alpha_per_ray) ** 2).mean() * self.config.lambda_alpha_loss
+            else:
+                # Only compute alpha loss in areas where the accumulation should be below 1
+                idx_background = alpha_per_ray < 1
+                if idx_background.any():
+                    alpha_loss = ((accumulation_per_ray[idx_background] - alpha_per_ray[
+                        idx_background]) ** 2).mean() * self.config.lambda_alpha_loss
+
         return alpha_loss
 
     def get_floaters_metric(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
