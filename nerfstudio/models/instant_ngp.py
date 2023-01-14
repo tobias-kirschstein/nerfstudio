@@ -103,6 +103,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_temporal_tv_loss: float = 0  # enforce total variation loss across temporal codes
 
     use_spherical_harmonics: bool = True
+    spherical_harmonics_degree: int = 4
     disable_view_dependency: bool = False
     latent_dim_time: int = 0
     latent_dim_time_deformation: Optional[
@@ -420,6 +421,7 @@ class NGPModel(Model):
         self.train_step = 0
 
         self.register_load_state_dict_post_hook(self.load_state_dict_post_hook)
+        self._fixed_view_direction = None
 
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
@@ -734,7 +736,8 @@ class NGPModel(Model):
                                    window_blend=window_blend,
                                    window_hash_tables=window_hash_tables,
                                    window_deform=window_deform,
-                                   time_codes=time_codes)
+                                   time_codes=time_codes,
+                                   fixed_view_direction=self._fixed_view_direction)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(
@@ -1148,4 +1151,7 @@ class NGPModel(Model):
             for unexpected_key in list(incompatible_keys.unexpected_keys):
                 if unexpected_key.startswith('_model.sampler.occupancy_grid'):
                     incompatible_keys.unexpected_keys.remove(unexpected_key)
+
+    def fix_view_direction(self, view_direction: torch.Tensor):
+        self._fixed_view_direction = view_direction
 

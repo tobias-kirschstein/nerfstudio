@@ -75,6 +75,7 @@ class TCNNInstantNGPField(Field):
             hashgrid_base_resolution: int = 16,
             hashgrid_n_features_per_level: int = 2,
             use_spherical_harmonics: bool = True,
+            spherical_harmonics_degree: int = 4,
             disable_view_dependency: bool = False,
             latent_dim_time: int = 0,
             n_timesteps: int = 1,
@@ -103,7 +104,7 @@ class TCNNInstantNGPField(Field):
             blend_field_n_layers: int = 4,
             blend_field_out_activation: Optional[Literal['Tanh', 'Normalization']] = None,
             blend_field_n_freq_enc: int = 0,
-            blend_field_skip_connections: Optional[Tuple[int]] =  None,
+            blend_field_skip_connections: Optional[Tuple[int]] = None,
 
             no_hash_encoding: bool = False,
             n_frequencies: int = 12,
@@ -172,11 +173,16 @@ class TCNNInstantNGPField(Field):
                                                     output_activation=blend_field_out_activation,
                                                     n_freq_pos_enc=blend_field_n_freq_enc,
                                                     skip_connections=blend_field_skip_connections
-                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field', 'multi_deform_blend', 'multi_deform_blend++'} else None,
-                multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim, # TODO: for now sharing hyperparams wih blend field
+                                                    ) if hash_encoding_ensemble_mixing_type in {'mlp_blend_field',
+                                                                                                'multi_deform_blend_offset',
+                                                                                                'multi_deform_blend',
+                                                                                                'multi_deform_blend++'} else None,
+                multi_deform_config=MultiDeformConfig(n_hidden_dims=blend_field_hidden_dim,
+                                                      # TODO: for now sharing hyperparams wih blend field
                                                       n_layers=blend_field_n_layers,
                                                       n_freq_pos_enc=blend_field_n_freq_enc,
-                ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend', 'multi_deform_blend++'] else None,
+                                                      ) if hash_encoding_ensemble_mixing_type in [
+                    'multi_deform_blend_offset', 'multi_deform_blend++'] else None,
                 multi_deform_se3_config=MultiDeformSE3Config(
                     n_freq_pos_enc=n_freq_pos_warping
                 ) if hash_encoding_ensemble_mixing_type in ['multi_deform_blend', 'multi_deform_blend++'] else None,
@@ -272,7 +278,7 @@ class TCNNInstantNGPField(Field):
                 n_input_dims=3,
                 encoding_config={
                     "otype": "SphericalHarmonics",
-                    "degree": 4,
+                    "degree": spherical_harmonics_degree,
                 }
             )
         else:
@@ -343,10 +349,10 @@ class TCNNInstantNGPField(Field):
             # positions_flat = contract(x=positions_flat, roi=self.aabb, type=self.contraction_type)
             # Manually compute contraction here, as contract(..) is not differentiable wrt the position input
             # Do not contract ambient dimensions (i.e., only the first 3 dimensions)
-            #positions_flat[:, :3] = SceneBox.get_normalized_positions(positions_flat[:, :3], self.aabb)
+            # positions_flat[:, :3] = SceneBox.get_normalized_positions(positions_flat[:, :3], self.aabb)
             if self.n_ambient_dimensions > 0:
-                positions_flat = torch.stack([ (positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0]),
-                                               positions_flat[:, 3:]], dim=-1)
+                positions_flat = torch.stack([(positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0]),
+                                              positions_flat[:, 3:]], dim=-1)
             else:
                 positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
@@ -446,8 +452,22 @@ class TCNNInstantNGPField(Field):
     def get_outputs(self,
                     ray_samples: RaySamples,
                     density_embedding: Optional[TensorType] = None,
-                    time_codes: Optional[TensorType] = None):
-        directions = get_normalized_directions(ray_samples.frustums.directions)
+                    time_codes: Optional[TensorType] = None,
+                    fixed_view_direction: Optional[torch.Tensor] = None):
+
+        if fixed_view_direction is None:
+            directions = ray_samples.frustums.directions
+        else:
+            # random_directions = torch.randn(len(ray_samples), 3).cuda()
+            # random_directions /= random_directions.norm(dim=1).unsqueeze(1)
+            # new_directions = ray_samples.frustums.directions + random_directions
+            # new_directions /= new_directions.norm(dim=1).unsqueeze(1)
+            # directions = new_directions
+
+            directions = torch.zeros_like(ray_samples.frustums.directions)
+            directions[:] = fixed_view_direction
+
+        directions = get_normalized_directions(directions)
         directions_flat = directions.view(-1, 3)
 
         if density_embedding is None:
@@ -542,7 +562,8 @@ class TCNNInstantNGPField(Field):
                 window_blend: Optional[float] = None,
                 window_hash_tables: Optional[float] = None,
                 window_deform: Optional[float] = None,
-                time_codes: Optional[TensorType] = None):
+                time_codes: Optional[TensorType] = None,
+                fixed_view_direction: Optional[torch.Tensor] = None):
         """Evaluates the field at points along the ray.
 
         Args:
@@ -564,7 +585,10 @@ class TCNNInstantNGPField(Field):
                                                           window_deform=window_deform,
                                                           time_codes=time_codes)
 
-        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, time_codes=time_codes)
+        field_outputs = self.get_outputs(ray_samples,
+                                         density_embedding=density_embedding,
+                                         time_codes=time_codes,
+                                         fixed_view_direction=fixed_view_direction)
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
 
         if compute_normals:
