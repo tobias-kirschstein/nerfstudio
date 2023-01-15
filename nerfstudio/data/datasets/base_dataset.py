@@ -65,7 +65,21 @@ class InputDataset(Dataset):
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
             pil_image = pil_image.resize(newsize, resample=Image.BILINEAR)
-        image = np.array(pil_image, dtype="uint8")  # shape is (h, w, 3 or 4)
+        if self._dataparser_outputs.color_correction_filenames is not None:
+            image = np.array(pil_image, dtype="float") / 255  # shape is (h, w, 3 or 4)
+            has_alpha_channels = False
+            if image.shape[-1] == 4:
+                alpha_channels = image[:, :, 3]
+                image = image[:, :, :3]
+                has_alpha_channels = True
+            affine_color_transform = np.load(self._dataparser_outputs.color_correction_filenames[image_idx])
+            image = image @ affine_color_transform[:3, :3] + affine_color_transform[np.newaxis, :3, 3]
+            image = np.clip(image, 0, 1)
+            if has_alpha_channels:
+                image = np.concatenate([image, alpha_channels[:, :, np.newaxis]], axis=-1)
+            image = (image*255).astype(np.uint8)
+        else:
+            image = np.array(pil_image, dtype="uint8")  # shape is (h, w, 3 or 4)
 
         if self._dataparser_outputs.alpha_channel_filenames is not None:
             alpha_channel_filename = self._dataparser_outputs.alpha_channel_filenames[image_idx]
@@ -74,6 +88,10 @@ class InputDataset(Dataset):
 
             alpha_image = np.asarray(pil_alpha_image, dtype="uint8")
             image = np.concatenate([image, alpha_image[..., None]], axis=-1)
+
+
+
+
 
         assert len(image.shape) == 3
         assert image.dtype == np.uint8

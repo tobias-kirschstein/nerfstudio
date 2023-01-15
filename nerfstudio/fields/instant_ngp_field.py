@@ -160,9 +160,8 @@ class TCNNInstantNGPField(Field):
                 "n_frequencies": n_frequencies
             }
         elif use_hash_encoding_ensemble:
-            n_hashtables = latent_dim_time if hash_encoding_ensemble_mixing_type == 'blend' else hash_encoding_ensemble_n_tables
             self.hash_encoding_ensemble = HashEncodingEnsemble(
-                n_hashtables,
+                hash_encoding_ensemble_n_tables,
                 TCNNHashEncodingConfig(n_levels=hash_encoding_ensemble_n_levels,
                                        n_features_per_level=hash_encoding_ensemble_features_per_level),
                 mixing_type=hash_encoding_ensemble_mixing_type,

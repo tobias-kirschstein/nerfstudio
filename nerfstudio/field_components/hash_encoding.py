@@ -218,7 +218,6 @@ class HashEncodingEnsemble(nn.Module):
                 self.mixing_heads = nn.ModuleList(
                     [nn.Linear(dim_hash_encoding, dim_hash_encoding) for _ in range(self.n_hash_encodings)])
 
-
         elif mixing_type == 'multihead_blend_attention_style':
             n_heads = 8  # TODO expose parameter
             self.n_heads = n_heads
@@ -264,8 +263,10 @@ class HashEncodingEnsemble(nn.Module):
             self.pos_encoder = pos_encoder
             self.blend_field = blend_field
 
+        elif self.mixing_type == 'blend':
+            assert n_hash_encodings == dim_conditioning_code, 'For simple blend n_hash_encodings has to equal dim_conditioning_code (which is latent_dim_time)'
+
         if self.mixing_type in ['multi_deform_blend_offset', 'multi_deform_blend', 'multi_deform_blend++']:
-            assert multi_deform_config.input_dim == hash_encoding_config.n_dims_to_encode
             self.n_output_dims = dim_hash_encoding
 
             if self.mixing_type == 'multi_deform_blend++':
