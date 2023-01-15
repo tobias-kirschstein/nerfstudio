@@ -119,6 +119,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
     hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
     hash_encoding_ensemble_disable_table_chunking: bool = False  # Backward compatibility, disables performance improvement that chunks hashtables together
+    hash_encoding_ensemble_use_soft_transition: bool = False  # If disable_initial is used, slow transition ensures that there is no sudden jump in the blend weight for the first hashtable once window_hash_tables_begin is reached
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
@@ -238,6 +239,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
             hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
             hash_encoding_ensemble_disable_table_chunking=self.config.hash_encoding_ensemble_disable_table_chunking,
+            hash_encoding_ensemble_use_soft_transition=self.config.hash_encoding_ensemble_use_soft_transition,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
             n_freq_pos_warping=self.config.n_freq_pos_warping,
@@ -720,13 +722,13 @@ class NGPModel(Model):
             )
 
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
-        ray_samples, _ = self.warp_ray_samples(ray_samples)
+        ray_samples, time_codes_deform = self.warp_ray_samples(ray_samples)
 
-        if ray_samples.timesteps is not None and self.time_embedding is not None:
+        if self.use_separate_deformation_time_embedding and ray_samples.timesteps is not None and self.time_embedding is not None:
             # This potentially uses a different time embedding for the canonical field than the deformation field
             time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
         else:
-            time_codes = None
+            time_codes = time_codes_deform
 
         window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
         window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None

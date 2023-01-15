@@ -55,6 +55,8 @@ class DataparserOutputs:
     cameras: Cameras
     """Camera object storing collection of camera information in dataset."""
     alpha_channel_filenames: Optional[List[Path]] = None
+    """Camera object storing collection of camera information in dataset."""
+    color_correction_filenames: Optional[List[Path]] = None
     """image_filenames can have RGBA images. 
     In case the alpha channels are stored separately, the corresponding paths can be specified here"""
     alpha_color: Optional[TensorType[3]] = None
