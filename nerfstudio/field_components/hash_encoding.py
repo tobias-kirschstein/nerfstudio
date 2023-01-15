@@ -1,7 +1,7 @@
 import dataclasses
 from collections import defaultdict
 from dataclasses import dataclass
-from math import sqrt, ceil
+from math import ceil, sqrt
 from typing import Dict, List, Literal, Optional, Tuple
 
 import tinycudann as tcnn
@@ -554,3 +554,50 @@ class HashEncodingEnsemble(nn.Module):
             param_groups["blend_fields"] = list(self.multi_deform_mlp.parameters())
 
         return param_groups
+
+class HashEncodingEnsembleParallel(nn.Module):
+    def __init__(
+        self,
+        ensemble_size: int,
+        n_input_dims: int = 3,
+        base_resolution: int = 16,
+        n_levels: int = 14,
+        n_features_per_level: int = 2,
+        log2_hashmap_size: int = 19,
+        per_level_scale: float = 1.4472692012786865,
+    ):
+        super(HashEncodingEnsembleParallel, self).__init__()
+
+        self.ensemble_size = ensemble_size
+        self.n_levels = n_levels
+        self.n_features_per_level = n_features_per_level
+        self.n_output_dims = n_levels * n_features_per_level
+
+        self.encoding = tcnn.Encoding(
+            n_input_dims=n_input_dims,
+            encoding_config={
+                "otype": "HashGrid",
+                "n_levels": n_levels,
+                "n_features_per_level": n_features_per_level * ensemble_size,
+                "log2_hashmap_size": log2_hashmap_size,
+                "base_resolution": base_resolution,
+                "per_level_scale": per_level_scale,
+                "interpolation": "Smoothstep",
+            },
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        ensemble_code: torch.Tensor,
+    ) -> torch.Tensor:
+        flattened_feat = self.encoding(x)
+        stacked_feat = flattened_feat.reshape(
+            -1, self.n_levels, self.ensemble_size, self.n_features_per_level
+        )  # (B*S, L, E, F)
+        weighted_feat = ensemble_code[:, None, :, None] * stacked_feat
+        feat = weighted_feat.sum(dim=-2).reshape(flattened_feat.shape[0], -1)
+        return feat
+
+    def get_out_dim(self) -> int:
+        return self.n_output_dims

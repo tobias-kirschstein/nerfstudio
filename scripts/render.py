@@ -74,7 +74,7 @@ def _render_trajectory_video(
         occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
 
         if debug_occupancy_grid_filtering:
-            np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid_densities)
+            np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid.occs.cpu().numpy())
             print("Exiting rendering as debug_occupancy_grid_filtering was set")
             exit(0)
 
