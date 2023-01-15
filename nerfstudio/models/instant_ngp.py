@@ -103,6 +103,7 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_temporal_tv_loss: float = 0  # enforce total variation loss across temporal codes
 
     use_spherical_harmonics: bool = True
+    spherical_harmonics_degree: int = 4
     disable_view_dependency: bool = False
     latent_dim_time: int = 0
     latent_dim_time_deformation: Optional[
@@ -117,6 +118,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_mixing_type: HashEnsembleMixingType = 'blend'
     hash_encoding_ensemble_n_heads: Optional[int] = None  # If None, will use the same as n_tables
     hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
+    hash_encoding_ensemble_disable_table_chunking: bool = False  # Backward compatibility, disables performance improvement that chunks hashtables together
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
@@ -235,6 +237,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
             hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
             hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
+            hash_encoding_ensemble_disable_table_chunking=self.config.hash_encoding_ensemble_disable_table_chunking,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
             n_freq_pos_warping=self.config.n_freq_pos_warping,
@@ -420,6 +423,7 @@ class NGPModel(Model):
         self.train_step = 0
 
         self.register_load_state_dict_post_hook(self.load_state_dict_post_hook)
+        self._fixed_view_direction = None
 
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
@@ -734,7 +738,8 @@ class NGPModel(Model):
                                    window_blend=window_blend,
                                    window_hash_tables=window_hash_tables,
                                    window_deform=window_deform,
-                                   time_codes=time_codes)
+                                   time_codes=time_codes,
+                                   fixed_view_direction=self._fixed_view_direction)
 
         # accumulation
         weights = nerfacc.render_weight_from_density(
@@ -839,6 +844,10 @@ class NGPModel(Model):
         mask_loss = self.get_mask_loss(batch, outputs["accumulation"])
         if mask_loss is not None:
             loss_dict["mask_loss"] = mask_loss
+
+        alpha_loss = self.get_alpha_loss(batch, outputs["accumulation"])
+        if alpha_loss is not None:
+            loss_dict["alpha_loss"] = alpha_loss
 
         beta_loss = self.get_beta_loss(outputs["accumulation"])
         if beta_loss is not None:
@@ -1148,4 +1157,7 @@ class NGPModel(Model):
             for unexpected_key in list(incompatible_keys.unexpected_keys):
                 if unexpected_key.startswith('_model.sampler.occupancy_grid'):
                     incompatible_keys.unexpected_keys.remove(unexpected_key)
+
+    def fix_view_direction(self, view_direction: torch.Tensor):
+        self._fixed_view_direction = view_direction
 
