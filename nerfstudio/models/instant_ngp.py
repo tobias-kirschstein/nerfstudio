@@ -720,13 +720,13 @@ class NGPModel(Model):
             )
 
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
-        ray_samples, _ = self.warp_ray_samples(ray_samples)
+        ray_samples, time_codes_deform = self.warp_ray_samples(ray_samples)
 
-        if ray_samples.timesteps is not None and self.time_embedding is not None:
+        if self.use_separate_deformation_time_embedding and ray_samples.timesteps is not None and self.time_embedding is not None:
             # This potentially uses a different time embedding for the canonical field than the deformation field
             time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
         else:
-            time_codes = None
+            time_codes = time_codes_deform
 
         window_canonical = self.sched_window_canonical.value if self.sched_window_canonical is not None else None
         window_blend = self.sched_window_blend.value if self.sched_window_blend is not None else None

@@ -240,10 +240,21 @@ class Model(nn.Module):
         image_height, image_width = camera_ray_bundle.origins.shape[:2]
         num_rays = len(camera_ray_bundle)
         outputs_lists = defaultdict(list)
+
+        # To avoid out of memory during evaluation, we randomly sample rays
+        # Compared to going "line by line" this avoids situations where all rays are completely dense
+        # Instead, it mirrors the way rays are rendered during training, i.e., if training doesn't give OOM
+        # then this kind of ray sampling during evluation also won't cause OOM
+        shuffled_rays = camera_ray_bundle.flatten()
+        shuffled_ray_indices = torch.randperm(len(shuffled_rays))
+        shuffled_rays = shuffled_rays[shuffled_ray_indices]
+
         for i in range(0, num_rays, num_rays_per_chunk):
             start_idx = i
             end_idx = i + num_rays_per_chunk
-            ray_bundle = camera_ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
+            ray_bundle = shuffled_rays[start_idx: end_idx]
+            # ray_bundle = camera_ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
+            torch.cuda.empty_cache()
             outputs = self.forward(ray_bundle=ray_bundle)
             for output_name, output in outputs.items():  # type: ignore
                 outputs_lists[output_name].append(output)
@@ -254,6 +265,11 @@ class Model(nn.Module):
                 continue
 
             concat_output = torch.cat(outputs_list)
+            # Undo the shuffling in order to get the correct image
+            rearranged_output = torch.zeros_like(concat_output)
+            rearranged_output[shuffled_ray_indices] = concat_output
+            concat_output = rearranged_output
+
             assert concat_output.numel() % (image_width * image_height) == 0, (
                 f"aggregated model output for channel {output_name} has {concat_output.numel()} elements "
                 f"which cannot be reshaped into [{image_height}, {image_width}, -1]"
