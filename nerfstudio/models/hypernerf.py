@@ -574,6 +574,14 @@ class HashHyperNeRFModelConfig(HyperNeRFModelConfig):
 
     _target: Type = field(default_factory=lambda: HashHyperNeRFModel)
 
+    use_hash_se3field: bool = True
+    n_hashgrid_levels_warping: int = 12
+    n_freq_time: int = 6
+
+    base_resolution: int = 16
+    n_hashgrid_levels: int = 14
+    log2_hashmap_size: int = 19
+
 
 class HashHyperNeRFModel(HyperNeRFModel):
     """HyperNeRF model
@@ -582,11 +590,11 @@ class HashHyperNeRFModel(HyperNeRFModel):
         config: Basic NeRF configuration to instantiate model
     """
 
-    config: HyperNeRFModelConfig
+    config: HashHyperNeRFModelConfig
 
     def __init__(
         self,
-        config: HyperNeRFModelConfig,
+        config: HashHyperNeRFModelConfig,
         **kwargs,
     ) -> None:
         self.field_coarse = None
@@ -598,12 +606,48 @@ class HashHyperNeRFModel(HyperNeRFModel):
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
 
+    def populate_warping_field(self):
+        if self.config.use_hash_se3field:
+            self.warp_field = HashSE3WarpingField(
+                base_resolution=self.config.base_resolution,
+                n_hashgrid_levels=self.config.n_hashgrid_levels_warping,
+                log2_hashmap_size=self.config.log2_hashmap_size,
+                n_freq_time=self.config.n_freq_time,
+                warp_direction=self.config.warp_direction,
+            )
+        else:
+            self.warp_field = SE3WarpingField(
+                n_freq_pos=self.config.n_freq_pos_warping,
+                warp_code_dim=self.config.warp_code_dim,
+                mlp_num_layers=6,
+                mlp_layer_width=128,
+                warp_direction=self.config.warp_direction,
+            )
+
+            if self.config.window_alpha_end >= 1:
+                assert self.config.window_alpha_end > self.config.window_alpha_begin
+                self.sched_alpha = GenericScheduler(
+                    init_value=0,
+                    final_value=self.config.n_freq_pos_warping,
+                    begin_step=self.config.window_alpha_begin,
+                    end_step=self.config.window_alpha_end,
+                )
+                self.callbacks.append(
+                    TrainingCallback(
+                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                        update_every_num_iters=1,
+                        func=self.update_window_param,
+                        args=[self.sched_alpha, "alpha"],
+                    )
+                )
+
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HashHyperNeRFField(
             aabb=self.scene_box.aabb,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
+            log2_hashmap_size=self.config.log2_hashmap_size,
             base_extra_dim=base_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
@@ -615,6 +659,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
+            log2_hashmap_size=self.config.log2_hashmap_size,
             base_extra_dim=base_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
@@ -623,18 +668,15 @@ class HashHyperNeRFModel(HyperNeRFModel):
 
 
 @dataclass
-class MipHashHyperNeRFModelConfig(HyperNeRFModelConfig):
+class MipHashHyperNeRFModelConfig(HashHyperNeRFModelConfig):
     """HyperNeRF Model Config"""
 
     _target: Type = field(default_factory=lambda: MipHashHyperNeRFModel)
 
     loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
-    lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
-
-    n_hashgrid_levels: int = 13
 
 
-class MipHashHyperNeRFModel(HyperNeRFModel):
+class MipHashHyperNeRFModel(HashHyperNeRFModel):
     """HyperNeRF model
 
     Args:
@@ -664,6 +706,7 @@ class MipHashHyperNeRFModel(HyperNeRFModel):
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
             n_hashgrid_levels=self.config.n_hashgrid_levels,
+            log2_hashmap_size=self.config.log2_hashmap_size,
             base_extra_dim=base_extra_dim,
             base_mlp_num_layers=self.config.n_layers,
             base_mlp_layer_width=self.config.hidden_dim,
@@ -674,23 +717,15 @@ class MipHashHyperNeRFModel(HyperNeRFModel):
 
 
 @dataclass
-class MipHashEnsemHyperNeRFModelConfig(HyperNeRFModelConfig):
+class MipHashEnsemHyperNeRFModelConfig(MipHashHyperNeRFModelConfig):
     """HyperNeRF Model Config"""
 
     _target: Type = field(default_factory=lambda: MipHashEnsemHyperNeRFModel)
 
-    loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0})
-    lambda_hash_level: Optional[float] = None  # loss weight for the hash-level regularization
-
-    warping_grid_levels: int = 12
-    warping_base_resolution: int = 16
-    n_freq_time: int = 6
-
-    n_hashgrid_levels: int = 14
     ensem_code_dim: int = 8  # dimension of the code for hash table ensemble
 
 
-class MipHashEnsemHyperNeRFModel(HyperNeRFModel):
+class MipHashEnsemHyperNeRFModel(MipHashHyperNeRFModel):
     """HyperNeRF model
 
     Args:
@@ -712,30 +747,6 @@ class MipHashEnsemHyperNeRFModel(HyperNeRFModel):
         self.sched_beta = None
 
         super(HyperNeRFModel, self).__init__(config=config, **kwargs)
-
-    def populate_warping_field(self):
-        self.warp_field = HashSE3WarpingField(
-            n_hashgrid_levels=self.config.warping_grid_levels,
-            base_resolution=self.config.warping_base_resolution,
-            n_freq_time=self.config.n_freq_time,
-            warp_direction=self.config.warp_direction,
-        )
-        # if self.config.window_alpha_end >= 1:
-        #     assert self.config.window_alpha_end > self.config.window_alpha_begin
-        #     self.sched_alpha = GenericScheduler(
-        #         init_value=0,
-        #         final_value=self.config.n_freq_pos_warping,
-        #         begin_step=self.config.window_alpha_begin,
-        #         end_step=self.config.window_alpha_end,
-        #     )
-        #     self.callbacks.append(
-        #         TrainingCallback(
-        #             where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-        #             update_every_num_iters=1,
-        #             func=self.update_window_param,
-        #             args=[self.sched_alpha, "alpha"],
-        #         )
-        #     )
 
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         # ensemble embeddings

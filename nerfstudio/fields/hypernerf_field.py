@@ -373,8 +373,9 @@ class HashSE3WarpingField(SE3WarpingField):
     def __init__(
         self,
         base_in_dim: int = 3,
-        n_hashgrid_levels: int = 12,
         base_resolution: int = 16,
+        n_hashgrid_levels: int = 12,
+        log2_hashmap_size: int = 19,
         mlp_num_layers: int = 3,
         mlp_layer_width: int = 64,
         n_freq_time: int = 7,
@@ -392,7 +393,7 @@ class HashSE3WarpingField(SE3WarpingField):
                 "otype": "HashGrid",
                 "n_levels": n_hashgrid_levels,
                 "n_features_per_level": 2,
-                "log2_hashmap_size": 19,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
+                "log2_hashmap_size": log2_hashmap_size,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
                 "base_resolution": base_resolution,
                 "per_level_scale": 1.4472692012786865,
                 "interpolation": "Smoothstep",  # How to interpolate nearby grid lookups. Can be "Nearest", "Linear", or "Smoothstep" (for smooth derivatives).
@@ -760,7 +761,9 @@ class HashHyperNeRFField(HyperNeRFField):
         use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
+        use_hash_se3field: bool = True,
         n_hashgrid_levels: int = 13,
+        log2_hashmap_size: int = 19,
         base_in_dim: int = 3,
         base_extra_dim: int = 0,
         base_out_dim: int = 15,
@@ -774,6 +777,7 @@ class HashHyperNeRFField(HyperNeRFField):
         super(HyperNeRFField, self).__init__()
 
         self.aabb = nn.Parameter(aabb, requires_grad=False)
+        self.use_hash_se3field = use_hash_se3field
 
         # template NeRF
         hash_grid_encoding_config = {
@@ -781,7 +785,7 @@ class HashHyperNeRFField(HyperNeRFField):
             "otype": "HashGrid",
             "n_levels": n_hashgrid_levels,
             "n_features_per_level": 2,
-            "log2_hashmap_size": 19,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
+            "log2_hashmap_size": log2_hashmap_size,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
             "base_resolution": 16,
             "per_level_scale": 1.4472692012786865,
             # "interpolation": "Linear",  # How to interpolate nearby grid lookups. Can be "Nearest", "Linear", or "Smoothstep" (for smooth derivatives).
@@ -838,8 +842,12 @@ class HashHyperNeRFField(HyperNeRFField):
         directions = ray_samples.frustums.directions
 
         if warp_field is not None:
-            assert "warp" in code_dict
-            warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
+            if self.use_hash_se3field:
+                timesteps = ray_samples.timesteps
+                warped_positions, warped_directions = warp_field(positions, directions, timesteps, window_alpha)
+            else:
+                assert "warp" in code_dict
+                warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
             warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
@@ -900,10 +908,12 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         use_hyper_slicing: bool = True,
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
+        use_hash_se3field: bool = True,
         ensem_code_dim: int = 8,
         ensem_mixing_type: str = "blend",
         ensem_n_tables: int = 16,
         n_hashgrid_levels: int = 14,
+        log2_hashmap_size: int = 19,
         base_in_dim: int = 3,
         base_extra_dim: int = 0,
         base_out_dim: int = 15,
@@ -917,6 +927,7 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         super(HyperNeRFField, self).__init__()
 
         self.aabb = nn.Parameter(aabb, requires_grad=False)
+        self.use_hash_se3field = use_hash_se3field
 
         # Avoid circular import
         from nerfstudio.field_components.hash_encoding import (
@@ -931,7 +942,7 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
                 n_dims_to_encode=base_in_dim,  # Can be 3 or 4
                 n_levels=n_hashgrid_levels,
                 n_features_per_level=2,
-                log2_hashmap_size=19,
+                log2_hashmap_size=log2_hashmap_size,
                 base_resolution=16,
                 per_level_scale=1.4472692012786865,
                 interpolation="Smoothstep",
@@ -954,27 +965,14 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
             },
         )
 
-        # self.direction_encoding = tcnn.Encoding(
-        #     n_input_dims=3,
-        #     encoding_config={
-        #         "otype": "SphericalHarmonics",
-        #         "degree": 1,
-        #     },
-        #     # encoding_config={
-        #     #     "otype": "Frequency",
-        #     #     "n_frequencies": 1,
-        #     # },
-        #     # encoding_config={
-        #     #     "otype": "Identity",
-        #     # },
-        # )
-        # head_in_dim = base_out_dim + self.direction_encoding.n_output_dims
-
-        n_freq_dir = 1
-        self.direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=n_freq_dir, min_freq_exp=0.0, max_freq_exp=n_freq_dir - 1, include_input=True
+        self.direction_encoding = tcnn.Encoding(
+            n_input_dims=3,
+            encoding_config={
+                "otype": "SphericalHarmonics",
+                "degree": 1,
+            },
         )
-        head_in_dim = base_out_dim + self.direction_encoding.get_out_dim()
+        head_in_dim = base_out_dim + self.direction_encoding.n_output_dims
 
         self.mlp_head = MLP(
             in_dim=head_in_dim + head_extra_dim,
@@ -1004,11 +1002,12 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         directions = ray_samples.frustums.directions
 
         if warp_field is not None:
-            # assert "warp" in code_dict
-            # warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
-
-            timesteps = ray_samples.timesteps
-            warped_positions, warped_directions = warp_field(positions, directions, timesteps, window_alpha)
+            if self.use_hash_se3field:
+                timesteps = ray_samples.timesteps
+                warped_positions, warped_directions = warp_field(positions, directions, timesteps, window_alpha)
+            else:
+                assert "warp" in code_dict
+                warped_positions, warped_directions = warp_field(positions, directions, code_dict["warp"], window_alpha)
 
             warped_positions = warped_positions.reshape(-1, 3)
             warped_positions = (warped_positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
