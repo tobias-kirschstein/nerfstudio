@@ -72,6 +72,12 @@ def _render_trajectory_video(
 
     if use_occupancy_grid_filtering:
         occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
+
+        if debug_occupancy_grid_filtering:
+            np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid_densities)
+            print("Exiting rendering as debug_occupancy_grid_filtering was set")
+            exit(0)
+
         filter_occupancy_grid(occupancy_grid)
 
         # resolution = occupancy_grid.resolution
