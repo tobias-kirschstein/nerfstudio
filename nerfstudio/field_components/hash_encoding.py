@@ -174,7 +174,8 @@ class HashEncodingEnsemble(nn.Module):
                  multi_deform_config: MultiDeformConfig = None,
                  multi_deform_se3_config: MultiDeformSE3Config = None,
                  disable_initial_hash_ensemble: bool = False,
-                 disable_table_chunking: bool = False):
+                 disable_table_chunking: bool = False,
+                 use_soft_transition: bool = False):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -183,6 +184,7 @@ class HashEncodingEnsemble(nn.Module):
         self.only_render_hash_table = only_render_hash_table
         self.disable_initial_hash_ensemble = disable_initial_hash_ensemble
         self.disable_table_chunking = disable_table_chunking
+        self.use_soft_transition = use_soft_transition
 
         if mixing_type in {'multi_deform_blend', 'multi_deform_blend_offset'} or disable_table_chunking:
             # Multi-deform mixing types cannot chunk the hash tables as the deformed inputs vary for every hash table
@@ -352,13 +354,25 @@ class HashEncodingEnsemble(nn.Module):
                 embeddings = embeddings.reshape((B, C*P, L*F))
                 embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
-
         if windows_param_tables is not None:
             # Gradually add more tables
 
             if windows_param_tables == 1 and self.disable_initial_hash_ensemble:
                 # Force deformation network to learn correspondences as long as only one table is active
                 conditioning_code = torch.ones_like(conditioning_code)
+            elif self. use_soft_transition and windows_param_tables < 2:
+                # Slowly migrate to using the actual conditioning code instead of fixing the blend weights to 1
+                alpha = windows_param_tables - 1  # Goes from 0 -> 1
+
+                if self.mixing_type == 'blend':
+                    # Only first entry of conditioning code is responsible for first table
+                    conditioning_code[:, 0] = alpha * conditioning_code[:, 0] + (1 - alpha) * 1
+                elif self.mixing_type == 'multihead_blend':
+                    # First n_heads entries of conditioning code are responsible for first table
+                    conditioning_code[:, :self.n_heads] = alpha * conditioning_code[:, :self.n_heads] \
+                                                       + (1 - alpha) * torch.ones_like(conditioning_code[:, :self.n_heads])
+                else:
+                    raise NotImplementedError("slow_migration only implemented for mixing types blend and multihead_blend")
 
             window = posenc_window(windows_param_tables,
                                    0,
