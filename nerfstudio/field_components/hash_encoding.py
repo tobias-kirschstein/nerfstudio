@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Parameter
 
+import einops
+
 from nerfstudio.field_components.encodings import WindowedNeRFEncoding, posenc_window
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.fields.hypernerf_field import SE3WarpingFieldEnsem
@@ -349,11 +351,15 @@ class HashEncodingEnsemble(nn.Module):
                 L = self.hash_encoding_config.n_levels
                 F = self.hash_encoding_config.n_features_per_level
                 P = int(8 / F) if F * self.n_hash_encodings >= 8 else self.n_hash_encodings
-                embeddings = embeddings.reshape((B, C, L, P, F))
-                embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
-                embeddings = embeddings.reshape((B, C*P, L*F))
-                embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
+                #embeddings = embeddings.reshape((B, C, L, P, F))
+                #embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
+                #embeddings = embeddings.reshape((B, C*P, L*F))
+                #embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+
+                # ordering of features might be slightly different, before features from one level were next to each other (?)
+                # now the first features of each level are next to each other then the second features across all level etc.
+                embeddings = einops.rearrange(embeddings, 'b c (l p f) -> b (f l) (c p)', l=L, p=P, f=F)
         if windows_param_tables is not None:
             # Gradually add more tables
 
