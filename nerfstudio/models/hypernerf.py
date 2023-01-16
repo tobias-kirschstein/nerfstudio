@@ -617,6 +617,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
                 n_freq_time=self.config.n_freq_time,
                 warp_direction=self.config.warp_direction,
             )
+            final_value = self.config.log2_max_freq_time
         else:
             self.warp_field = SE3WarpingField(
                 n_freq_pos=self.config.n_freq_pos_warping,
@@ -625,23 +626,24 @@ class HashHyperNeRFModel(HyperNeRFModel):
                 mlp_layer_width=128,
                 warp_direction=self.config.warp_direction,
             )
+            final_value = self.config.n_freq_pos_warping
 
-            if self.config.window_alpha_end >= 1:
-                assert self.config.window_alpha_end > self.config.window_alpha_begin
-                self.sched_alpha = GenericScheduler(
-                    init_value=0,
-                    final_value=self.config.n_freq_pos_warping,
-                    begin_step=self.config.window_alpha_begin,
-                    end_step=self.config.window_alpha_end,
+        if self.config.window_alpha_end >= 1:
+            assert self.config.window_alpha_end > self.config.window_alpha_begin
+            self.sched_alpha = GenericScheduler(
+                init_value=0,
+                final_value=final_value,
+                begin_step=self.config.window_alpha_begin,
+                end_step=self.config.window_alpha_end,
+            )
+            self.callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=self.update_window_param,
+                    args=[self.sched_alpha, "alpha"],
                 )
-                self.callbacks.append(
-                    TrainingCallback(
-                        where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
-                        update_every_num_iters=1,
-                        func=self.update_window_param,
-                        args=[self.sched_alpha, "alpha"],
-                    )
-                )
+            )
 
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HashHyperNeRFField(

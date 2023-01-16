@@ -24,7 +24,11 @@ from torch import nn
 from torchtyping import TensorType
 
 from nerfstudio.cameras.rays import RaySamples
-from nerfstudio.field_components.encodings import NeRFEncoding, WindowedNeRFEncoding
+from nerfstudio.field_components.encodings import (
+    NeRFEncoding,
+    WindowedNeRFEncoding,
+    posenc_window,
+)
 from nerfstudio.field_components.field_heads import (
     DensityFieldHead,
     FieldHead,
@@ -412,16 +416,24 @@ class HashSE3WarpingField(SE3WarpingField):
     def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
         p = positions.reshape(-1, 3)  # (R*S, 3)
 
-        feat = self.mlp_base(p)
-        feat = feat.reshape(-1, 6, self.n_freq_time, 2)  # (R*S, 6, n_freq_time, 2)
-
         # freq = torch.linspace(0, self.n_freq_time - 1, self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
         freq = torch.linspace(0, np.exp2(self.log2_max_freq_time), self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
 
+        feat = self.mlp_base(p)
+        feat = feat.reshape(-1, 6, self.n_freq_time, 2)  # (R*S, 6, n_freq_time, 2)
+
+        amplitude = feat[..., 0]  # (R*S, 6, n_freq_time)
+        phase = feat[..., 1]  # (R*S, 6, n_freq_time)
+
+        if windows_param:
+            w = posenc_window(windows_param, 0, self.log2_max_freq_time, self.n_freq_time).to(p)
+            amplitude = amplitude * w[None, None, :]
+
         assert warp_code is not None
         t = warp_code.reshape(-1, 1, 1) * (2 * torch.pi / 512)  # (R*S, 1, 1), lowest period = 512 frames
+        components = amplitude * torch.sin(freq * t + phase)
 
-        rv = (feat[..., 0] * torch.sin(freq * t + feat[..., 1])).sum(-1)
+        rv = components.sum(-1)
         r = rv[:, :3]
         v = rv[:, :3]
 
