@@ -366,11 +366,12 @@ class HashEncodingEnsemble(nn.Module):
 
                 if self.mixing_type == 'blend':
                     # Only first entry of conditioning code is responsible for first table
-                    conditioning_code[:, 0] = alpha * conditioning_code[:, 0] + (1 - alpha) * 1
+                    conditioning_code = alpha * conditioning_code
+                    conditioning_code[:, 0] += (1 - alpha) * 1
                 elif self.mixing_type == 'multihead_blend':
                     # First n_heads entries of conditioning code are responsible for first table
-                    conditioning_code[:, :self.n_heads] = alpha * conditioning_code[:, :self.n_heads] \
-                                                       + (1 - alpha) * torch.ones_like(conditioning_code[:, :self.n_heads])
+                    conditioning_code = alpha * conditioning_code
+                    conditioning_code[:, :self.n_heads] += (1 - alpha) * torch.ones_like(conditioning_code[:, :self.n_heads])
                 else:
                     raise NotImplementedError("slow_migration only implemented for mixing types blend and multihead_blend")
 
