@@ -97,7 +97,7 @@ class SE3WarpingField(nn.Module):
         nn.init.zeros_(self.mlp_r.layers[-1].bias)
         nn.init.zeros_(self.mlp_v.layers[-1].bias)
 
-    def get_transform(self, positions, warp_code=None, windows_param=None, covs=None):
+    def get_transform(self, positions, warp_code, windows_param=None, covs=None):
         encoded_xyz = self.position_encoding(
             positions,
             windows_param=windows_param,
@@ -378,10 +378,12 @@ class HashSE3WarpingField(SE3WarpingField):
         log2_hashmap_size: int = 19,
         mlp_num_layers: int = 3,
         mlp_layer_width: int = 64,
+        log2_max_freq_time: int = 6,
         n_freq_time: int = 7,
         warp_direction: bool = True,
     ) -> None:
         super().__init__()
+        self.log2_max_freq_time = log2_max_freq_time
         self.n_freq_time = n_freq_time
         self.warp_direction = warp_direction
 
@@ -414,7 +416,7 @@ class HashSE3WarpingField(SE3WarpingField):
         feat = feat.reshape(-1, 6, self.n_freq_time, 2)  # (R*S, 6, n_freq_time, 2)
 
         # freq = torch.linspace(0, self.n_freq_time - 1, self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
-        freq = torch.linspace(0, np.exp2(self.n_freq_time - 1), self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
+        freq = torch.linspace(0, np.exp2(self.log2_max_freq_time), self.n_freq_time)[None, None, :].to(p)  # (1, 1, 6)
 
         assert warp_code is not None
         t = warp_code.reshape(-1, 1, 1) * (2 * torch.pi / 512)  # (R*S, 1, 1), lowest period = 512 frames
@@ -940,32 +942,32 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         )
 
         # template NeRF
-        # self.hash_encoding_ensemble = HashEncodingEnsemble(
-        #     n_hash_encodings=ensem_code_dim if ensem_mixing_type == "blend" else ensem_n_tables,
-        #     hash_encoding_config=TCNNHashEncodingConfig(
-        #         n_dims_to_encode=base_in_dim,  # Can be 3 or 4
-        #         n_levels=n_hashgrid_levels,
-        #         n_features_per_level=2,
-        #         log2_hashmap_size=log2_hashmap_size,
-        #         base_resolution=base_resolution,
-        #         per_level_scale=per_level_scale,
-        #         interpolation="Smoothstep",
-        #     ),
-        #     mixing_type=ensem_mixing_type,
-        #     dim_conditioning_code=ensem_code_dim,
-        #     blend_field_config=None,
-        #     multi_deform_config=None,
-        # )
-
-        self.hash_encoding_ensemble = HashEncodingEnsembleParallel(
-            ensemble_size=ensem_code_dim,
-            n_input_dims=3,
-            base_resolution=base_resolution,
-            log2_hashmap_size=log2_hashmap_size,
-            per_level_scale=per_level_scale,
-            n_features_per_level=2,
-            n_levels=14,
+        self.hash_encoding_ensemble = HashEncodingEnsemble(
+            n_hash_encodings=ensem_code_dim if ensem_mixing_type == "blend" else ensem_n_tables,
+            hash_encoding_config=TCNNHashEncodingConfig(
+                n_dims_to_encode=base_in_dim,  # Can be 3 or 4
+                n_levels=n_hashgrid_levels,
+                n_features_per_level=2,
+                log2_hashmap_size=log2_hashmap_size,
+                base_resolution=base_resolution,
+                per_level_scale=per_level_scale,
+                interpolation="Smoothstep",
+            ),
+            mixing_type=ensem_mixing_type,
+            dim_conditioning_code=ensem_code_dim,
+            blend_field_config=None,
+            multi_deform_config=None,
         )
+
+        # self.hash_encoding_ensemble = HashEncodingEnsembleParallel(
+        #     ensemble_size=ensem_code_dim,
+        #     n_input_dims=3,
+        #     base_resolution=base_resolution,
+        #     log2_hashmap_size=log2_hashmap_size,
+        #     per_level_scale=per_level_scale,
+        #     n_features_per_level=2,
+        #     n_levels=14,
+        # )
 
         self.mlp_base = tcnn.Network(
             n_input_dims=self.hash_encoding_ensemble.get_out_dim(),

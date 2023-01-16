@@ -576,7 +576,8 @@ class HashHyperNeRFModelConfig(HyperNeRFModelConfig):
 
     use_hash_se3field: bool = True
     n_hashgrid_levels_warping: int = 12
-    n_freq_time: int = 6
+    n_freq_time: int = 7
+    log2_max_freq_time: int = 6
 
     base_resolution: int = 16
     n_hashgrid_levels: int = 14
@@ -612,6 +613,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
                 base_resolution=self.config.base_resolution,
                 n_hashgrid_levels=self.config.n_hashgrid_levels_warping,
                 log2_hashmap_size=self.config.log2_hashmap_size,
+                log2_max_freq_time=self.config.log2_max_freq_time,
                 n_freq_time=self.config.n_freq_time,
                 warp_direction=self.config.warp_direction,
             )
@@ -644,6 +646,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HashHyperNeRFField(
             aabb=self.scene_box.aabb,
+            use_hash_se3field=self.config.use_hash_se3field,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
@@ -658,6 +661,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
 
         self.field_fine = HashHyperNeRFField(
             aabb=self.scene_box.aabb,
+            use_hash_se3field=self.config.use_hash_se3field,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
@@ -706,6 +710,7 @@ class MipHashHyperNeRFModel(HashHyperNeRFModel):
     def populate_template_NeRF(self, base_extra_dim, head_extra_dim):
         self.field_coarse = HashHyperNeRFField(
             aabb=self.scene_box.aabb,
+            use_hash_se3field=self.config.use_hash_se3field,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
@@ -760,6 +765,7 @@ class MipHashEnsemHyperNeRFModel(MipHashHyperNeRFModel):
 
         self.field_coarse = HashEnsemHyperNeRFField(
             aabb=self.scene_box.aabb,
+            use_hash_se3field=self.config.use_hash_se3field,
             use_hyper_slicing=self.config.use_hyper_slicing,
             n_freq_slice=self.config.n_freq_slice,
             hyper_slice_dim=self.config.hyper_slice_dim,
