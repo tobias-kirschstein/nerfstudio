@@ -67,6 +67,7 @@ class ModelConfig(InstantiateConfig):
 
     lambda_mask_loss: float = 0
     lambda_alpha_loss: Optional[float] = None
+    use_l1_for_alpha_loss: bool = False
     mask_rgb_loss: bool = False  # Whether to only compute the RGB loss on foreground pixels if a mask is provided
     enforce_non_masked_density: bool = False
     """Whether the mask loss should enforce density in non-masked regions to be high"""
@@ -92,12 +93,12 @@ class Model(nn.Module):
     config: ModelConfig
 
     def __init__(
-        self,
-        config: ModelConfig,
-        scene_box: SceneBox,
-        num_train_data: int,
-        camera_frustums: Optional[List[Frustum]] = None,
-        **kwargs,
+            self,
+            config: ModelConfig,
+            scene_box: SceneBox,
+            num_train_data: int,
+            camera_frustums: Optional[List[Frustum]] = None,
+            **kwargs,
     ) -> None:
         super().__init__()
         self.config = config
@@ -118,7 +119,7 @@ class Model(nn.Module):
         return self.device_indicator_param.device
 
     def get_training_callbacks(  # pylint:disable=no-self-use
-        self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
+            self, training_callback_attributes: TrainingCallbackAttributes  # pylint: disable=unused-argument
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks that run functions at the specified training iterations."""
         return []
@@ -279,7 +280,7 @@ class Model(nn.Module):
 
     @abstractmethod
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         """Writes the test image outputs.
         TODO: This shouldn't return a loss
@@ -304,11 +305,11 @@ class Model(nn.Module):
         self.load_state_dict(state)  # type: ignore
 
     def apply_background_network(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        background_adjustments: Optional[torch.Tensor] = None,
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            background_adjustments: Optional[torch.Tensor] = None,
     ):
         """
         Adds the color of the background images to the predicted rays if 'background_images' is supplied in `batch`.
@@ -355,7 +356,7 @@ class Model(nn.Module):
         return rgb
 
     def apply_background_adjustment(
-        self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
+            self, ray_bundle: RayBundle, t_fars: torch.Tensor, outputs: Dict[str, torch.Tensor]
     ):
         """
         Queries the background network with the given rays and stores the computed per-bg-pixel adjustments in the
@@ -399,12 +400,12 @@ class Model(nn.Module):
         pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
         alpha_maps = batch["alpha_map"].squeeze(3)  # [B, H, W]
         a = (
-            alpha_maps[
-                pixel_indices_per_ray[:, 0],
-                pixel_indices_per_ray[:, 1],
-                pixel_indices_per_ray[:, 2],
-            ].float()
-            / 255
+                alpha_maps[
+                    pixel_indices_per_ray[:, 0],
+                    pixel_indices_per_ray[:, 1],
+                    pixel_indices_per_ray[:, 2],
+                ].float()
+                / 255
         )
 
         return a
@@ -436,13 +437,13 @@ class Model(nn.Module):
 
     def get_background_adjustment_loss(self, outputs: Dict[str, torch.Tensor]):
         if (
-            self.config.use_background_network
-            and "background_adjustments" in outputs
-            and self.config.lambda_background_adjustment_regularization > 0
+                self.config.use_background_network
+                and "background_adjustments" in outputs
+                and self.config.lambda_background_adjustment_regularization > 0
         ):
             background_adjustment_displacement = (outputs["background_adjustments"] - 0.5).pow(2).mean()
             background_adjustment_displacement = (
-                self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
+                    self.config.lambda_background_adjustment_regularization * background_adjustment_displacement
             )
 
             if background_adjustment_displacement.isnan().any():
@@ -491,13 +492,20 @@ class Model(nn.Module):
             alpha_per_ray = self.get_alpha_per_ray(batch)
             if self.config.enforce_non_masked_density:
                 # Compute alpha loss everywhere
-                alpha_loss = ((accumulation_per_ray - alpha_per_ray) ** 2).mean() * self.config.lambda_alpha_loss
+                if self.config.use_l1_for_alpha_loss:
+                    alpha_loss = (accumulation_per_ray - alpha_per_ray).abs().mean() * self.config.lambda_alpha_loss
+                else:
+                    alpha_loss = ((accumulation_per_ray - alpha_per_ray) ** 2).mean() * self.config.lambda_alpha_loss
             else:
                 # Only compute alpha loss in areas where the accumulation should be below 1
                 idx_background = alpha_per_ray < 1
                 if idx_background.any():
-                    alpha_loss = ((accumulation_per_ray[idx_background] - alpha_per_ray[
-                        idx_background]) ** 2).mean() * self.config.lambda_alpha_loss
+                    if self.config.use_l1_for_alpha_loss:
+                        alpha_loss = (accumulation_per_ray[idx_background] - alpha_per_ray[
+                            idx_background]).abs().mean() * self.config.lambda_alpha_loss
+                    else:
+                        alpha_loss = ((accumulation_per_ray[idx_background] - alpha_per_ray[
+                            idx_background]) ** 2).mean() * self.config.lambda_alpha_loss
 
         return alpha_loss
 
@@ -557,10 +565,10 @@ class Model(nn.Module):
         #                          type=self.temporal_distortion.contraction_type)
 
         landmarks_a = (landmarks_a - self.temporal_distortion.aabb[0]) / (
-            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+                self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
         )
         landmarks_b = (landmarks_b - self.temporal_distortion.aabb[0]) / (
-            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+                self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
         )
 
         warped_landmarks_a, _ = self.temporal_distortion.se3_field(
@@ -601,8 +609,8 @@ class Model(nn.Module):
 
         time_embeddings = (
             self.time_embedding(batch["timesteps"][~canonical_timestep_mask])
-            .unsqueeze(1)
-            .repeat(1, landmarks_src.shape[1], 1)
+                .unsqueeze(1)
+                .repeat(1, landmarks_src.shape[1], 1)
         )  # T_non_can x N_lm x embed_dim
 
         valid = ~torch.isnan(landmarks).any(-1).any(0)  # T_non_can x N_lm
@@ -619,10 +627,10 @@ class Model(nn.Module):
         #                         roi=self.temporal_distortion.aabb,
         #                         type=self.temporal_distortion.contraction_type)
         landmarks_src = (landmarks_src - self.temporal_distortion.aabb[0]) / (
-            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+                self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
         )
         landmarks_tgt = (landmarks_tgt - self.temporal_distortion.aabb[0]) / (
-            self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
+                self.temporal_distortion.aabb[1] - self.temporal_distortion.aabb[0]
         )
 
         warped_landmarks_src, _ = self.temporal_distortion.se3_field(
@@ -648,7 +656,7 @@ class Model(nn.Module):
             return temporal_difference
 
     def apply_mask(
-        self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
+            self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
 
         if "mask" in batch:
@@ -670,11 +678,11 @@ class Model(nn.Module):
         return None, None, None
 
     def apply_mask_and_combine_images(
-        self,
-        batch: Dict[str, torch.Tensor],
-        rgb: torch.Tensor,
-        accumulation: torch.Tensor,
-        rgb_without_bg: Optional[torch.Tensor],
+            self,
+            batch: Dict[str, torch.Tensor],
+            rgb: torch.Tensor,
+            accumulation: torch.Tensor,
+            rgb_without_bg: Optional[torch.Tensor],
     ):
 
         image = batch["image"].to(self.device)

@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Parameter
 
+import einops
+
 from nerfstudio.field_components.encodings import WindowedNeRFEncoding, posenc_window
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.fields.hypernerf_field import SE3WarpingFieldEnsem
@@ -349,10 +351,16 @@ class HashEncodingEnsemble(nn.Module):
                 L = self.hash_encoding_config.n_levels
                 F = self.hash_encoding_config.n_features_per_level
                 P = int(8 / F) if F * self.n_hash_encodings >= 8 else self.n_hash_encodings
+
+                # ordering of features might be slightly different, before features from one level were next to each other (?)
+                # now the first features of each level are next to each other then the second features across all level etc.
+                embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
+
                 embeddings = embeddings.reshape((B, C, L, P, F))
                 embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
                 embeddings = embeddings.reshape((B, C*P, L*F))
                 embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+
 
         if windows_param_tables is not None:
             # Gradually add more tables
@@ -366,11 +374,12 @@ class HashEncodingEnsemble(nn.Module):
 
                 if self.mixing_type == 'blend':
                     # Only first entry of conditioning code is responsible for first table
-                    conditioning_code[:, 0] = alpha * conditioning_code[:, 0] + (1 - alpha) * 1
+                    conditioning_code = alpha * conditioning_code
+                    conditioning_code[:, 0] += (1 - alpha) * 1
                 elif self.mixing_type == 'multihead_blend':
                     # First n_heads entries of conditioning code are responsible for first table
-                    conditioning_code[:, :self.n_heads] = alpha * conditioning_code[:, :self.n_heads] \
-                                                       + (1 - alpha) * torch.ones_like(conditioning_code[:, :self.n_heads])
+                    conditioning_code = alpha * conditioning_code
+                    conditioning_code[:, :self.n_heads] += (1 - alpha) * torch.ones_like(conditioning_code[:, :self.n_heads])
                 else:
                     raise NotImplementedError("slow_migration only implemented for mixing types blend and multihead_blend")
 
@@ -399,6 +408,7 @@ class HashEncodingEnsemble(nn.Module):
                     "If blend mixing type is chosen, conditioning code needs to have as many dimensions as there are " \
                     "hashtables in the encoding"
 
+                # very old
                 # embeddings = self.hash_encoding(in_tensor)  # [B, D * H]
                 # n_levels = self.hash_encoding_config.n_levels
                 # features_per_level = self.hash_encoding_config.n_features_per_level
@@ -408,10 +418,14 @@ class HashEncodingEnsemble(nn.Module):
                 # embeddings = embeddings.reshape(-1, self.n_hash_encodings, n_levels * features_per_level)  # [B, H, L*F]
                 # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
-                conditioning_code = conditioning_code.unsqueeze(2)  # [B, H, 1]
+                # old
+                #conditioning_code = conditioning_code.unsqueeze(2)  # [B, H, 1]
+                #conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
+                #blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
+                #blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
+
                 conditioning_code = conditioning_code.to(embeddings)  # Make conditioning code half precision
-                blended_embeddings = torch.bmm(embeddings, conditioning_code)  # [B, D, 1]
-                blended_embeddings = blended_embeddings.squeeze(2)  # [B, D]
+                blended_embeddings = torch.einsum('bdh,bh->bd', embeddings, conditioning_code)
 
             elif self.mixing_type in ['multihead_blend', 'multihead_blend_mixed']:
                 assert conditioning_code.shape[-1] == self.n_hash_encodings * self.n_heads, \
@@ -423,15 +437,19 @@ class HashEncodingEnsemble(nn.Module):
                 FpH = self.n_features_per_head
 
                 embeddings = embeddings.to(conditioning_code)
+                embeddings_einops = embeddings_einops.to(conditioning_code)
                 if self.mixing_type == 'multihead_blend_mixed':
                     embeddings = torch.stack(
                         [self.mixing_heads[i](embeddings[:, :, i]) for i in range(self.n_hash_encodings)], dim=-1)
 
-                conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
-                conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
-                conditioning_code = conditioning_code.transpose(1, 2)  # [B, D, H]
-                weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
-                blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
+                #conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1)  # [B, C * FpH], C = H * nH
+                #conditioning_code = conditioning_code.reshape(B, H, nH * FpH)  # [B, H, D=nH * FpH]
+                #conditioning_code = conditioning_code.transpose(1, 2)  # [B, D, H]
+                #weighted_embeddings = conditioning_code * embeddings  # [B, D, H]
+                #blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
+
+                conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1).reshape(B, H, nH * FpH)
+                blended_embeddings = torch.einsum('bdh,bhd->bd', embeddings_einops, conditioning_code)
 
             elif self.mixing_type == 'multihead_blend_attention_style':
                 # embdeggins: B x D x H
