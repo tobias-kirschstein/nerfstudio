@@ -762,6 +762,7 @@ class HashHyperNeRFField(HyperNeRFField):
         n_freq_slice: int = 2,
         hyper_slice_dim: int = 2,
         use_hash_se3field: bool = True,
+        base_resolution: int = 14,
         n_hashgrid_levels: int = 13,
         log2_hashmap_size: int = 19,
         base_in_dim: int = 3,
@@ -786,7 +787,7 @@ class HashHyperNeRFField(HyperNeRFField):
             "n_levels": n_hashgrid_levels,
             "n_features_per_level": 2,
             "log2_hashmap_size": log2_hashmap_size,  # If type is "Hash", is the base-2 logarithm of the number of elements in each backing hash table.
-            "base_resolution": 16,
+            "base_resolution": base_resolution,
             "per_level_scale": 1.4472692012786865,
             # "interpolation": "Linear",  # How to interpolate nearby grid lookups. Can be "Nearest", "Linear", or "Smoothstep" (for smooth derivatives).
             "interpolation": "Smoothstep",  # How to interpolate nearby grid lookups. Can be "Nearest", "Linear", or "Smoothstep" (for smooth derivatives).
@@ -912,8 +913,10 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         ensem_code_dim: int = 8,
         ensem_mixing_type: str = "blend",
         ensem_n_tables: int = 16,
+        base_resolution: int = 16,
         n_hashgrid_levels: int = 14,
         log2_hashmap_size: int = 19,
+        per_level_scale: float = 1.4472692012786865,
         base_in_dim: int = 3,
         base_extra_dim: int = 0,
         base_out_dim: int = 15,
@@ -932,25 +935,36 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
         # Avoid circular import
         from nerfstudio.field_components.hash_encoding import (
             HashEncodingEnsemble,
+            HashEncodingEnsembleParallel,
             TCNNHashEncodingConfig,
         )
 
         # template NeRF
-        self.hash_encoding_ensemble = HashEncodingEnsemble(
-            n_hash_encodings=ensem_code_dim if ensem_mixing_type == "blend" else ensem_n_tables,
-            hash_encoding_config=TCNNHashEncodingConfig(
-                n_dims_to_encode=base_in_dim,  # Can be 3 or 4
-                n_levels=n_hashgrid_levels,
-                n_features_per_level=2,
-                log2_hashmap_size=log2_hashmap_size,
-                base_resolution=16,
-                per_level_scale=1.4472692012786865,
-                interpolation="Smoothstep",
-            ),
-            mixing_type=ensem_mixing_type,
-            dim_conditioning_code=ensem_code_dim,
-            blend_field_config=None,
-            multi_deform_config=None,
+        # self.hash_encoding_ensemble = HashEncodingEnsemble(
+        #     n_hash_encodings=ensem_code_dim if ensem_mixing_type == "blend" else ensem_n_tables,
+        #     hash_encoding_config=TCNNHashEncodingConfig(
+        #         n_dims_to_encode=base_in_dim,  # Can be 3 or 4
+        #         n_levels=n_hashgrid_levels,
+        #         n_features_per_level=2,
+        #         log2_hashmap_size=log2_hashmap_size,
+        #         base_resolution=base_resolution,
+        #         per_level_scale=per_level_scale,
+        #         interpolation="Smoothstep",
+        #     ),
+        #     mixing_type=ensem_mixing_type,
+        #     dim_conditioning_code=ensem_code_dim,
+        #     blend_field_config=None,
+        #     multi_deform_config=None,
+        # )
+
+        self.hash_encoding_ensemble = HashEncodingEnsembleParallel(
+            ensemble_size=ensem_code_dim,
+            n_input_dims=3,
+            base_resolution=base_resolution,
+            log2_hashmap_size=log2_hashmap_size,
+            per_level_scale=per_level_scale,
+            n_features_per_level=2,
+            n_levels=14,
         )
 
         self.mlp_base = tcnn.Network(
@@ -1023,6 +1037,5 @@ class HashEnsemHyperNeRFField(HashHyperNeRFField):
             warped_positions, code_dict["ensemble"].reshape(-1, code_dict["ensemble"].shape[-1])
         )
         base_mlp_out = self.mlp_base(base_inputs).to(positions)
-
         density = self.field_output_density(base_mlp_out).reshape([*positions.shape[:2], -1])
         return density, base_mlp_out, warped_directions
