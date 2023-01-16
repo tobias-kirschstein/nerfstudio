@@ -617,7 +617,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
                 n_freq_time=self.config.n_freq_time,
                 warp_direction=self.config.warp_direction,
             )
-            final_value = self.config.log2_max_freq_time
+            final_value = self.config.log2_max_freq_time + 1  # should be 1 larger than the max_freq
         else:
             self.warp_field = SE3WarpingField(
                 n_freq_pos=self.config.n_freq_pos_warping,
@@ -626,7 +626,7 @@ class HashHyperNeRFModel(HyperNeRFModel):
                 mlp_layer_width=128,
                 warp_direction=self.config.warp_direction,
             )
-            final_value = self.config.n_freq_pos_warping
+            final_value = self.config.n_freq_pos_warping  # n_freq is already 1 larger than the max_freq by design
 
         if self.config.window_alpha_end >= 1:
             assert self.config.window_alpha_end > self.config.window_alpha_begin
