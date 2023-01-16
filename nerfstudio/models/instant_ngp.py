@@ -7,20 +7,15 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from math import sqrt, ceil
-from typing import Dict, List, Optional, Tuple, Type, Union, Literal
+from math import ceil, sqrt
+from typing import Dict, List, Literal, Optional, Tuple, Type, Union
 
 import nerfacc
 import tinycudann as tcnn
 import torch
 from elias.config import implicit
 from nerfacc import ContractionType, contract
-from nerfstudio.data.scene_box import SceneBox
-from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
-from nerfstudio.field_components.occupancy import FilteredOccupancyGrid
-from nerfstudio.field_components.temporal_distortions import SE3Distortion, ViewDirectionWarpType
-from nerfstudio.fields.hypernerf_field import HyperSlicingField
-from torch import nn, TensorType
+from torch import TensorType, nn
 from torch.nn import Parameter, init
 from torch.nn.modules.module import T, _IncompatibleKeys
 from torch_efficient_distloss import flatten_eff_distloss
@@ -28,7 +23,8 @@ from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
-from nerfstudio.cameras.rays import RayBundle, RaySamples, Frustums
+from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
+from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -36,13 +32,21 @@ from nerfstudio.engine.callbacks import (
 )
 from nerfstudio.engine.generic_scheduler import GenericScheduler
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
+from nerfstudio.field_components.occupancy import FilteredOccupancyGrid
+from nerfstudio.field_components.temporal_distortions import (
+    SE3Distortion,
+    ViewDirectionWarpType,
+)
+from nerfstudio.fields.hypernerf_field import HyperSlicingField
 from nerfstudio.fields.instant_ngp_field import TCNNInstantNGPField
 from nerfstudio.model_components.losses import MSELoss
 from nerfstudio.model_components.ray_samplers import VolumetricSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
+    DeformationRenderer,
     DepthRenderer,
-    RGBRenderer, DeformationRenderer,
+    RGBRenderer,
 )
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, writer
@@ -132,6 +136,7 @@ class InstantNGPModelConfig(ModelConfig):
     use_deformation_hash_encoding_ensemble: bool = False  # Whether to use an ensemble of hash encodings instead of positional encoding for the deformation field
     n_freq_pos_warping: int = 7
     n_freq_pos_ambient: int = 7
+    use_hash_se3field: bool = False
 
     window_deform_begin: int = 0  # the number of steps window_deform is set to 0
     window_deform_end: int = 80000  # the number of steps when window_deform reaches its maximum
@@ -280,6 +285,7 @@ class NGPModel(Model):
                 mlp_num_layers=self.config.n_layers_deformation_field,
                 mlp_layer_width=self.config.hidden_dim_deformation_field,
                 view_direction_warping=self.config.view_direction_warping,
+                use_hash_se3field=self.config.use_hash_se3field,
                 use_hash_encoding_ensemble=self.config.use_deformation_hash_encoding_ensemble,
                 hash_encoding_ensemble_n_levels=self.config.hash_encoding_ensemble_n_levels,
                 hash_encoding_ensemble_features_per_level=self.config.hash_encoding_ensemble_features_per_level,

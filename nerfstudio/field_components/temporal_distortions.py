@@ -26,7 +26,7 @@ from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.field_components.encodings import Encoding, NeRFEncoding
 from nerfstudio.field_components.hash_encoding import HashEnsembleMixingType
 from nerfstudio.field_components.mlp import MLP
-from nerfstudio.fields.hypernerf_field import SE3WarpingFieldEnsem
+from nerfstudio.fields.hypernerf_field import HashSE3WarpingField, SE3WarpingFieldEnsem
 
 ViewDirectionWarpType = Literal[None, 'rotation', 'samples']
 
@@ -109,6 +109,7 @@ class SE3Distortion(nn.Module):
                  mlp_layer_width: int = 128,
                  skip_connections: Tuple[int] = (4,),
                  view_direction_warping: ViewDirectionWarpType = None,
+                 use_hash_se3field: bool = False,
                  use_hash_encoding_ensemble: bool = False,
                  hash_encoding_ensemble_n_levels: int = 16,
                  hash_encoding_ensemble_features_per_level: int = 2,
@@ -123,22 +124,33 @@ class SE3Distortion(nn.Module):
         self.aabb = nn.Parameter(aabb, requires_grad=False)
         self.contraction_type = contraction_type
         self.view_direction_warping = view_direction_warping
+        self.use_hash_se3field = use_hash_se3field
 
-        self.se3_field = SE3WarpingFieldEnsem(
-            n_freq_pos=n_freq_pos,
-            warp_code_dim=warp_code_dim,
-            mlp_num_layers=mlp_num_layers,
-            mlp_layer_width=mlp_layer_width,
-            skip_connections=skip_connections,
-            warp_direction=view_direction_warping == 'rotation',
-            use_hash_encoding_ensemble=use_hash_encoding_ensemble,
-            hash_encoding_ensemble_n_levels=hash_encoding_ensemble_n_levels,
-            hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level,
-            hash_encoding_ensemble_n_tables=hash_encoding_ensemble_n_tables,
-            hash_encoding_ensemble_mixing_type=hash_encoding_ensemble_mixing_type,
-            hash_encoding_ensemble_n_heads=hash_encoding_ensemble_n_heads,
-            only_render_hash_table=only_render_hash_table
-        )
+        if self.use_hash_se3field:
+            self.se3_field = HashSE3WarpingField(
+                base_resolution=16,
+                n_hashgrid_levels=12,
+                log2_hashmap_size=19,
+                log2_max_freq_time=6,
+                n_freq_time=15,
+                warp_direction=True,
+            )
+        else:
+            self.se3_field = SE3WarpingFieldEnsem(
+                n_freq_pos=n_freq_pos,
+                warp_code_dim=warp_code_dim,
+                mlp_num_layers=mlp_num_layers,
+                mlp_layer_width=mlp_layer_width,
+                skip_connections=skip_connections,
+                warp_direction=view_direction_warping == 'rotation',
+                use_hash_encoding_ensemble=use_hash_encoding_ensemble,
+                hash_encoding_ensemble_n_levels=hash_encoding_ensemble_n_levels,
+                hash_encoding_ensemble_features_per_level=hash_encoding_ensemble_features_per_level,
+                hash_encoding_ensemble_n_tables=hash_encoding_ensemble_n_tables,
+                hash_encoding_ensemble_mixing_type=hash_encoding_ensemble_mixing_type,
+                hash_encoding_ensemble_n_heads=hash_encoding_ensemble_n_heads,
+                only_render_hash_table=only_render_hash_table
+            )
 
     def forward(self, ray_samples: RaySamples, warp_code=None, windows_param=None) -> RaySamples:
         # assert ray_samples.timesteps is not None, "Cannot warp samples if no time is given"
@@ -150,6 +162,8 @@ class SE3Distortion(nn.Module):
         #positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
         positions = (positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
+        if self.use_hash_se3field:
+            warp_code = ray_samples.timesteps
         warped_p, warped_d = self.se3_field(positions,
                                             directions=ray_samples.frustums.directions,
                                             warp_code=warp_code,

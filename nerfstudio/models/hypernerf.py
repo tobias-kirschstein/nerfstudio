@@ -94,6 +94,7 @@ class HyperNeRFModelConfig(ModelConfig):
     n_layers: int = 8
     hidden_dim: int = 256
 
+    use_l1_for_alpha_loss: bool = True
 
 class HyperNeRFModel(Model):
     """HyperNeRF model
