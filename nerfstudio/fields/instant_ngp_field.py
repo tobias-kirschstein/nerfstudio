@@ -98,6 +98,7 @@ class TCNNInstantNGPField(Field):
             hash_encoding_ensemble_disable_initial: bool = False,
             hash_encoding_ensemble_disable_table_chunking: bool = False,
             hash_encoding_ensemble_use_soft_transition: bool = False,
+            hash_encoding_ensemble_swap_l_f: bool = False,
             only_render_hash_table: Optional[int] = None,
             n_freq_pos_warping: int = 7,
 
@@ -190,6 +191,7 @@ class TCNNInstantNGPField(Field):
                 disable_initial_hash_ensemble=hash_encoding_ensemble_disable_initial,
                 disable_table_chunking=hash_encoding_ensemble_disable_table_chunking,
                 use_soft_transition=hash_encoding_ensemble_use_soft_transition,
+                swap_l_f=hash_encoding_ensemble_swap_l_f,
             )
 
             # Hash encoding is computed seperately, so base MLP just takes inputs without adding encoding

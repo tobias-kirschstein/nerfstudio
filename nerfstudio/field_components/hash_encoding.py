@@ -177,7 +177,8 @@ class HashEncodingEnsemble(nn.Module):
                  multi_deform_se3_config: MultiDeformSE3Config = None,
                  disable_initial_hash_ensemble: bool = False,
                  disable_table_chunking: bool = False,
-                 use_soft_transition: bool = False):
+                 use_soft_transition: bool = False,
+                 swap_l_f: bool = False):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -187,6 +188,7 @@ class HashEncodingEnsemble(nn.Module):
         self.disable_initial_hash_ensemble = disable_initial_hash_ensemble
         self.disable_table_chunking = disable_table_chunking
         self.use_soft_transition = use_soft_transition
+        self.swap_l_f = swap_l_f
 
         if mixing_type in {'multi_deform_blend', 'multi_deform_blend_offset'} or disable_table_chunking:
             # Multi-deform mixing types cannot chunk the hash tables as the deformed inputs vary for every hash table
@@ -354,7 +356,10 @@ class HashEncodingEnsemble(nn.Module):
 
                 # ordering of features might be slightly different, before features from one level were next to each other (?)
                 # now the first features of each level are next to each other then the second features across all level etc.
-                embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
+                if self.swap_l_f:
+                    embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (f l) (c p) ', l=L, p=P, f=F)
+                else:
+                    embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
 
                 embeddings = embeddings.reshape((B, C, L, P, F))
                 embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]

@@ -124,6 +124,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
     hash_encoding_ensemble_disable_table_chunking: bool = False  # Backward compatibility, disables performance improvement that chunks hashtables together
     hash_encoding_ensemble_use_soft_transition: bool = False  # If disable_initial is used, slow transition ensures that there is no sudden jump in the blend weight for the first hashtable once window_hash_tables_begin is reached
+    hash_encoding_ensemble_swap_l_f: bool = False  # Deprecated, if enabled, features will be passed as FxL instead of LxF to the base MLP (L=layers, F=features)
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
@@ -245,6 +246,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
             hash_encoding_ensemble_disable_table_chunking=self.config.hash_encoding_ensemble_disable_table_chunking,
             hash_encoding_ensemble_use_soft_transition=self.config.hash_encoding_ensemble_use_soft_transition,
+            hash_encoding_ensemble_swap_l_f=self.config.hash_encoding_ensemble_swap_l_f,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
             n_freq_pos_warping=self.config.n_freq_pos_warping,
@@ -292,7 +294,7 @@ class NGPModel(Model):
                 hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
                 hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
                 hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
-                only_render_hash_table=self.config.only_render_hash_table
+                only_render_hash_table=self.config.only_render_hash_table,
             )
 
             if self.config.n_ambient_dimensions > 0:
