@@ -357,14 +357,14 @@ class HashEncodingEnsemble(nn.Module):
                 # ordering of features might be slightly different, before features from one level were next to each other (?)
                 # now the first features of each level are next to each other then the second features across all level etc.
                 if self.swap_l_f:
-                    embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (f l) (c p) ', l=L, p=P, f=F)
+                    embeddings = einops.rearrange(embeddings, 'b c (l p f) -> b (f l) (c p) ', l=L, p=P, f=F)
                 else:
-                    embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
+                    embeddings = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
 
-                embeddings = embeddings.reshape((B, C, L, P, F))
-                embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
-                embeddings = embeddings.reshape((B, C*P, L*F))
-                embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+                # embeddings = embeddings.reshape((B, C, L, P, F))
+                # embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
+                # embeddings = embeddings.reshape((B, C*P, L*F))
+                # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
 
         if windows_param_tables is not None:
@@ -442,7 +442,6 @@ class HashEncodingEnsemble(nn.Module):
                 FpH = self.n_features_per_head
 
                 embeddings = embeddings.to(conditioning_code)
-                embeddings_einops = embeddings_einops.to(conditioning_code)
                 if self.mixing_type == 'multihead_blend_mixed':
                     embeddings = torch.stack(
                         [self.mixing_heads[i](embeddings[:, :, i]) for i in range(self.n_hash_encodings)], dim=-1)
@@ -454,7 +453,7 @@ class HashEncodingEnsemble(nn.Module):
                 #blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
 
                 conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1).reshape(B, H, nH * FpH)
-                blended_embeddings = torch.einsum('bdh,bhd->bd', embeddings_einops, conditioning_code)
+                blended_embeddings = torch.einsum('bdh,bhd->bd', embeddings, conditioning_code)
 
             elif self.mixing_type == 'multihead_blend_attention_style':
                 # embdeggins: B x D x H
