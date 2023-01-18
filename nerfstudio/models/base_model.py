@@ -425,6 +425,24 @@ class Model(nn.Module):
 
         image = batch["image"].to(self.device)
 
+        if 'loss_weight_map' in batch:
+            pixel_indices_per_ray = batch["local_indices"]  # [R, [c, y, x]]
+            loss_weight_maps = batch["loss_weight_map"]  # [B, H, W]
+            loss_weight_map = loss_weight_maps[
+                pixel_indices_per_ray[:, 0],
+                pixel_indices_per_ray[:, 1],
+                pixel_indices_per_ray[:, 2],
+            ]
+
+            loss_weight_map = loss_weight_map.unsqueeze(1)  # [R, 1]
+            loss_weight_map = loss_weight_map.sqrt()  # Influence of weight map will be squared in MSE. Hence sqrt here
+
+            # Scale both predicted and target values with the lambda values from the loss_weight_map
+            # This should lead to larger updates for these rays
+            image = loss_weight_map * image
+            rgb_pred = loss_weight_map * rgb_pred
+
+
         if self.config.mask_rgb_loss and "mask" in batch:
             # Only compute RGB loss on non-masked pixels
             mask = self.get_mask_per_ray(batch)
