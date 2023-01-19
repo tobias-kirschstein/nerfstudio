@@ -518,7 +518,7 @@ class Model(nn.Module):
                 # Only compute alpha loss in areas where the accumulation should be below 1
                 idx_background = alpha_per_ray < 1
 
-                if 'mask' in batch:
+                if 'mask' in batch and self.config.lambda_mask_loss > 0:
                     # If both mask and alpha_mask are used, don't enforce density in regions where mask says it should
                     # be empty
                     mask_per_ray = self.get_mask_per_ray(batch)
