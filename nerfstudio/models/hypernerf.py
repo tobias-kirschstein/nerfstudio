@@ -68,13 +68,13 @@ class HyperNeRFModelConfig(ModelConfig):
     """Number of samples in fine field evaluation"""
 
     n_timesteps: int = 1
-    warp_code_dim: int = 8
     appearance_code_dim: int = 8
     n_cameras: int = 1
     camera_code_dim: int = 8
 
     # se3-warping field
     use_se3_warping: bool = True
+    warp_code_dim: int = 8
     n_freq_pos_warping: int = 7
     warp_direction: bool = True
     window_alpha_begin: int = 0  # the number of steps before window_alpha changes from its initial value
@@ -82,6 +82,7 @@ class HyperNeRFModelConfig(ModelConfig):
 
     # hyper-slicing field
     use_hyper_slicing: bool = True
+    slice_code_dim: int = 0
     n_freq_pos_slicing: int = 7
     hyper_slice_dim: int = 2
     window_beta_begin: int = 1000  # the number of steps before window_beta changes from its initial value
@@ -95,6 +96,7 @@ class HyperNeRFModelConfig(ModelConfig):
     hidden_dim: int = 256
 
     use_l1_for_alpha_loss: bool = True
+
 
 class HyperNeRFModel(Model):
     """HyperNeRF model
@@ -210,6 +212,11 @@ class HyperNeRFModel(Model):
         if self.config.warp_code_dim > 0:
             self.embeddings["warp"] = nn.Embedding(self.config.n_timesteps, self.config.warp_code_dim)
             init.uniform_(self.embeddings["warp"].weight, a=-0.05, b=0.05)
+
+        # slice embeddings
+        if self.config.slice_code_dim > 0:
+            self.embeddings["slice"] = nn.Embedding(self.config.n_timesteps, self.config.slice_code_dim)
+            init.uniform_(self.embeddings["slice"].weight, a=-0.05, b=0.05)
 
         # appearance embeddings
         if self.config.appearance_code_dim > 0:

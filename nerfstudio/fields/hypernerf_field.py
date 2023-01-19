@@ -625,11 +625,12 @@ class HyperNeRFField(Field):
                     base_inputs.append(code_dict["warp"])
 
             if warp_field is not None:
-                assert "warp" in code_dict
+                assert "warp" in code_dict or "slice" in code_dict
+                slice_code = code_dict["slice"] if "slice" in code_dict else code_dict["warp"]
                 warped_positions, warped_directions, warped_cov = warp_field(
                     gaussian_samples.mean,
                     directions,
-                    code_dict["warp"],
+                    slice_code,
                     window_alpha,
                     covs=gaussian_samples.cov,
                 )
@@ -637,10 +638,11 @@ class HyperNeRFField(Field):
                 encoded_xyz = self.position_encoding(warped_positions, windows_param=window_gamma, covs=warped_cov)
                 base_inputs.append(encoded_xyz)
             if slice_field is not None:
-                assert "warp" in code_dict
+                assert "warp" in code_dict or "slice" in code_dict
+                slice_code = code_dict["slice"] if "slice" in code_dict else code_dict["warp"]
                 w = slice_field(
                     gaussian_samples.mean,
-                    code_dict["warp"],
+                    slice_code,
                     window_alpha,  # HyperNeRF does not use windowing for slicing field in the official code
                     covs=gaussian_samples.cov,
                     # not use IPE when the highest freq of PE (2^7) is comparable to the number of samples along a ray (128)
