@@ -517,6 +517,16 @@ class Model(nn.Module):
             else:
                 # Only compute alpha loss in areas where the accumulation should be below 1
                 idx_background = alpha_per_ray < 1
+
+                if 'mask' in batch:
+                    # If both mask and alpha_mask are used, don't enforce density in regions where mask says it should
+                    # be empty
+                    mask_per_ray = self.get_mask_per_ray(batch)
+                    if (~mask_per_ray & ~idx_background).any():
+                        print("[WARNING] There were rays where alpha map says foreground, but mask says background, which shouldn't happen because the background mask is a subset of the background alpha mask")
+                    idx_background &= mask_per_ray
+                    alpha_per_ray = (alpha_per_ray - 0.5) * 2 # Scale alpha map such that there is a smooth transition, when cutoff was at 128
+
                 if idx_background.any():
                     if self.config.use_l1_for_alpha_loss:
                         alpha_loss = (accumulation_per_ray[idx_background] - alpha_per_ray[
