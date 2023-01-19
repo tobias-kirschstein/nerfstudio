@@ -316,7 +316,16 @@ class Trainer:
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision, cache_enabled=False):
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
+            if loss.isnan():
+                raise RuntimeError("LOSS TURNS TO NAN!")
+
         self.grad_scaler.scale(loss).backward()  # type: ignore
+
+        for n, p in self.pipeline.model.named_parameters():
+            if p.grad is not None and p.grad.isnan().any():
+                print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}: {p.grad.isnan().sum()}")
+                p.grad.nan_to_num_()
+
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
         self.grad_scaler.update()
         self.optimizers.scheduler_step_all(step)
@@ -328,19 +337,6 @@ class Trainer:
                     grad = p.grad.detach().abs()
                     writer.put_scalar(f"{n} (max)", grad.max(), step)
                     writer.put_scalar(f"{n} (mean)", grad.mean(), step)
-
-        # TODO: remove before release
-        nan_exist = False
-        for n, p in self.pipeline.model.named_parameters():
-            if p.grad is not None and p.grad.isnan().any():
-                print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}")
-                nan_exist = True
-        # if nan_exist:
-        #     import ipdb
-        #
-        #     ipdb.set_trace()
-        #     print("NAN VALUE ENCOUNTERED IN GRADIENTS")
-        # ################################
 
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
