@@ -290,6 +290,7 @@ class VanillaDataManagerConfig(InstantiateConfig):
 
     n_steps_warmup: int = -1  # If set, during warmup only the first timestep will be sampled
     n_timesteps_warmup: int = -1  # How many keyframes will be used during warmup
+    timesteps_warmup: Optional[List[int]] = None  # Alternative to n_timesteps_warmup: directly specify which frames are the keyframes
     fix_keyframes_after_warmup: bool = False  # If true, keyframes won't be sampled anymore after warmup phase
     seed: Optional[int] = None  # Seed for dataloader workers
 
@@ -425,7 +426,10 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             n_cameras = self.config.dataparser.n_cameras
             n_timesteps = self.config.dataparser.n_timesteps
 
-            key_frames = np.linspace(0, n_timesteps - 1, num=self.config.n_timesteps_warmup).astype(int)
+            if self.config.timesteps_warmup is not None:
+                key_frames = self.config.timesteps_warmup
+            else:
+                key_frames = np.linspace(0, n_timesteps - 1, num=self.config.n_timesteps_warmup).astype(int)
 
             if step < self.config.n_steps_warmup:
                 timesteps_to_sample_from = key_frames

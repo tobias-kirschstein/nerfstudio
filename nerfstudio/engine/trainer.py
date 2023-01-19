@@ -261,7 +261,7 @@ class Trainer:
             if load_step is None:
                 print("Loading latest checkpoint from load_dir")
                 # NOTE: this is specific to the checkpoint name format
-                load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(load_dir))[-1]
+                load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(load_dir))[-1]
             load_path = load_dir / f"step-{load_step:09d}.ckpt"
             assert load_path.exists(), f"Checkpoint {load_path} does not exist"
             loaded_state = torch.load(load_path, map_location="cpu")
@@ -286,17 +286,31 @@ class Trainer:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # save the checkpoint
         ckpt_path = self.checkpoint_dir / f"step-{step:09d}.ckpt"
-        torch.save(
-            {
-                "step": step,
-                "pipeline": self.pipeline.module.state_dict()  # type: ignore
-                if hasattr(self.pipeline, "module")
-                else self.pipeline.state_dict(),
-                "optimizers": {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()},
-                "scalers": self.grad_scaler.state_dict(),
-            },
-            ckpt_path,
-        )
+
+        save_dict = {
+            "step": step,
+            "pipeline": self.pipeline.module.state_dict()  # type: ignore
+            if hasattr(self.pipeline, "module")
+            else self.pipeline.state_dict(),
+        }
+
+        if not self.config.trainer.save_only_model_params:
+            save_dict["optimizers"] = {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()}
+            save_dict["scalers"] = self.grad_scaler.state_dict()
+
+        torch.save(save_dict, ckpt_path)
+
+        # torch.save(
+        #     {
+        #         "step": step,
+        #         "pipeline": self.pipeline.module.state_dict()  # type: ignore
+        #         if hasattr(self.pipeline, "module")
+        #         else self.pipeline.state_dict(),
+        #         "optimizers": {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()},
+        #         "scalers": self.grad_scaler.state_dict(),
+        #     },
+        #     ckpt_path,
+        # )
         # possibly delete old checkpoints
         if self.config.trainer.save_only_latest_checkpoint:
             # delete everything else in the checkpoint folder

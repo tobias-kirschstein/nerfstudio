@@ -156,6 +156,8 @@ class TrainerConfig(PrintableConfig):
     """Relative path to save all checkpoints."""
     save_only_latest_checkpoint: bool = True
     """Whether to only save the latest checkpoint or all checkpoints."""
+    save_only_model_params: bool = False
+    """Whether to only save the model parameters and not the optimizer state"""
     # optional parameters if we want to resume training
     load_dir: Optional[Path] = None
     """Optionally specify a pre-trained model directory to load from."""
