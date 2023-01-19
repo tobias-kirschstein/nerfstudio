@@ -177,7 +177,8 @@ class HashEncodingEnsemble(nn.Module):
                  multi_deform_se3_config: MultiDeformSE3Config = None,
                  disable_initial_hash_ensemble: bool = False,
                  disable_table_chunking: bool = False,
-                 use_soft_transition: bool = False):
+                 use_soft_transition: bool = False,
+                 swap_l_f: bool = False):
         super(HashEncodingEnsemble, self).__init__()
 
         self.mixing_type = mixing_type
@@ -187,6 +188,7 @@ class HashEncodingEnsemble(nn.Module):
         self.disable_initial_hash_ensemble = disable_initial_hash_ensemble
         self.disable_table_chunking = disable_table_chunking
         self.use_soft_transition = use_soft_transition
+        self.swap_l_f = swap_l_f
 
         if mixing_type in {'multi_deform_blend', 'multi_deform_blend_offset'} or disable_table_chunking:
             # Multi-deform mixing types cannot chunk the hash tables as the deformed inputs vary for every hash table
@@ -354,12 +356,15 @@ class HashEncodingEnsemble(nn.Module):
 
                 # ordering of features might be slightly different, before features from one level were next to each other (?)
                 # now the first features of each level are next to each other then the second features across all level etc.
-                embeddings_einops = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
+                if self.swap_l_f:
+                    embeddings = einops.rearrange(embeddings, 'b c (l p f) -> b (f l) (c p) ', l=L, p=P, f=F)
+                else:
+                    embeddings = einops.rearrange(embeddings, 'b c (l p f) -> b (l f) (c p) ', l=L, p=P, f=F)
 
-                embeddings = embeddings.reshape((B, C, L, P, F))
-                embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
-                embeddings = embeddings.reshape((B, C*P, L*F))
-                embeddings = embeddings.transpose(1, 2)  # [B, D, H]
+                # embeddings = embeddings.reshape((B, C, L, P, F))
+                # embeddings = embeddings.transpose(2, 3)  # [B, C, P, L, F]
+                # embeddings = embeddings.reshape((B, C*P, L*F))
+                # embeddings = embeddings.transpose(1, 2)  # [B, D, H]
 
 
         if windows_param_tables is not None:
@@ -437,7 +442,6 @@ class HashEncodingEnsemble(nn.Module):
                 FpH = self.n_features_per_head
 
                 embeddings = embeddings.to(conditioning_code)
-                embeddings_einops = embeddings_einops.to(conditioning_code)
                 if self.mixing_type == 'multihead_blend_mixed':
                     embeddings = torch.stack(
                         [self.mixing_heads[i](embeddings[:, :, i]) for i in range(self.n_hash_encodings)], dim=-1)
@@ -449,7 +453,7 @@ class HashEncodingEnsemble(nn.Module):
                 #blended_embeddings = weighted_embeddings.sum(dim=2)  # [B, D]
 
                 conditioning_code = conditioning_code.repeat_interleave(FpH, dim=-1).reshape(B, H, nH * FpH)
-                blended_embeddings = torch.einsum('bdh,bhd->bd', embeddings_einops, conditioning_code)
+                blended_embeddings = torch.einsum('bdh,bhd->bd', embeddings, conditioning_code)
 
             elif self.mixing_type == 'multihead_blend_attention_style':
                 # embdeggins: B x D x H

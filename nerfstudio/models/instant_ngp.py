@@ -124,6 +124,7 @@ class InstantNGPModelConfig(ModelConfig):
     hash_encoding_ensemble_disable_initial: bool = False  # If set and window_hash_tables_end is used, the single hash table in the beginning will be a plain Instant NGP (without multiplying with the respective time code), forcing the network to use the deformation field
     hash_encoding_ensemble_disable_table_chunking: bool = False  # Backward compatibility, disables performance improvement that chunks hashtables together
     hash_encoding_ensemble_use_soft_transition: bool = False  # If disable_initial is used, slow transition ensures that there is no sudden jump in the blend weight for the first hashtable once window_hash_tables_begin is reached
+    hash_encoding_ensemble_swap_l_f: bool = False  # Deprecated, if enabled, features will be passed as FxL instead of LxF to the base MLP (L=layers, F=features)
 
     blend_field_hidden_dim: int = 64
     blend_field_n_freq_enc: int = 0
@@ -174,7 +175,8 @@ class InstantNGPModelConfig(ModelConfig):
     only_render_canonical_space: bool = False  # Special option for evaluation purposes: Disables any existing deformation field
     only_render_hash_table: Optional[
         int] = None  # Special option for evaluation purpose: Only query specified hash table in Hash Ensembles
-
+    fix_timestep_code: Optional[int] = None  # If set, always the time code for the given timestep will be passed to the NGP field instead of the one corresponding to the actual ray
+    fix_timestep_deformation: Optional[int] = None  # If set, alway the deformation for the given timestep will be used in stead of the one corresponding to the actual ray
 
 class NGPModel(Model):
     """Instant NGP model
@@ -245,6 +247,7 @@ class NGPModel(Model):
             hash_encoding_ensemble_disable_initial=self.config.hash_encoding_ensemble_disable_initial,
             hash_encoding_ensemble_disable_table_chunking=self.config.hash_encoding_ensemble_disable_table_chunking,
             hash_encoding_ensemble_use_soft_transition=self.config.hash_encoding_ensemble_use_soft_transition,
+            hash_encoding_ensemble_swap_l_f=self.config.hash_encoding_ensemble_swap_l_f,
             only_render_hash_table=self.config.only_render_hash_table,
             blend_field_skip_connections=self.config.blend_field_skip_connections,
             n_freq_pos_warping=self.config.n_freq_pos_warping,
@@ -292,7 +295,7 @@ class NGPModel(Model):
                 hash_encoding_ensemble_n_tables=self.config.hash_encoding_ensemble_n_tables,
                 hash_encoding_ensemble_mixing_type=self.config.hash_encoding_ensemble_mixing_type,
                 hash_encoding_ensemble_n_heads=self.config.hash_encoding_ensemble_n_heads,
-                only_render_hash_table=self.config.only_render_hash_table
+                only_render_hash_table=self.config.only_render_hash_table,
             )
 
             if self.config.n_ambient_dimensions > 0:
@@ -664,7 +667,11 @@ class NGPModel(Model):
 
             for i_chunk in range(ceil(ray_samples.size / max_chunk_size)):
                 ray_samples_chunk = ray_samples.view(slice(i_chunk * max_chunk_size, (i_chunk + 1) * max_chunk_size))
-                timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
+                if self.config.fix_timestep_deformation is not None:
+                    timesteps_chunk = torch.ones_like(ray_samples_chunk.timesteps.squeeze(-1)) * self.config.fix_timestep_deformation  # [S]
+                else:
+                    timesteps_chunk = ray_samples_chunk.timesteps.squeeze(-1)  # [S]
+
                 if self.use_separate_deformation_time_embedding:
                     time_embeddings_chunk = self.time_embedding_deformation(timesteps_chunk)
                 else:
@@ -697,7 +704,12 @@ class NGPModel(Model):
 
             time_embeddings = torch.concat(time_embeddings, dim=0)
         elif self.config.use_hash_encoding_ensemble:
-            time_embeddings = self.time_embedding(ray_samples.timesteps.squeeze(-1))
+            if self.config.fix_timestep_code is not None:
+                timesteps = torch.ones_like(ray_samples.timesteps.squeeze(1)) * self.config.fix_timestep_code
+            else:
+                timesteps = ray_samples.timesteps.squeeze(1)
+
+            time_embeddings = self.time_embedding(timesteps)
 
         if self.config.n_ambient_dimensions > 0:
             # TODO: maybe move this inside warp_samples?
@@ -732,7 +744,12 @@ class NGPModel(Model):
 
         if self.use_separate_deformation_time_embedding and ray_samples.timesteps is not None and self.time_embedding is not None:
             # This potentially uses a different time embedding for the canonical field than the deformation field
-            time_codes = self.time_embedding(ray_samples.timesteps.squeeze(1))
+            if self.config.fix_timestep_code is not None:
+                timesteps = torch.ones_like(ray_samples.timesteps.squeeze(1)) * self.config.fix_timestep_code
+            else:
+                timesteps = ray_samples.timesteps.squeeze(1)
+
+            time_codes = self.time_embedding(timesteps)
         else:
             time_codes = time_codes_deform
 
