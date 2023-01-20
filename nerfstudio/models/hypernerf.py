@@ -487,10 +487,10 @@ class HyperNeRFModel(Model):
             # mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
             mse_masked = self.rgb_loss(image_masked, rgb_masked)
 
-            metrics_dict["psnr_masked"] = psnr_masked
-            metrics_dict["ssim_masked"] = ssim_masked
-            metrics_dict["lpips_masked"] = lpips_masked
-            metrics_dict["mse_masked"] = mse_masked
+            metrics_dict["psnr_masked"] = float(psnr_masked)
+            metrics_dict["ssim_masked"] = float(ssim_masked)
+            metrics_dict["lpips_masked"] = float(lpips_masked)
+            metrics_dict["mse_masked"] = float(mse_masked)
             metrics_dict["floaters"] = float(floaters)
 
             images_dict["img_masked"] = combined_rgb_masked
