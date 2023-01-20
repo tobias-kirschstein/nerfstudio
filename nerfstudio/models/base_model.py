@@ -75,6 +75,9 @@ class ModelConfig(InstantiateConfig):
     lambda_beta_loss: float = 0
     """Enforces density to be either large (opaque) or small (transparent). Discourages semi-transparent floaters"""
 
+    lambda_temporal_tv_loss: float = 0  # Enforce total variation loss across temporal codes
+
+
     n_parameters: int = (
         implicit()
     )  # Total number of trainable parameters of the model. Is filled in by the pipeline automatically and logged to wandb
@@ -669,25 +672,62 @@ class Model(nn.Module):
         assert not loss.isnan().any()
         return loss
 
-    def get_temporal_tv_loss(self, return_sparsity_prior=True):
-        timesteps1 = self.time_embedding(
-            torch.arange(self.time_embedding.num_embeddings - 1, device=self.time_embedding.weight.device)
-        )
-        timesteps2 = self.time_embedding(
-            torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.weight.device)
-        )
+    def get_temporal_tv_loss(self, embedding: nn.Embedding, use_sparsity_prior=True):
 
-        temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
-        if return_sparsity_prior:
-            return temporal_difference, timesteps1.abs().sum(dim=-1)
+        if self.config.lambda_temporal_tv_loss > 0:
+
+            timesteps1 = embedding(
+                torch.arange(embedding.num_embeddings - 1, device=embedding.weight.device)
+            )
+            timesteps2 = embedding(
+                torch.arange(1, embedding.num_embeddings, device=embedding.weight.device)
+            )
+
+            temporal_difference = (timesteps1 - timesteps2).norm(dim=-1)
+            l1_sparsity = timesteps1.abs().sum(dim=-1)
+
+            temporal_tv_loss = self.config.lambda_temporal_tv_loss * temporal_difference.mean()
+
+            if use_sparsity_prior:
+                temporal_tv_loss += (self.config.lambda_temporal_tv_loss / 10) * l1_sparsity.mean()
+
+            return temporal_tv_loss
         else:
-            return temporal_difference
+            return None
+
+        # timesteps1 = self.time_embedding(
+        #     torch.arange(self.time_embedding.num_embeddings - 1, device=self.time_embedding.weight.device)
+        # )
+        # timesteps2 = self.time_embedding(
+        #     torch.arange(1, self.time_embedding.num_embeddings, device=self.time_embedding.weight.device)
+        # )
+        #
+        # temporal_difference = (timesteps1 - timesteps2).square().sum(dim=-1).sqrt()
+        # if return_sparsity_prior:
+        #     return temporal_difference, timesteps1.abs().sum(dim=-1)
+        # else:
+        #     return temporal_difference
 
     def apply_mask(
             self, batch: Dict[str, torch.Tensor], rgb: torch.Tensor, accumulation: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
 
-        if "mask" in batch:
+        if "alpha_map" in batch:
+            alpha_mask = batch["alpha_map"] / 255.  # [H, W, 1]
+            alpha_mask = torch.from_numpy(alpha_mask).to(rgb)
+
+            image_masked = batch["image"].clone().to(self.device)
+            rgb_masked = rgb.clone()
+
+            image_masked = alpha_mask * image_masked + (1 - alpha_mask)
+            rgb_masked = alpha_mask * rgb_masked + (1 - alpha_mask)
+
+            mask = alpha_mask.squeeze(2) > 0.5
+            floaters = accumulation[~mask].mean()
+
+            return image_masked, rgb_masked, floaters
+
+        elif "mask" in batch:
             # Log masked GT image + masked model prediction which is what the evaluation is performed on
             mask = batch["mask"].squeeze(2)
 

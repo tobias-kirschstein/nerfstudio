@@ -104,8 +104,6 @@ class InstantNGPModelConfig(ModelConfig):
     lambda_l1_field_regularization: float = 0
     lambda_global_sparsity_prior: float = 0  # Force density globally to be as small as possible
 
-    lambda_temporal_tv_loss: float = 0  # enforce total variation loss across temporal codes
-
     use_spherical_harmonics: bool = True
     spherical_harmonics_degree: int = 4
     disable_view_dependency: bool = False
@@ -1046,10 +1044,9 @@ class NGPModel(Model):
                                           else self.config.lambda_landmark_loss) * \
                                          landmark_loss.mean()
 
-        if self.config.lambda_temporal_tv_loss > 0:
-            temoral_tv_loss, l1_sparsity_loss = self.get_temporal_tv_loss(return_sparsity_prior=True)
-            loss_dict["temporal_tv_loss"] = self.config.lambda_temporal_tv_loss * temoral_tv_loss.mean()  + \
-                                            (self.config.lambda_temporal_tv_loss / 10) * l1_sparsity_loss.mean()
+        temoral_tv_loss = self.get_temporal_tv_loss(self.time_embedding, use_sparsity_prior=True)
+        if temoral_tv_loss is not None:
+            loss_dict["temporal_tv_loss"] = temoral_tv_loss
 
         # import numpy as np
         # out_dir = '/mnt/hdd/debug/famudy_debug2/'
@@ -1123,10 +1120,12 @@ class NGPModel(Model):
             image_masked = torch.moveaxis(image_masked, -1, 0)[None, ...]
             rgb_masked = torch.moveaxis(rgb_masked, -1, 0)[None, ...]
 
-            psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
+            psnr_masked = self.psnr(image_masked, rgb_masked)
+            # psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
             ssim_masked = self.ssim(image_masked, rgb_masked)
             lpips_masked = self.lpips(image_masked, rgb_masked)
-            mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
+            # mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
+            mse_masked = self.rgb_loss(image_masked, rgb_masked)
 
             metrics_dict["psnr_masked"] = float(psnr_masked)
             metrics_dict["ssim_masked"] = float(ssim_masked)

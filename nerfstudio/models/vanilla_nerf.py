@@ -349,10 +349,12 @@ class NeRFModel(Model):
             image_masked = torch.moveaxis(image_masked, -1, 0)[None, ...]
             rgb_masked = torch.moveaxis(rgb_masked, -1, 0)[None, ...]
 
-            psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
+            psnr_masked = self.psnr(image_masked, rgb_masked)
+            # psnr_masked = self.psnr(image_masked[..., mask], rgb_masked[..., mask])
             ssim_masked = self.ssim(image_masked, rgb_masked)
             lpips_masked = self.lpips(image_masked, rgb_masked)
-            mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
+            mse_masked = self.rgb_loss(image_masked, rgb_masked)
+            # mse_masked = self.rgb_loss(image_masked[..., mask], rgb_masked[..., mask])
 
             metrics_dict["psnr_masked"] = psnr_masked
             metrics_dict["ssim_masked"] = ssim_masked
