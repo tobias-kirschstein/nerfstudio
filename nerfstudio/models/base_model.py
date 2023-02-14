@@ -445,7 +445,7 @@ class Model(nn.Module):
             image = loss_weight_map * image
             rgb_pred = loss_weight_map * rgb_pred
 
-
+        # TODO (22.01.2023): Use alpha mask for computing masked RGB loss?
         if self.config.mask_rgb_loss and "mask" in batch:
             # Only compute RGB loss on non-masked pixels
             mask = self.get_mask_per_ray(batch)

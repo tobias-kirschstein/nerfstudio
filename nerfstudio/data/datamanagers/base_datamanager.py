@@ -260,9 +260,16 @@ class VanillaDataManagerConfig(InstantiateConfig):
     train_num_times_to_repeat_images: int = -1
     """When not training on all images, number of iterations before picking new
     images. If -1, never pick new images."""
+    train_max_cached_items: int = -1
+    """During training, loaded train images are cached. train_max_cached_items specifies an upper bound on how many
+    images will be cached in RAM to avoid excessive memory usage. If the cache limit is reached, newly loaded images
+    won't be cached anymore.
+    """
     train_sample_masked_pixels: bool = True
     """Whether to sample pixels whose mask value is 'False' during training. 
     Only relevant when dataparser returns a mask."""
+    use_cache_compression: bool = False
+    """Whether to only cache compressed images (lossy compression!) in memory."""
 
     eval_num_rays_per_batch: int = 1024
     """Number of rays per batch to use per eval iteration."""
@@ -338,7 +345,9 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         """Sets up the data loaders for training"""
         return InMemoryInputDataset(
             dataparser_outputs=self.dataparser.get_dataparser_outputs(split="train"),
-            scale_factor=self.config.camera_res_scale_factor
+            scale_factor=self.config.camera_res_scale_factor,
+            max_cached_items=self.config.train_max_cached_items,
+            use_cache_compression=self.config.use_cache_compression
         )
 
     def create_eval_dataset(self) -> InputDataset:

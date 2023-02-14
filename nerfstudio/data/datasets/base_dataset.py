@@ -160,16 +160,42 @@ class InMemoryInputDataset(InputDataset):
     This will increase memory consumption over time until all images have been loaded once.
     """
 
-    def __init__(self, dataparser_outputs: DataparserOutputs, scale_factor: float = 1.0):
+    def __init__(self,
+                 dataparser_outputs: DataparserOutputs,
+                 scale_factor: float = 1.0,
+                 max_cached_items: int = -1,
+                 use_cache_compression: bool = False):
         super(InMemoryInputDataset, self).__init__(dataparser_outputs, scale_factor=scale_factor)
 
         self._cached_items = dict()
+        self._max_cached_items = max_cached_items
+        self._use_cache_compression = use_cache_compression
+
+    def _compress(self, item: Dict) -> Dict:
+        if not self._use_cache_compression:
+            return item
+
+        item = item.copy()
+        # Only store uint8 values for every pixel channel (discretization introduces lossy compression!)
+        item['image'] = (item['image'] * 255).round().to(torch.uint8)
+        return item
+
+    def _uncompress(self, item: Dict) -> Dict:
+        if not self._use_cache_compression:
+            return item
+
+        item = item.copy()
+        # Cast image back into float
+        item['image'] = item['image'].float() / 255.
+        return item
 
     def __getitem__(self, image_idx):
         if image_idx in self._cached_items:
-            item = self._cached_items[image_idx]
+            item = self._uncompress(self._cached_items[image_idx])
         else:
             item = super().__getitem__(image_idx)
-            self._cached_items[image_idx] = item
+            if self._max_cached_items == -1 or len(self._cached_items) < self._max_cached_items:
+                # Only cache item if number of cached items hasn't been exceeded yet
+                self._cached_items[image_idx] = self._compress(item)
 
         return item
