@@ -352,7 +352,7 @@ class NGPModel(Model):
         else:
             self.sched_window_deform = None
 
-        if self.config.landmark_loss_end is not None:
+        if hasattr(self.config, "landmark_loss_end") and self.config.landmark_loss_end is not None:
             self.sched_landmark_loss = GenericScheduler(
                 init_value=self.config.lambda_landmark_loss,
                 final_value=0,
@@ -1033,11 +1033,11 @@ class NGPModel(Model):
                     self.config.lambda_l1_field_regularization * self.field.mlp_base.params.abs().mean()
             )
 
-        if "ray_samples" in outputs and self.config.lambda_deformation_l1_prior > 0 and self.train_step < 100000:
+        if "ray_samples" in outputs and hasattr(self.config, "lambda_deformation_l1_prior") and self.config.lambda_deformation_l1_prior > 0 and self.train_step < 100000:
             loss_dict["deformation_l1_prior"] = self.config.lambda_deformation_l1_prior * outputs[
                 "ray_samples"].frustums.offsets.abs().mean()
 
-        if self.temporal_distortion is not None and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
+        if self.temporal_distortion is not None and hasattr(self.config, "lambda_landmark_loss") and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
             landmark_loss = self.get_landmark_loss(batch)
             loss_dict["landmark_loss"] = (self.sched_landmark_loss.value if
                                           self.sched_landmark_loss is not None

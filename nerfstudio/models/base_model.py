@@ -507,7 +507,7 @@ class Model(nn.Module):
     def get_alpha_loss(self, batch: Dict[str, torch.Tensor], accumulation: torch.Tensor) -> Optional[torch.Tensor]:
         alpha_loss = None
 
-        if self.config.lambda_alpha_loss > 0:
+        if self.config.lambda_alpha_loss is not None and self.config.lambda_alpha_loss > 0:
 
             accumulation_per_ray = accumulation.squeeze(1)  # [R]
             alpha_per_ray = self.get_alpha_per_ray(batch)
