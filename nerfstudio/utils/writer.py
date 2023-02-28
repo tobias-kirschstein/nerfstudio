@@ -30,6 +30,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchtyping import TensorType
 
 from nerfstudio.configs import base_config as cfg
+from nerfstudio.configs.experiment_config import ExperimentConfig
 from nerfstudio.utils.decorators import check_main_thread, decorate_all
 from nerfstudio.utils.printing import human_format
 
@@ -188,7 +189,7 @@ def setup_local_writer(config: cfg.LoggingConfig, max_iter: int, banner_messages
 
 
 @check_main_thread
-def setup_event_writer(config: cfg.Config, is_tensorboard_enabled: bool, log_dir: Path) -> None:
+def setup_event_writer(config: ExperimentConfig, is_tensorboard_enabled: bool, log_dir: Path) -> None:
     """Initialization of all event writers specified in config
 
     Args:
