@@ -886,7 +886,8 @@ class NGPModel(Model):
             # distloss
             ray_samples = outputs["ray_samples"]
             ray_indices = outputs["ray_indices"]
-            weights = outputs["weights"]
+            weights = outputs["weights"].squeeze(1)
+            n_rays = outputs["n_rays"]
 
             max_rays = self.config.dist_loss_max_rays
             indices = (ray_indices.unsqueeze(1) == ray_indices.unique()[:max_rays]).any(dim=1)
@@ -939,7 +940,7 @@ class NGPModel(Model):
                 )
 
                 with torch.no_grad():
-                    random_ray_samples, random_packed_info, random_ray_indices = self.sampler(
+                    random_ray_samples, random_ray_indices = self.sampler(
                         ray_bundle=random_ray_bundle,
                         near_plane=self.config.near_plane,
                         far_plane=self.config.far_plane,
@@ -966,12 +967,14 @@ class NGPModel(Model):
                                                     window_deform=window_deform,
                                                     time_codes=time_codes)
 
+                random_packed_info = nerfacc.pack_info(ray_indices, n_rays)
                 random_weights = nerfacc.render_weight_from_density(
                     packed_info=random_packed_info,
                     sigmas=density,
                     t_starts=random_ray_samples.frustums.starts,
                     t_ends=random_ray_samples.frustums.ends,
                 )
+                random_weights = random_weights.squeeze(1)
 
                 random_midpoint_distances = (
                                                         random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
@@ -987,7 +990,7 @@ class NGPModel(Model):
                 loss_dict["random_dist_loss"] = random_dist_loss
 
         if self.config.lambda_sparse_prior > 0 and self.training:
-            weights = outputs["weights"]
+            weights = outputs["weights"].squeeze(1)
             accumulation_per_ray = outputs["accumulation"]
             sparsity_loss = self.config.lambda_sparse_prior * accumulation_per_ray.mean()
             # sparsity_loss = self.config.lambda_sparse_prior * (1 + 2 * weights.pow(2)).log().sum()
