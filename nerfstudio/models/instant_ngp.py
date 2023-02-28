@@ -22,6 +22,7 @@ from torch_efficient_distloss import flatten_eff_distloss
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from typing_extensions import Literal
 
 from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
 from nerfstudio.data.scene_box import SceneBox
@@ -80,6 +81,8 @@ class InstantNGPModelConfig(ModelConfig):
     """How far along ray to stop sampling."""
     use_appearance_embedding: bool = False
     """Whether to use an appearance embedding."""
+    background_color: Literal["random", "black", "white"] = "random"
+    """The color that is given to untrained areas."""
     appearance_embedding_dim: int = 32  # Dimension for every appearance embedding
     use_camera_embedding: bool = False  # Whether a camera-specific code (shared across timesteps) should be learned for RGB network
     camera_embedding_dim: int = 8
@@ -406,10 +409,8 @@ class NGPModel(Model):
         if self.config.use_backgrounds:
             background_color = None
         else:
-            if self.config.background_color == "black":
-                background_color = colors.BLACK
-            elif self.config.background_color == "white":
-                background_color = colors.WHITE
+            if self.config.background_color in ["white", "black"]:
+                background_color = colors.COLORS_DICT[self.config.background_color]
             else:
                 background_color = self.config.background_color
 

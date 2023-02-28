@@ -27,13 +27,14 @@ import yaml
 from rich.console import Console
 from typing_extensions import Literal
 
-from nerfstudio.configs import base_config as cfg
+from nerfstudio.configs.base_config import TrainerConfig
+from nerfstudio.configs.experiment_config import ExperimentConfig
 from nerfstudio.pipelines.base_pipeline import Pipeline
 
 CONSOLE = Console(width=120)
 
 
-def eval_load_checkpoint(config: cfg.TrainerConfig, pipeline: Pipeline) -> Path:
+def eval_load_checkpoint(config: TrainerConfig, pipeline: Pipeline) -> Path:
     ## TODO: ideally eventually want to get this to be the same as whatever is used to load train checkpoint too
     """Helper function to load checkpointed pipeline
 
@@ -69,7 +70,7 @@ def eval_setup(
     test_mode: Literal["test", "val", "inference"] = "test",
     checkpoint_step: Optional[int] = None,
     overwrite_config: Optional[dict] = None,
-) -> Tuple[cfg.Config, Pipeline, Path]:
+) -> Tuple[ExperimentConfig, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
@@ -91,7 +92,7 @@ def eval_setup(
     """
     # load save config
     config = yaml.load(config_path.read_text(), Loader=yaml.Loader)
-    assert isinstance(config, cfg.Config)
+    assert isinstance(config, ExperimentConfig)
 
     if overwrite_config:
         print("Overriden config items:")

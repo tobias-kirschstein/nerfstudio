@@ -75,7 +75,7 @@ def collate_image_dataset_batch(batch: Dict,
         grid = torch.stack([grid_b, grid_y, grid_x], dim=-1)
         indices = grid.view(-1, 3)[pixel_sample_indices]
     elif "mask" in batch and not sample_masked_pixels:
-        nonzero_indices = torch.nonzero(batch["mask"][..., 0].to(device), as_tuple=False)
+        nonzero_indices = torch.nonzero(batch["mask"][..., 0], as_tuple=False)
         chosen_indices = random.sample(range(len(nonzero_indices)), k=num_rays_per_batch)
         indices = nonzero_indices[chosen_indices]
     else:
