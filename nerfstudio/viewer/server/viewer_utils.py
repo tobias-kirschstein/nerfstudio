@@ -330,6 +330,8 @@ class ViewerState:
         # set the initial state whether to train or not
         self.vis["renderingState/isTraining"].write(start_train)
 
+        # self.vis["renderingState/render_time"].write(str(0))
+
         # set the properties of the camera
         # self.vis["renderingState/camera"].write(json_)
 
@@ -377,6 +379,9 @@ class ViewerState:
             step: iteration step of training
             graph: the current checkpoint of the model
         """
+
+        has_temporal_distortion = getattr(graph, "temporal_distortion", None) is not None
+        self.vis["model/has_temporal_distortion"].write(str(has_temporal_distortion).lower())
 
         is_training = self.vis["renderingState/isTraining"].read()
         self.step = step
@@ -719,6 +724,7 @@ class ViewerState:
 
     @profiler.time_function
     def _render_image_in_viewer(self, camera_object, graph: Model, is_training: bool) -> None:
+        # pylint: disable=too-many-statements
         """
         Draw an image using the current camera pose from the viewer.
         The image is sent of a TCP connection and then uses WebRTC to send it to the viewer.
@@ -769,12 +775,17 @@ class ViewerState:
             dim=0,
         )
 
+        times = self.vis["renderingState/render_time"].read()
+        if times is not None:
+            times = torch.tensor([float(times)])
+
         camera = Cameras(
             fx=intrinsics_matrix[0, 0],
             fy=intrinsics_matrix[1, 1],
             cx=intrinsics_matrix[0, 2],
             cy=intrinsics_matrix[1, 2],
             camera_to_worlds=camera_to_world[None, ...],
+            times=times,
         )
         camera = camera.to(graph.device)
 
