@@ -79,6 +79,9 @@ class TrainerConfig(ExperimentConfig):
     load_step: Optional[int] = None
     """Optionally specify model step to load from; if none, will find most recent model in load_dir."""
     load_config: Optional[Path] = None
+    """Path to config YAML file."""
+    log_gradients: bool = False
+    """Optionally log gradients during training"""
 
     log_eval_images_individually: bool = False
 
@@ -193,7 +196,6 @@ class Trainer:
             step = 0
             for step in range(self._start_step, self._start_step + num_iterations):
                 with TimeWriter(writer, EventName.ITER_TRAIN_TIME, step=step) as train_t:
-
                     self.pipeline.train()
 
                     # training callbacks before the training iteration
@@ -296,7 +298,7 @@ class Trainer:
 
     @check_viewer_enabled
     def _update_viewer_rays_per_sec(self, train_t: TimeWriter, vis_t: TimeWriter, step: int):
-        """Performs update on rays/sec calclation for training
+        """Performs update on rays/sec calculation for training
 
         Args:
             train_t: timer object carrying time to execute total training iteration
@@ -352,7 +354,7 @@ class Trainer:
             else self.pipeline.state_dict(),
         }
 
-        if not self.config.trainer.save_only_model_params:
+        if not self.config.save_only_model_params:
             save_dict["optimizers"] = {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()}
             save_dict["scalers"] = self.grad_scaler.state_dict()
 
@@ -399,6 +401,18 @@ class Trainer:
                 p.grad.nan_to_num_()
 
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
+
+        if self.config.log_gradients:
+            total_grad = 0
+            for tag, value in self.pipeline.model.named_parameters():
+                assert tag != "Total"
+                if value.grad is not None:
+                    grad = value.grad.norm()
+                    metrics_dict[f"Gradients/{tag}"] = grad
+                    total_grad += grad
+
+            metrics_dict["Gradients/Total"] = total_grad
+
         self.grad_scaler.update()
         self.optimizers.scheduler_step_all(step)
 
@@ -439,7 +453,7 @@ class Trainer:
                 step=step,
                 avg_over_steps=True,
             )
-            if self.config.trainer.log_eval_images_individually:
+            if self.config.log_eval_images_individually:
                 image_metrics_name = f"Eval Images Metrics (image {metrics_dict['image_idx']})"
                 image_group_name = f"Eval Images (image {metrics_dict['image_idx']})"
             else:

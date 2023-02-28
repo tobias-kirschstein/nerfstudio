@@ -18,7 +18,7 @@ Optimizers class.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Type
+from typing import Any, Dict, List, Optional, Type
 
 import pytorch_warmup as warmup
 import torch
@@ -35,8 +35,13 @@ class OptimizerConfig(base_config.PrintableConfig):
     """Basic optimizer config with RAdam"""
 
     _target: Type = torch.optim.Adam
+    """The optimizer class to use."""
     lr: float = 0.0005
+    """The learning rate to use."""
     eps: float = 1e-08
+    """The epsilon value to use."""
+    max_norm: Optional[float] = None
+    """The max norm to use for gradient clipping."""
 
     # TODO: somehow make this more generic. i dont like the idea of overriding the setup function
     # but also not sure how to go about passing things into predefined torch objects.
@@ -44,6 +49,7 @@ class OptimizerConfig(base_config.PrintableConfig):
         """Returns the instantiated object using the config."""
         kwargs = vars(self).copy()
         kwargs.pop("_target")
+        kwargs.pop("max_norm")
         return self._target(params, **kwargs)
 
 
@@ -53,6 +59,7 @@ class AdamOptimizerConfig(OptimizerConfig):
 
     _target: Type = torch.optim.Adam
     weight_decay: float = 0
+    """The weight decay to use."""
 
 
 @dataclass
@@ -83,10 +90,12 @@ class Optimizers:
         self.config = config
         self.optimizers = {}
         self.schedulers = {}
+        self.parameters = {}
         self.warmup_schedulers = {}
         for param_group_name, params in param_groups.items():
             lr_init = config[param_group_name]["optimizer"].lr
             self.optimizers[param_group_name] = config[param_group_name]["optimizer"].setup(params=params)
+            self.parameters[param_group_name] = params
             if config[param_group_name]["scheduler"]:
                 self.schedulers[param_group_name] = config[param_group_name]["scheduler"].setup(
                     optimizer=self.optimizers[param_group_name], lr_init=lr_init
@@ -125,7 +134,12 @@ class Optimizers:
         Args:
             grad_scaler: GradScaler to use
         """
-        for _, optimizer in self.optimizers.items():
+        for param_group, optimizer in self.optimizers.items():
+            max_norm = self.config[param_group]["optimizer"].max_norm
+            if max_norm is not None:
+                grad_scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.parameters[param_group], max_norm)
+
             try:
                 grad_scaler.step(optimizer)
             except AssertionError:
@@ -135,8 +149,11 @@ class Optimizers:
 
     def optimizer_step_all(self):
         """Run step for all optimizers."""
-        for _, optimizer in self.optimizers.items():
+        for param_group, optimizer in self.optimizers.items():
             # note that they key is the parameter name
+            max_norm = self.config[param_group]["optimizer"].max_norm
+            if max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.parameters[param_group], max_norm)
             optimizer.step()
 
     def scheduler_step_all(self, step: int) -> None:
