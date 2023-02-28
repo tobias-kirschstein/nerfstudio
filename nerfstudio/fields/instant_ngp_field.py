@@ -52,6 +52,8 @@ class TCNNInstantNGPField(Field):
         num_images: number of images, requried if use_appearance_embedding is True
         appearance_embedding_dim: dimension of appearance embedding
         contraction_type: type of contraction
+        num_levels: number of levels of the hashmap for the base mlp
+        log2_hashmap_size: size of the hashmap for the base mlp
     """
 
     def __init__(
@@ -69,9 +71,9 @@ class TCNNInstantNGPField(Field):
             camera_embedding_dim: int = 8,
             use_affine_color_transformation: bool = False,
             contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
-            n_hashgrid_levels: int = 16,
+            num_levels: int = 16,
             log2_hashmap_size: int = 19,
-            per_level_hashgrid_scale: float = 1.4472692012786865,
+            per_level_scale: float = 1.4472692012786865,
             hashgrid_base_resolution: int = 16,
             hashgrid_n_features_per_level: int = 2,
             use_spherical_harmonics: bool = True,
@@ -203,11 +205,11 @@ class TCNNInstantNGPField(Field):
             hash_grid_encoding_config = {
                 "n_dims_to_encode": 4 if use_4d_hashing else 3,
                 "otype": "HashGrid",
-                "n_levels": n_hashgrid_levels,
+                "n_levels": num_levels,
                 "n_features_per_level": hashgrid_n_features_per_level,
                 "log2_hashmap_size": log2_hashmap_size,
                 "base_resolution": hashgrid_base_resolution,
-                "per_level_scale": per_level_hashgrid_scale,
+                "per_level_scale": per_level_scale,
                 "interpolation": "Smoothstep" if use_smoothstep_hashgrid_interpolation else "Linear"
             }
 

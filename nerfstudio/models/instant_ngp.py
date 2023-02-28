@@ -70,7 +70,7 @@ class InstantNGPModelConfig(ModelConfig):
     grid_resolution: int = 128
     """Resolution of the grid used for the field."""
     contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE
-    """Resolution of the grid used for the field."""
+    """Contraction type used for spatial deformation of the field."""
     cone_angle: float = 0.004
     """Should be set to 0.0 for blender scenes but 1./256 for real scenes."""
     render_step_size: float = 0.01
@@ -213,9 +213,9 @@ class NGPModel(Model):
             camera_embedding_dim=self.config.camera_embedding_dim,
             use_affine_color_transformation=self.config.use_affine_color_transformation,
 
-            n_hashgrid_levels=self.config.n_hashgrid_levels,
+            num_levels=self.config.n_hashgrid_levels,
             log2_hashmap_size=self.config.log2_hashmap_size,
-            per_level_hashgrid_scale=self.config.per_level_hashgrid_scale,
+            per_level_scale=self.config.per_level_hashgrid_scale,
             hashgrid_base_resolution=self.config.hashgrid_base_resolution,
             hashgrid_n_features_per_level=self.config.hashgrid_n_features_per_level,
 
@@ -728,7 +728,7 @@ class NGPModel(Model):
         num_rays = len(ray_bundle)
 
         with torch.no_grad():
-            ray_samples, packed_info, ray_indices = self.sampler(
+            ray_samples, ray_indices = self.sampler(
                 ray_bundle=ray_bundle,
                 near_plane=self.config.near_plane,
                 far_plane=self.config.far_plane,
@@ -766,6 +766,7 @@ class NGPModel(Model):
                                    fixed_view_direction=self._fixed_view_direction)
 
         # accumulation
+        packed_info = nerfacc.pack_info(ray_indices, num_rays)
         weights = nerfacc.render_weight_from_density(
             packed_info=packed_info,
             sigmas=field_outputs[FieldHeadNames.DENSITY],

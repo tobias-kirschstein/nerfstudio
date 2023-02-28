@@ -27,8 +27,7 @@ import yaml
 from rich.console import Console
 from typing_extensions import Literal
 
-from nerfstudio.configs.base_config import TrainerConfig
-from nerfstudio.configs.experiment_config import ExperimentConfig
+from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.pipelines.base_pipeline import Pipeline
 
 CONSOLE = Console(width=120)
@@ -70,7 +69,7 @@ def eval_setup(
     test_mode: Literal["test", "val", "inference"] = "test",
     checkpoint_step: Optional[int] = None,
     overwrite_config: Optional[dict] = None,
-) -> Tuple[ExperimentConfig, Pipeline, Path]:
+) -> Tuple[TrainerConfig, Pipeline, Path]:
     """Shared setup for loading a saved pipeline for evaluation.
 
     Args:
@@ -78,7 +77,7 @@ def eval_setup(
         eval_num_rays_per_chunk: Number of rays per forward pass
         test_mode:
             'val': loads train/val datasets into memory
-            'test': loads train/test datset into memory
+            'test': loads train/test dataset into memory
             'inference': does not load any dataset into memory
 
         checkpoint_step: Which checkpoint to load. Default is the latest
@@ -92,7 +91,7 @@ def eval_setup(
     """
     # load save config
     config = yaml.load(config_path.read_text(), Loader=yaml.Loader)
-    assert isinstance(config, ExperimentConfig)
+    assert isinstance(config, TrainerConfig)
 
     if overwrite_config:
         print("Overriden config items:")
@@ -104,8 +103,8 @@ def eval_setup(
 
                 print(f"\t{k}: {eval(k)}")
 
-    config.trainer.load_dir = config.get_checkpoint_dir()
-    config.trainer.load_step = checkpoint_step
+    config.load_dir = config.get_checkpoint_dir()
+    config.load_step = checkpoint_step
     config.pipeline.datamanager.eval_image_indices = None
 
     # setup pipeline (which includes the DataManager)
@@ -115,6 +114,6 @@ def eval_setup(
     pipeline.eval()
 
     # load checkpointed information
-    checkpoint_path = eval_load_checkpoint(config.trainer, pipeline)
+    checkpoint_path = eval_load_checkpoint(config, pipeline)
 
     return config, pipeline, checkpoint_path

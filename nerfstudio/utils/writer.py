@@ -30,7 +30,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchtyping import TensorType
 
 from nerfstudio.configs import base_config as cfg
-from nerfstudio.configs.experiment_config import ExperimentConfig
+# from nerfstudio.configs.experiment_config import ExperimentConfig
 from nerfstudio.utils.decorators import check_main_thread, decorate_all
 from nerfstudio.utils.printing import human_format
 
@@ -189,7 +189,7 @@ def setup_local_writer(config: cfg.LoggingConfig, max_iter: int, banner_messages
 
 
 @check_main_thread
-def setup_event_writer(config: ExperimentConfig, is_tensorboard_enabled: bool, log_dir: Path) -> None:
+def setup_event_writer(config: 'ExperimentConfig', log_dir: Path) -> None:
     """Initialization of all event writers specified in config
 
     Args:
@@ -198,7 +198,7 @@ def setup_event_writer(config: ExperimentConfig, is_tensorboard_enabled: bool, l
         banner_messages: list of messages to always display at bottom of screen
     """
     using_event_writer = False
-    if config.is_wandb_enabled:
+    if config.is_wandb_enabled():
         curr_writer = WandbWriter(log_dir=log_dir,
                                   run_name=config.experiment_name,
                                   project=config.logging.project,
@@ -207,7 +207,7 @@ def setup_event_writer(config: ExperimentConfig, is_tensorboard_enabled: bool, l
         config.logging.wandb_run_id = wandb.run.id
         EVENT_WRITERS.append(curr_writer)
         using_event_writer = True
-    if is_tensorboard_enabled:
+    if config.is_tensorboard_enabled():
         curr_writer = TensorboardWriter(log_dir=log_dir)
         EVENT_WRITERS.append(curr_writer)
         using_event_writer = True
@@ -373,7 +373,7 @@ class LocalWriter:
     TODO: migrate to prettyprint
 
     Args:
-        config: configuration to instatiate class
+        config: configuration to instantiate class
         banner_messages: list of messages to always display at bottom of screen
     """
 

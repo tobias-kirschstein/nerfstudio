@@ -18,7 +18,8 @@ Dataset.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Dict
+from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import numpy.typing as npt
@@ -65,8 +66,12 @@ class InputDataset(Dataset):
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
             pil_image = pil_image.resize(newsize, resample=Image.BILINEAR)
+
         if self._dataparser_outputs.color_correction_filenames is not None:
-            image = np.array(pil_image, dtype="float") / 255  # shape is (h, w, 3 or 4)
+            image = np.array(pil_image, dtype="float") / 255  # shape is (h, w) or (h, w, 3 or 4)
+            if len(image.shape) == 2:
+                image = image[:, :, None].repeat(3, axis=2)
+
             has_alpha_channels = False
             if image.shape[-1] == 4:
                 alpha_channels = image[:, :, 3]
@@ -79,7 +84,9 @@ class InputDataset(Dataset):
                 image = np.concatenate([image, alpha_channels[:, :, np.newaxis]], axis=-1)
             image = (image*255).astype(np.uint8)
         else:
-            image = np.array(pil_image, dtype="uint8")  # shape is (h, w, 3 or 4)
+            image = np.array(pil_image, dtype="uint8")  # shape is (h, w) or (h, w, 3 or 4)
+            if len(image.shape) == 2:
+                image = image[:, :, None].repeat(3, axis=2)
 
         if self._dataparser_outputs.alpha_channel_filenames is not None:
             alpha_channel_filename = self._dataparser_outputs.alpha_channel_filenames[image_idx]
@@ -124,6 +131,9 @@ class InputDataset(Dataset):
         if self.has_masks:
             mask_filepath = self._dataparser_outputs.mask_filenames[image_idx]
             data["mask"] = get_image_mask_tensor_from_path(filepath=mask_filepath, scale_factor=self.scale_factor)
+            assert (
+                data["mask"].shape[:2] == data["image"].shape[:2]
+            ), f"Mask and image have different shapes. Got {data['mask'].shape[:2]} and {data['image'].shape[:2]}"
         metadata = self.get_metadata(data)
         data.update(metadata)
         return data
@@ -151,6 +161,15 @@ class InputDataset(Dataset):
     def __getitem__(self, image_idx: int) -> Dict:
         data = self.get_data(image_idx)
         return data
+
+    @property
+    def image_filenames(self) -> List[Path]:
+        """
+        Returns image filenames for this dataset.
+        The order of filenames is the same as in the Cameras object for easy mapping.
+        """
+
+        return self._dataparser_outputs.image_filenames
 
 
 class InMemoryInputDataset(InputDataset):

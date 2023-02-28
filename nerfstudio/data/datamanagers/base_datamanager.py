@@ -95,7 +95,7 @@ class DataManager(nn.Module):
     This data manager's next_train and next_eval methods will return 2 things:
         1. A Raybundle: This will contain the rays we are sampling, with latents and
             conditionals attached (everything needed at inference)
-        2. A "batch" of auxilury information: This will contain the mask, the ground truth
+        2. A "batch" of auxiliary information: This will contain the mask, the ground truth
             pixels, etc needed to actually train, score, etc the model
 
     Rationale:
@@ -173,7 +173,7 @@ class DataManager(nn.Module):
 
     def get_train_iterable(self, length=-1) -> IterableWrapper:
         """Gets a trivial pythonic iterator that will use the iter_train and next_train functions
-        as __iter__ and __next__ methods respectivley.
+        as __iter__ and __next__ methods respectively.
 
         This basically is just a little utility if you want to do something like:
         |    for ray_bundle, batch in datamanager.get_train_iterable():
@@ -185,7 +185,7 @@ class DataManager(nn.Module):
 
     def get_eval_iterable(self, length=-1) -> IterableWrapper:
         """Gets a trivial pythonic iterator that will use the iter_eval and next_eval functions
-        as __iter__ and __next__ methods respectivley.
+        as __iter__ and __next__ methods respectively.
 
         This basically is just a little utility if you want to do something like:
         |    for ray_bundle, batch in datamanager.get_eval_iterable():
@@ -321,6 +321,8 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
     train_dataset: InputDataset
     eval_dataset: InputDataset
     train_dataparser_outputs: DataparserOutputs
+    train_pixel_sampler: Optional[PixelSampler] = None
+    eval_pixel_sampler: Optional[PixelSampler] = None
 
     def __init__(
             self,
@@ -472,6 +474,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             self.train_image_dataloader.sample_only(None)
 
         image_batch = next(self.iter_train_image_dataloader)
+        assert self.train_pixel_sampler is not None
         batch = self.train_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
         timesteps = batch['timesteps'] if 'timesteps' in batch else None
@@ -498,6 +501,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         """Returns the next batch of data from the eval dataloader."""
         self.eval_count += 1
         image_batch = next(self.iter_eval_image_dataloader)
+        assert self.eval_pixel_sampler is not None
         batch = self.eval_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
         timesteps = batch['timesteps'] if 'timesteps' in batch else None

@@ -24,7 +24,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import cv2
 import torch
 import torchvision
-from torch.nn.functional import normalize
 from torchtyping import TensorType
 
 import nerfstudio.utils.poses as pose_utils
@@ -341,7 +340,7 @@ class Cameras(TensorDataclass):
         When coords == None (ie: when we render out the whole image associated with this camera), we run into problems
         since there's no way to stack each coordinate map as all coordinate maps are all different shapes. In this case,
         we will need to flatten each individual coordinate map and concatenate them, giving us only one batch dimension,
-        regaurdless of the number of prepended extra batch dimensions in the camera_indices tensor.
+        regardless of the number of prepended extra batch dimensions in the camera_indices tensor.
 
 
         Args:
@@ -669,7 +668,7 @@ class Cameras(TensorDataclass):
         directions_stack = torch.sum(
             directions_stack[..., None, :] * rotation, dim=-1
         )  # (..., 1, 3) * (..., 3, 3) -> (..., 3)
-        directions_stack = normalize(directions_stack, dim=-1)
+        directions_stack, directions_norm = camera_utils.normalize_with_norm(directions_stack, -1)
         assert directions_stack.shape == (3,) + num_rays_shape + (3,)
 
         origins = c2w[..., :3, 3]  # (..., 3)
@@ -700,7 +699,8 @@ class Cameras(TensorDataclass):
             pixel_area=pixel_area,
             camera_indices=camera_indices,
             timesteps=timesteps,
-            times=times
+            times=times,
+            metadata={"directions_norm": directions_norm[0].detach()},
         )
 
     def to_json(
