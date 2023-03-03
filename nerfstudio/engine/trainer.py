@@ -393,6 +393,10 @@ class Trainer:
             if loss.isnan():
                 raise RuntimeError(f"LOSS TURNS TO NAN! {loss_dict}")
 
+        # if step % 100 == 0:
+        #     for loss_name, loss_value in loss_dict.items():
+        #         print(f"{loss_name}: {loss_value.item():0.5f}")
+
         self.grad_scaler.scale(loss).backward()  # type: ignore
 
         for n, p in self.pipeline.model.named_parameters():

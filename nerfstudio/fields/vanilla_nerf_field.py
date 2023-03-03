@@ -142,6 +142,38 @@ class NeRFField(Field):
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs
 
+    def forward(
+            self, ray_samples: RaySamples, compute_normals: bool = False, camera_embeddings: Optional[TensorType] = None
+    ):
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if camera_embeddings is not None:
+            if self.training:
+                camera_indices = ray_samples.camera_indices.squeeze(2)  # [R, S]
+                camera_code = camera_embeddings(camera_indices)  # [R, S, D]
+            else:
+                camera_code = camera_embeddings.weight.mean(0)[None, None, :].repeat(*ray_samples.shape, 1)
+        else:
+            camera_code = None
+
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding = self.get_density(ray_samples)
+        else:
+            density, density_embedding = self.get_density(ray_samples)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding, camera_code=camera_code)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs
+
 
 class TCNNNeRFField(Field):
     def __init__(

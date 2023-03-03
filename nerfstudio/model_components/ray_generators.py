@@ -57,7 +57,14 @@ class RayGenerator(nn.Module):
         # Assume that an image_idx > n_cameras just means the same camera at a different timestep
         # timesteps = (c / self.cameras.size).int()
         # c = c % self.cameras.size
-        c = cam_ids
+
+        # Only if timesteps are given, use specified cam_ids to sample rays
+        # When timesteps are used, there are fewer cameras than images and hence we have to ensure to only sample
+        # from the camera locations.
+        # The default nerfstudio case, however, is the usage of "times" attributes that are directly attached to
+        # the cameras. Hence, c can be the actual image indices because #cameras = #images
+        if timesteps is not None:
+            c = cam_ids
 
         camera_opt_to_camera = self.pose_optimizer(c)
 

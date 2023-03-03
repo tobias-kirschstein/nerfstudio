@@ -34,8 +34,8 @@ if cuda_toolkit_available():
         _C = load(
             name=NAME,
             sources=glob.glob(os.path.join(PATH, "csrc/*.cu")),
-            extra_cflags=["-O3", "-std=c++14"],
-            extra_cuda_cflags=["-O3", "-std=c++14"],
+            extra_cflags=["-O3", "-std=c++17"],
+            extra_cuda_cflags=["-O3", "-std=c++17"],
             extra_include_paths=[],
         )
     else:
@@ -43,13 +43,23 @@ if cuda_toolkit_available():
         # if the build directory exists.
         shutil.rmtree(BUILD_DIR)
         print("nerfstudio field components: Setting up CUDA (This may take a few minutes the first time)")
-        _C = load(
-            name=NAME,
-            sources=glob.glob(os.path.join(PATH, "csrc/*.cu")),
-            extra_cflags=["-O3", "-std=c++14"],
-            extra_cuda_cflags=["-O3", "-std=c++14"],
-            extra_include_paths=[],
-        )
+        try:
+            _C = load(
+                name=NAME,
+                sources=glob.glob(os.path.join(PATH, "csrc/*.cu")),
+                extra_cflags=["-O3", "-std=c++14"],
+                extra_cuda_cflags=["-O3", "-std=c++14"],
+                extra_include_paths=[],
+            )
+        except RuntimeError as e:
+            print(f"CUDA COMPILATION FAILED. TRYING WITH C++ 17 INSTEAD...")
+            _C = load(
+                name=NAME,
+                sources=glob.glob(os.path.join(PATH, "csrc/*.cu")),
+                extra_cflags=["-O3", "-std=c++17"],
+                extra_cuda_cflags=["-O3", "-std=c++17"],
+                extra_include_paths=[],
+            )
         print("nerfstudio field components: Setting up CUDA finished")
 else:
     print("nerfstudio field components: No CUDA toolkit found. Some models may fail.")

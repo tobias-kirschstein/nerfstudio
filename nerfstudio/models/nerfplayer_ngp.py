@@ -19,11 +19,12 @@ Implementation of NeRFPlayer (https://arxiv.org/abs/2210.15947) with InstantNGP 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Type
+from typing import Type, List
 
 import nerfacc
 import torch
 from nerfacc import ContractionType
+from nerfstudio.engine.callbacks import TrainingCallbackAttributes, TrainingCallback, TrainingCallbackLocation
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -140,6 +141,25 @@ class NerfplayerNGPModel(NGPModel):
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self.temporal_distortion = True  # for viewer
 
+    def get_training_callbacks(
+            self, training_callback_attributes: TrainingCallbackAttributes
+    ) -> List[TrainingCallback]:
+        def update_occupancy_grid(step: int):
+            # TODO: needs to get access to the sampler, on how the step size is determinated at each x. See
+            # https://github.com/KAIR-BAIR/nerfacc/blob/127223b11401125a9fce5ce269bb0546ee4de6e8/examples/train_ngp_nerf.py#L190-L213
+            self.occupancy_grid.every_n_step(
+                step=step,
+                occ_eval_fn=lambda x: self.field.get_opacity(x, self.config.render_step_size),
+            )
+
+        return [
+            TrainingCallback(
+                where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                update_every_num_iters=1,
+                func=update_occupancy_grid,
+            ),
+        ]
+
     def get_outputs(self, ray_bundle: RayBundle):
         num_rays = len(ray_bundle)
 
@@ -198,10 +218,17 @@ class NerfplayerNGPModel(NGPModel):
         return outputs
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
-        image = batch["image"].to(self.device)
-        mask = outputs["alive_ray_mask"]
-        rgb_loss = self.rgb_loss(image[mask], outputs["rgb"][mask])
-        loss_dict = {"rgb_loss": rgb_loss}
+        # image = batch["image"].to(self.device)
+        # mask = outputs["alive_ray_mask"]
+        # rgb_loss = self.rgb_loss(image[mask], outputs["rgb"][mask])
+
+        rgb_loss = self.get_masked_rgb_loss(batch, outputs["rgb"])
+        alpha_loss = self.get_alpha_loss(batch, outputs["accumulation"])
+
+        loss_dict = {
+            "rgb_loss": rgb_loss,
+            "alpha_loss": alpha_loss
+        }
         if "depth_image" in batch.keys() and self.config.depth_weight > 0:
             mask = batch["depth_image"] != 0
             # First we calculate the depth value, just like most of the papers.

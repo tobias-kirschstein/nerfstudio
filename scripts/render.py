@@ -80,6 +80,15 @@ def _render_trajectory_video(
     cameras.scale_coordinate_system(scale_factor)
     n_timesteps = pipeline.datamanager.config.dataparser.n_timesteps
 
+    # If the camera trajectory to render does not specify any times but the model is temporal, then just assume
+    # that we want to render the full temporal sequence [0., 1.]
+    if hasattr(pipeline.model, "temporal_distortion") \
+            and pipeline.model.temporal_distortion is not None \
+            and cameras.times is None:
+        times = torch.arange(len(cameras), device=cameras.device) / (len(cameras) - 1)
+        times = times.unsqueeze(1)  # [T, 1]
+        cameras.times = times
+
     if use_occupancy_grid_filtering:
         occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
 

@@ -193,6 +193,16 @@ class NGPModel(Model):
     def __init__(self, config: InstantNGPModelConfig, **kwargs) -> None:
         super().__init__(config=config, **kwargs)
 
+        self.sched_window_deform = None
+        self.sched_window_blend = None
+        self.sched_window_canonical = None
+        self.sched_window_hash_tables = None
+        self.sched_window_ambient = None
+        self.sched_landmark_loss = None
+
+        self.time_embedding = None
+        self.time_embedding_deformation = None
+
     def populate_modules(self):
         """Set the fields and modules."""
         super().populate_modules()
@@ -260,8 +270,6 @@ class NGPModel(Model):
             density_fn_ray_samples_transform=self.warp_ray_samples
         )
 
-        self.temporal_distortion = None
-        self.time_embedding = None
         if self.config.use_deformation_field or self.config.use_hash_encoding_ensemble:
             self.time_embedding = nn.Embedding(self.config.n_timesteps, self.config.latent_dim_time)
             init.normal_(self.time_embedding.weight, mean=0., std=0.01 / sqrt(self.config.latent_dim_time))
@@ -278,7 +286,6 @@ class NGPModel(Model):
             latent_dim_time_deformation = self.config.latent_dim_time_deformation
         else:
             self.use_separate_deformation_time_embedding = False
-            self.time_embedding_deformation = None
             latent_dim_time_deformation = self.config.latent_dim_time
 
         if self.config.use_deformation_field:
@@ -353,8 +360,6 @@ class NGPModel(Model):
                 begin_step=self.config.window_deform_begin,
                 end_step=self.config.window_deform_end,
             )
-        else:
-            self.sched_window_deform = None
 
         if hasattr(self.config, "landmark_loss_end") and self.config.landmark_loss_end is not None:
             self.sched_landmark_loss = GenericScheduler(
@@ -363,8 +368,6 @@ class NGPModel(Model):
                 begin_step=0,
                 end_step=self.config.landmark_loss_end,
             )
-        else:
-            self.sched_landmark_loss = None
 
         if self.config.window_ambient_begin > 0 or self.config.window_ambient_end > 0:
             self.sched_window_ambient = GenericScheduler(
@@ -373,8 +376,6 @@ class NGPModel(Model):
                 begin_step=self.config.window_ambient_begin,
                 end_step=self.config.window_ambient_end,
             )
-        else:
-            self.sched_window_ambient = None
 
         if self.config.use_hash_encoding_ensemble and self.config.window_canonical_end >= 1:
             self.sched_window_canonical = GenericScheduler(
@@ -383,8 +384,6 @@ class NGPModel(Model):
                 begin_step=self.config.window_canonical_begin,
                 end_step=self.config.window_canonical_end,
             )
-        else:
-            self.sched_window_canonical = None
 
         if self.config.use_hash_encoding_ensemble and self.config.window_blend_end > 0:
             self.sched_window_blend = GenericScheduler(
@@ -393,8 +392,6 @@ class NGPModel(Model):
                 begin_step=0,
                 end_step=self.config.window_blend_end,
             )
-        else:
-            self.sched_window_blend = None
 
         if self.config.use_hash_encoding_ensemble and self.config.window_hash_tables_end > 0:
             self.sched_window_hash_tables = GenericScheduler(
@@ -403,8 +400,6 @@ class NGPModel(Model):
                 begin_step=self.config.window_hash_tables_begin,
                 end_step=self.config.window_hash_tables_end,
             )
-        else:
-            self.sched_window_hash_tables = None
 
         # background
         if self.config.use_backgrounds:
@@ -438,21 +433,7 @@ class NGPModel(Model):
 
     # Override train() and eval() to not render random background noise for evaluation
     def eval(self: T) -> T:
-        self.renderer_rgb = self.renderer_rgb_eval
-        self.sampler = self.sampler_eval
-
-        if self.config.use_occupancy_grid_filtering:
-            # Whenever we change to eval() mode, update the eval occupancy grid s.t. it only contains the largest
-            # connected component
-            self.occupancy_grid_eval.update()
-
-        return super().eval()
-
-    def train(self: T, mode: bool = True) -> T:
-        if mode:
-            self.renderer_rgb = self.renderer_rgb_train
-            self.sampler = self.sampler_train
-        else:
+        if hasattr(self, "renderer_rgb_eval"):
             self.renderer_rgb = self.renderer_rgb_eval
             self.sampler = self.sampler_eval
 
@@ -460,6 +441,22 @@ class NGPModel(Model):
                 # Whenever we change to eval() mode, update the eval occupancy grid s.t. it only contains the largest
                 # connected component
                 self.occupancy_grid_eval.update()
+
+        return super().eval()
+
+    def train(self: T, mode: bool = True) -> T:
+        if hasattr(self, "renderer_rgb_train"):
+            if mode:
+                self.renderer_rgb = self.renderer_rgb_train
+                self.sampler = self.sampler_train
+            else:
+                self.renderer_rgb = self.renderer_rgb_eval
+                self.sampler = self.sampler_eval
+
+                if self.config.use_occupancy_grid_filtering:
+                    # Whenever we change to eval() mode, update the eval occupancy grid s.t. it only contains the largest
+                    # connected component
+                    self.occupancy_grid_eval.update()
 
         return super().train(mode)
 
@@ -600,7 +597,7 @@ class NGPModel(Model):
         # if self.config.use_camera_embedding:
         #     param_groups["fields"].extend(self.field.camera_embedding.parameters())
 
-        if self.temporal_distortion is not None:
+        if self.temporal_distortion is not None and not isinstance(self.temporal_distortion, bool):
             param_groups["deformation_field"].extend(self.temporal_distortion.parameters())
 
         if self.time_embedding is not None:
@@ -645,7 +642,7 @@ class NGPModel(Model):
             window_deform = None
 
         time_embeddings = None
-        if self.temporal_distortion is not None or self.config.use_hash_encoding_ensemble:
+        if self.temporal_distortion is not None and not isinstance(self.temporal_distortion, bool) or self.config.use_hash_encoding_ensemble:
 
             if ray_samples.timesteps is None:
                 # Assume ray_samples come from occupancy grid.
@@ -655,7 +652,7 @@ class NGPModel(Model):
                 ray_samples.timesteps = torch.randint(self.config.n_timesteps, (ray_samples.size, 1)).to(
                     ray_samples.frustums.origins.device)
 
-        if self.temporal_distortion is not None:
+        if self.temporal_distortion is not None and not isinstance(self.temporal_distortion, bool):
             # Initialize all offsets with 0
             assert ray_samples.frustums.offsets is None, "ray samples have already been warped"
             ray_samples.frustums.offsets = torch.zeros_like(ray_samples.frustums.origins)
@@ -843,7 +840,7 @@ class NGPModel(Model):
 
         metrics_dict["num_samples_per_batch"] = outputs["num_samples_per_ray"].sum()
 
-        if "landmarks" in batch and self.temporal_distortion is not None:
+        if "landmarks" in batch and self.temporal_distortion is not None and not isinstance(self.temporal_distortion, bool):
             with torch.no_grad():
                 metrics_dict["landmark_loss"] = self.get_landmark_loss(batch).mean()
         return metrics_dict
@@ -1043,7 +1040,7 @@ class NGPModel(Model):
             loss_dict["deformation_l1_prior"] = self.config.lambda_deformation_l1_prior * outputs[
                 "ray_samples"].frustums.offsets.abs().mean()
 
-        if self.temporal_distortion is not None and hasattr(self.config, "lambda_landmark_loss") and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
+        if self.temporal_distortion is not None and not isinstance(self.temporal_distortion, bool) and hasattr(self.config, "lambda_landmark_loss") and self.config.lambda_landmark_loss > 0 and self.train_step < 100000:
             landmark_loss = self.get_landmark_loss(batch)
             loss_dict["landmark_loss"] = (self.sched_landmark_loss.value if
                                           self.sched_landmark_loss is not None

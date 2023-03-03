@@ -15,9 +15,8 @@
 """
 NeRFPlayer (https://arxiv.org/abs/2210.15947) field implementations with InstantNGP backbone
 """
-
-
-from typing import Optional
+from collections import defaultdict
+from typing import Optional, Dict, List
 
 import torch
 from nerfacc import ContractionType, contract
@@ -67,23 +66,23 @@ class NerfplayerNGPField(Field):
     """
 
     def __init__(
-        self,
-        aabb,
-        temporal_dim: int = 16,
-        num_levels: int = 16,
-        features_per_level: int = 2,
-        log2_hashmap_size: int = 19,
-        base_resolution: int = 16,
-        num_layers: int = 2,
-        hidden_dim: int = 64,
-        geo_feat_dim: int = 15,
-        num_layers_color: int = 3,
-        hidden_dim_color: int = 64,
-        use_appearance_embedding: bool = False,
-        disable_viewing_dependent: bool = False,
-        num_images: Optional[int] = None,
-        appearance_embedding_dim: int = 32,
-        contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
+            self,
+            aabb,
+            temporal_dim: int = 16,
+            num_levels: int = 16,
+            features_per_level: int = 2,
+            log2_hashmap_size: int = 19,
+            base_resolution: int = 16,
+            num_layers: int = 2,
+            hidden_dim: int = 64,
+            geo_feat_dim: int = 15,
+            num_layers_color: int = 3,
+            hidden_dim_color: int = 64,
+            use_appearance_embedding: bool = False,
+            disable_viewing_dependent: bool = False,
+            num_images: Optional[int] = None,
+            appearance_embedding_dim: int = 32,
+            contraction_type: ContractionType = ContractionType.UN_BOUNDED_SPHERE,
     ) -> None:
         super().__init__()
 
@@ -234,3 +233,15 @@ class NerfplayerNGPField(Field):
             opacity.append(density * step_size)
         opacity = torch.stack(opacity, dim=0).max(dim=0).values
         return opacity
+
+    def get_param_groups(self) -> Dict[str, List[Parameter]]:
+        param_groups = defaultdict(list)
+
+        param_groups["fields"].extend(self.mlp_base.parameters())
+        param_groups["fields"].extend(self.mlp_base_decode.parameters())
+        param_groups["fields"].extend(self.mlp_head.parameters())
+
+        if self.use_appearance_embedding:
+            param_groups["embeddings"].extend(self.appearance_embedding.parameters())
+
+        return param_groups
