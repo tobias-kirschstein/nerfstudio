@@ -146,13 +146,15 @@ class PixelSampler:  # pylint: disable=too-few-public-methods
 
         c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
         collated_batch = {
-            key: value[c, y, x] for key, value in batch.items() if key not in {"image_idx", "timesteps", "cam_ids", "landmarks"} and value is not None
+            key: value[c, y, x] for key, value in batch.items() if key not in {"image_idx", "timesteps", "cam_ids", "original_cam_ids", "landmarks"} and value is not None
         }
 
         assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
 
         if 'cam_ids' in batch:
             collated_batch["cam_ids"] = batch['cam_ids'][c]
+        if 'original_cam_ids' in batch:
+            collated_batch["original_cam_ids"] = batch['original_cam_ids'][c]
         if 'timesteps' in batch:
             collated_batch['timesteps'] = batch['timesteps'][c]
         if 'landmarks' in batch:
