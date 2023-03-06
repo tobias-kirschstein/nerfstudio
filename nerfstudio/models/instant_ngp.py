@@ -191,8 +191,6 @@ class NGPModel(Model):
     field: TCNNInstantNGPField
 
     def __init__(self, config: InstantNGPModelConfig, **kwargs) -> None:
-        super().__init__(config=config, **kwargs)
-
         self.sched_window_deform = None
         self.sched_window_blend = None
         self.sched_window_canonical = None
@@ -202,6 +200,8 @@ class NGPModel(Model):
 
         self.time_embedding = None
         self.time_embedding_deformation = None
+
+        super().__init__(config=config, **kwargs)
 
     def populate_modules(self):
         """Set the fields and modules."""
