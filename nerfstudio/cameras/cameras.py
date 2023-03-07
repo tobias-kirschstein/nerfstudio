@@ -733,8 +733,8 @@ class Cameras(TensorDataclass):
             # to render eval image, need to broadcast conditioning code to every pixel
             # also for "batch" coming from eval not everything has been pushed to GPU!
             if not isinstance(batch['3dmm_params'], torch.Tensor):
-                    batch['3dmm_params'] = torch.from_numpy(batch['3dmm_params']).to(self.device)
-                    metadata.update({'condition_code': batch['3dmm_params'].unsqueeze(0).unsqueeze(0).repeat(metadata["directions_norm"].shape[0], metadata["directions_norm"].shape[1], 1)})
+                    _3dmm_params_tmp = torch.from_numpy(batch['3dmm_params']).to(self.device)
+                    metadata.update({'condition_code': _3dmm_params_tmp.unsqueeze(0).unsqueeze(0).repeat(metadata["directions_norm"].shape[0], metadata["directions_norm"].shape[1], 1)})
             else:
                     metadata.update({'condition_code': batch['3dmm_params'].to(self.device)})
         else:
