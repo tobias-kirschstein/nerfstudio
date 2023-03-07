@@ -61,10 +61,12 @@ class VanillaModelConfig(ModelConfig):
     """Parameters to instantiate temporal distortion with"""
 
     n_layers: int = 8
+    n_layers_head: int = 2
     hidden_dim: int = 256
 
     n_timesteps: int = 1
     latent_dim_time: int = 0
+    condition_dim: int = 0
 
 
 class NeRFModel(Model):
@@ -116,18 +118,22 @@ class NeRFModel(Model):
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
+            head_mlp_num_layers=self.config.n_layers_head,
             base_mlp_layer_width=self.config.hidden_dim,
             n_timesteps=self.config.n_timesteps,
             latent_dim_time=self.config.latent_dim_time,
+            condition_dim=self.config.condition_dim,
         )
 
         self.field_fine = NeRFField(
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
             base_mlp_num_layers=self.config.n_layers,
+            head_mlp_num_layers=self.config.n_layers_head,
             base_mlp_layer_width=self.config.hidden_dim,
             n_timesteps=self.config.n_timesteps,
             latent_dim_time=self.config.latent_dim_time,
+            condition_dim=self.config.condition_dim,
         )
 
         # samplers

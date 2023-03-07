@@ -15,7 +15,7 @@
 """
 Ray generator.
 """
-from typing import Optional
+from typing import Optional, Dict
 
 from torch import nn
 from torchtyping import TensorType
@@ -43,7 +43,8 @@ class RayGenerator(nn.Module):
     def forward(self,
                 ray_indices: TensorType["num_rays", 3],
                 timesteps: Optional[TensorType["num_rays", 1]],
-                cam_ids: Optional[TensorType["num_rays", 1]]) -> RayBundle:
+                cam_ids: Optional[TensorType["num_rays", 1]],
+                batch: Optional[Dict] = None) -> RayBundle:
         """Index into the cameras to generate the rays.
 
         Args:
@@ -72,6 +73,8 @@ class RayGenerator(nn.Module):
             camera_indices=c.unsqueeze(-1),
             coords=coords,
             camera_opt_to_camera=camera_opt_to_camera,
-            timesteps=timesteps
+            timesteps=timesteps,
+            batch=batch
         )
+
         return ray_bundle

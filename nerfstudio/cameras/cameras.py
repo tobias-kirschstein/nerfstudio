@@ -318,6 +318,7 @@ class Cameras(TensorDataclass):
             keep_shape: Optional[bool] = None,
         disable_distortion: bool = False,
         aabb_box: Optional[SceneBox] = None,
+        batch: Optional[Dict] = None,
     ) -> RayBundle:
         """Generates rays for the given camera indices.
 
@@ -453,7 +454,10 @@ class Cameras(TensorDataclass):
         # raybundle.shape == (num_rays) when done
         # pylint: disable=protected-access
         raybundle = cameras._generate_rays_from_coords(
-            camera_indices, coords, camera_opt_to_camera, distortion_params_delta, disable_distortion=disable_distortion, timesteps=timesteps
+            camera_indices, coords, camera_opt_to_camera, distortion_params_delta,
+            disable_distortion=disable_distortion,
+            timesteps=timesteps,
+            batch=batch
         )
 
         # If we have mandated that we don't keep the shape, then we flatten
@@ -494,7 +498,8 @@ class Cameras(TensorDataclass):
         camera_opt_to_camera: Optional[TensorType["num_rays":..., 3, 4]] = None,
         distortion_params_delta: Optional[TensorType["num_rays":..., 6]] = None,
         disable_distortion: bool = False,
-        timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None
+        timesteps: Optional[Union[TensorType["num_rays": ...], int]] = None,
+        batch: Optional[Dict] = None
     ) -> RayBundle:
         """Generates rays for the given camera indices and coords where self isn't jagged
 
@@ -723,6 +728,17 @@ class Cameras(TensorDataclass):
             else:
                 timesteps = torch.Tensor([timesteps]).broadcast_to(pixel_area.shape).int().to(self.device)
 
+        metadata = {"directions_norm": directions_norm[0].detach()}
+        if batch is not None and "3dmm_params" in batch:
+            # to render eval image, need to broadcast conditioning code to every pixel
+            # also for "batch" coming from eval not everything has been pushed to GPU!
+            if not isinstance(batch['3dmm_params'], torch.Tensor):
+                    batch['3dmm_params'] = torch.from_numpy(batch['3dmm_params']).to(self.device)
+                    metadata.update({'condition_code': batch['3dmm_params'].unsqueeze(0).unsqueeze(0).repeat(metadata["directions_norm"].shape[0], metadata["directions_norm"].shape[1], 1)})
+            else:
+                    metadata.update({'condition_code': batch['3dmm_params'].to(self.device)})
+        else:
+            print(metadata)
         return RayBundle(
             origins=origins,
             directions=directions,
@@ -730,7 +746,7 @@ class Cameras(TensorDataclass):
             camera_indices=camera_indices,
             timesteps=timesteps,
             times=times,
-            metadata={"directions_norm": directions_norm[0].detach()},
+            metadata=metadata,
         )
 
     def to_json(

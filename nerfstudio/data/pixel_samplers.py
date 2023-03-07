@@ -146,7 +146,7 @@ class PixelSampler:  # pylint: disable=too-few-public-methods
 
         c, y, x = (i.flatten() for i in torch.split(indices, 1, dim=-1))
         collated_batch = {
-            key: value[c, y, x] for key, value in batch.items() if key not in {"image_idx", "timesteps", "cam_ids", "original_cam_ids", "landmarks"} and value is not None
+            key: value[c, y, x] for key, value in batch.items() if key not in {"image_idx", "timesteps", "cam_ids", "original_cam_ids", "landmarks", "3dmm_params"} and value is not None
         }
 
         assert collated_batch["image"].shape == (num_rays_per_batch, 3), collated_batch["image"].shape
@@ -159,6 +159,8 @@ class PixelSampler:  # pylint: disable=too-few-public-methods
             collated_batch['timesteps'] = batch['timesteps'][c]
         if 'landmarks' in batch:
             collated_batch['landmarks'] = batch['landmarks'][c]
+        if '3dmm_params' in batch:
+            collated_batch['3dmm_params'] = batch['3dmm_params'][c]
 
         # Needed to correct the random indices to their actual camera idx locations.
         local_indices = indices.clone()

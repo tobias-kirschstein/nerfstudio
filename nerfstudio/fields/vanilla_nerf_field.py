@@ -62,6 +62,7 @@ class NeRFField(Field):
         use_integrated_encoding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
         latent_dim_time: int = 0,
+        condition_dim: int = 0,
         n_timesteps: int = 1,
         head_extra_dim: int = 0,
     ) -> None:
@@ -80,6 +81,12 @@ class NeRFField(Field):
             init.normal_(self.time_embedding.weight, mean=0.0, std=0.01 / sqrt(latent_dim_time))
         else:
             self.time_embedding = None
+
+        n_additional_inputs += condition_dim
+        if condition_dim > 0:
+            self.has_conditioning = True
+        else:
+            self.has_conditioning = False
 
         self.mlp_base = MLP(
             in_dim=self.position_encoding.get_out_dim() + n_additional_inputs,
@@ -118,6 +125,9 @@ class NeRFField(Field):
             timesteps = ray_samples.timesteps.squeeze(2)  # [R, S]
             time_embeddings = self.time_embedding(timesteps)  # [R, S, D]
             base_inputs.append(time_embeddings)
+
+        if self.has_conditioning:
+            base_inputs.append(ray_samples.metadata['condition_code'])
 
         base_inputs = torch.concat(base_inputs, dim=2)
         base_mlp_out = self.mlp_base(base_inputs)

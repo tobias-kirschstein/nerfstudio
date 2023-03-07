@@ -483,7 +483,10 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         ray_indices = batch["indices"]
         timesteps = batch['timesteps'] if 'timesteps' in batch else None
         cam_ids = batch['cam_ids'] if 'cam_ids' in batch else None
-        ray_bundle = self.train_ray_generator(ray_indices, timesteps=timesteps, cam_ids=cam_ids)
+        ray_bundle = self.train_ray_generator(ray_indices,
+                                              timesteps=timesteps,
+                                              cam_ids=cam_ids,
+                                              batch=batch)
 
         # Add additional data to batch
         for key, value in image_batch.items():
@@ -510,7 +513,10 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         ray_indices = batch["indices"]
         timesteps = batch['timesteps'] if 'timesteps' in batch else None
         cam_ids = batch['cam_ids'] if 'cam_ids' in batch else None
-        ray_bundle = self.eval_ray_generator(ray_indices, timesteps=timesteps, cam_ids=cam_ids)
+        ray_bundle = self.eval_ray_generator(ray_indices,
+                                             timesteps=timesteps,
+                                             cam_ids=cam_ids,
+                                             batch=batch)
 
         # Add additional data to batch
         for key, value in image_batch.items():
