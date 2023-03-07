@@ -157,7 +157,9 @@ class NeRFModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        # TODO: for camera-ready: Add normalize=True
+        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        self.lpips = LearnedPerceptualImagePatchSimilarity()
 
         if getattr(self.config, "enable_temporal_distortion", False):
             params = self.config.temporal_distortion_params

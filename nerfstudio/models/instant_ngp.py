@@ -425,7 +425,9 @@ class NGPModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        # TODO: for camera-ready: Add normalize=True
+        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        self.lpips = LearnedPerceptualImagePatchSimilarity()
 
         self.train_step = 0
 
