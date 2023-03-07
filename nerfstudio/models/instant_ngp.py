@@ -200,6 +200,7 @@ class NGPModel(Model):
 
         self.time_embedding = None
         self.time_embedding_deformation = None
+        self.temporal_distortion = None
 
         super().__init__(config=config, **kwargs)
 
@@ -905,6 +906,10 @@ class NGPModel(Model):
 
             loss_dict["dist_loss"] = dist_loss
 
+            # TODO: Currently, random_dist_loss always results in NaN when used alone
+            #   When used in combination with regular dist loss, it causes some CUDA side-asserts (index out of bounds)
+            #   Probably related to some tensor being cleared wrongly during backward pass?
+
             if self.config.lambda_random_dist_loss > 0:
                 typical_origin_distance = ray_samples.frustums.origins.norm(dim=1).mean()
                 typical_start = starts.min()  # TODO: could use the mean() of the starting points of rays
@@ -980,8 +985,15 @@ class NGPModel(Model):
                 random_intervals = random_ray_samples.frustums.ends - random_ray_samples.frustums.starts
                 random_intervals = random_intervals.squeeze(1)
 
+                # Ensure that random_ray_indices are incrementing by exactly 1
+                # [ 1, 1, 2, 2, 2, 13, 13, 54, 54] -> [ 0, 0, 1, 1, 1, 2, 2, 3, 3 ]
+                unique_ray_indices = random_ray_indices.unique()
+                ray_id_mapping = torch.ones(random_ray_indices.max() + 1, dtype=int, device=random_ray_indices.device) * (-1)
+                ray_id_mapping[unique_ray_indices] = torch.arange(len(unique_ray_indices), device=random_ray_indices.device)
+                random_ray_indices = ray_id_mapping[random_ray_indices]
+
                 # Need ray_indices for flatten_eff_distloss
-                random_dist_loss = self.config.lambda_dist_loss * flatten_eff_distloss(
+                random_dist_loss = self.config.lambda_random_dist_loss * flatten_eff_distloss(
                     random_weights, random_midpoint_distances, random_intervals, random_ray_indices
                 )
 
