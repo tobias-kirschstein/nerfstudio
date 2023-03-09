@@ -214,6 +214,9 @@ def _render_trajectory_video(
                     bounding_box_max = crop_data.center + crop_data.scale / 2.0
                     aabb_box = SceneBox(torch.stack([bounding_box_min, bounding_box_max]).to(pipeline.device))
 
+                # TODO: some methods may expect an additional batch input to cameras.generate_rays
+                #   e.g., nerface requires a conditioning code as input during inference
+                #   should probably be fetched via pipeline datamanager
                 timestep = int(camera_idx / cameras.size * n_timesteps)
                 camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx, aabb_box=aabb_box, timesteps=timestep)
 
