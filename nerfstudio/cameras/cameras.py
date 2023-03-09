@@ -737,8 +737,6 @@ class Cameras(TensorDataclass):
                     metadata.update({'condition_code': _3dmm_params_tmp.unsqueeze(0).unsqueeze(0).repeat(metadata["directions_norm"].shape[0], metadata["directions_norm"].shape[1], 1)})
             else:
                     metadata.update({'condition_code': batch['3dmm_params'].to(self.device)})
-        else:
-            print(metadata)
         return RayBundle(
             origins=origins,
             directions=directions,
