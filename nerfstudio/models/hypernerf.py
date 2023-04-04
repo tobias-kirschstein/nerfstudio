@@ -266,7 +266,7 @@ class HyperNeRFModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
     def update_window_param(self, sched: GenericScheduler, name: str, step: int):
         sched.update(step)

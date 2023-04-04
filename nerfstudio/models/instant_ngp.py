@@ -425,9 +425,7 @@ class NGPModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        # TODO: for camera-ready: Add normalize=True
-        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
         self.train_step = 0
 
@@ -981,8 +979,7 @@ class NGPModel(Model):
                 )
                 random_weights = random_weights.squeeze(1)
 
-                random_midpoint_distances = (
-                                                        random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
+                random_midpoint_distances = (random_ray_samples.frustums.starts + random_ray_samples.frustums.ends) * 0.5
                 random_midpoint_distances = random_midpoint_distances.squeeze(1)
                 random_intervals = random_ray_samples.frustums.ends - random_ray_samples.frustums.starts
                 random_intervals = random_intervals.squeeze(1)
