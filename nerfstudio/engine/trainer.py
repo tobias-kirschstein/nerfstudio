@@ -402,7 +402,7 @@ class Trainer:
         for n, p in self.pipeline.model.named_parameters():
             if p.grad is not None and p.grad.isnan().any():
                 print(f"WARNING! NAN VALUE ENCOUNTERED IN GRADIENT FOR {n}: {p.grad.isnan().sum()}")
-                p.grad.nan_to_num_()
+                # p.grad.nan_to_num_()
 
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
 
