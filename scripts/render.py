@@ -396,7 +396,7 @@ class RenderTrajectory:
     overwrite_config: Optional[dict] = None
     use_depth_culling: bool = False
     use_occupancy_grid_filtering: bool = False  # If true, the occupancy grid will be filtered to only contain the largest connected compoment (gets rid of isolated floaters)
-    debug_occupancy_grid_filtering: bool = False,  # If true the occupancy grid densities will be written out to disk in the current working directory
+    debug_occupancy_grid_filtering: bool = False  # If true the occupancy grid densities will be written out to disk in the current working directory
 
     def main(self) -> None:
         """Main function."""

@@ -136,7 +136,9 @@ class Model(nn.Module):
         if self.config.enable_collider:
 
             if self.config.collider_type == "AABBBox":
-                self.collider = AABBBoxCollider(scene_box=self.scene_box)
+                near_plane = 0 if "near_plane" not in self.config.collider_params \
+                    else self.config.collider_params["near_plane"]
+                self.collider = AABBBoxCollider(scene_box=self.scene_box, near_plane=near_plane)
 
             elif self.config.collider_type == "NearFar":
                 assert self.config.collider_params is not None
