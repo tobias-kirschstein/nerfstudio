@@ -19,6 +19,7 @@ from typing import Any, Dict, Literal, Optional, Tuple
 
 import torch
 from nerfacc import ContractionType, contract
+from nerfstudio.utils.math import contract_points
 from torch import nn
 from torchtyping import TensorType
 
@@ -158,9 +159,10 @@ class SE3Distortion(nn.Module):
                 ray_samples.frustums.offsets == 0).all(), "ray samples have already been warped"
 
         positions = ray_samples.frustums.get_positions()
-        # Note: contract does not propagate gradients to input positions!
+        # Note: contract() does not propagate gradients to input positions!
         #positions = contract(x=positions, roi=self.aabb, type=self.contraction_type)
-        positions = (positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+        positions = contract_points(positions, self.contraction_type, aabb=self.aabb)
+        # positions = (positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
         if self.use_hash_se3field:
             warp_code = ray_samples.timesteps

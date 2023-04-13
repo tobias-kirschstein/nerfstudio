@@ -15,9 +15,10 @@
 """ Math Helper Functions """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
+from nerfacc import ContractionType
 from torchtyping import TensorType
 from typing_extensions import Literal
 
@@ -32,7 +33,7 @@ def components_from_spherical_harmonics(levels: int, directions: TensorType[...,
         levels: Number of spherical harmonic levels to compute.
         directions: Spherical harmonic coefficients
     """
-    num_components = levels**2
+    num_components = levels ** 2
     components = torch.zeros((*directions.shape[:-1], num_components), device=directions.device)
 
     assert 1 <= levels <= 5, f"SH levels must be in [1,4], got {levels}"
@@ -42,9 +43,9 @@ def components_from_spherical_harmonics(levels: int, directions: TensorType[...,
     y = directions[..., 1]
     z = directions[..., 2]
 
-    xx = x**2
-    yy = y**2
-    zz = z**2
+    xx = x ** 2
+    yy = y ** 2
+    zz = z ** 2
 
     # l0
     components[..., 0] = 0.28209479177387814
@@ -102,10 +103,10 @@ class Gaussians:
 
 
 def compute_3d_gaussian(
-    directions: TensorType[..., 3],
-    means: TensorType[..., 3],
-    dir_variance: TensorType[..., 1],
-    radius_variance: TensorType[..., 1],
+        directions: TensorType[..., 3],
+        means: TensorType[..., 3],
+        dir_variance: TensorType[..., 1],
+        radius_variance: TensorType[..., 1],
 ) -> Gaussians:
     """Compute gaussian along ray.
 
@@ -121,7 +122,7 @@ def compute_3d_gaussian(
 
     dir_outer_product = directions[..., :, None] * directions[..., None, :]
     eye = torch.eye(directions.shape[-1], device=directions.device)
-    dir_mag_sq = torch.clamp(torch.sum(directions**2, dim=-1, keepdim=True), min=1e-10)
+    dir_mag_sq = torch.clamp(torch.sum(directions ** 2, dim=-1, keepdim=True), min=1e-10)
     null_outer_product = eye - directions[..., :, None] * (directions / dir_mag_sq)[..., None, :]
     dir_cov_diag = dir_variance[..., None] * dir_outer_product[..., :, :]
     radius_cov_diag = radius_variance[..., None] * null_outer_product[..., :, :]
@@ -130,11 +131,11 @@ def compute_3d_gaussian(
 
 
 def cylinder_to_gaussian(
-    origins: TensorType[..., 3],
-    directions: TensorType[..., 3],
-    starts: TensorType[..., 1],
-    ends: TensorType[..., 1],
-    radius: TensorType[..., 1],
+        origins: TensorType[..., 3],
+        directions: TensorType[..., 3],
+        starts: TensorType[..., 1],
+        ends: TensorType[..., 1],
+        radius: TensorType[..., 1],
 ) -> Gaussians:
     """Approximates cylinders with a Gaussian distributions.
 
@@ -150,16 +151,16 @@ def cylinder_to_gaussian(
     """
     means = origins + directions * ((starts + ends) / 2.0)
     dir_variance = (ends - starts) ** 2 / 12
-    radius_variance = radius**2 / 4.0
+    radius_variance = radius ** 2 / 4.0
     return compute_3d_gaussian(directions, means, dir_variance, radius_variance)
 
 
 def conical_frustum_to_gaussian(
-    origins: TensorType[..., 3],
-    directions: TensorType[..., 3],
-    starts: TensorType[..., 1],
-    ends: TensorType[..., 1],
-    radius: TensorType[..., 1],
+        origins: TensorType[..., 3],
+        directions: TensorType[..., 3],
+        starts: TensorType[..., 1],
+        ends: TensorType[..., 1],
+        radius: TensorType[..., 1],
 ) -> Gaussians:
     """Approximates conical frustums with a Gaussian distributions.
 
@@ -177,9 +178,9 @@ def conical_frustum_to_gaussian(
     """
     mu = (starts + ends) / 2.0
     hw = (ends - starts) / 2.0
-    means = origins + directions * (mu + (2.0 * mu * hw**2.0) / (3.0 * mu**2.0 + hw**2.0))
-    dir_variance = (hw**2) / 3 - (4 / 15) * ((hw**4 * (12 * mu**2 - hw**2)) / (3 * mu**2 + hw**2) ** 2)
-    radius_variance = radius**2 * ((mu**2) / 4 + (5 / 12) * hw**2 - 4 / 15 * (hw**4) / (3 * mu**2 + hw**2))
+    means = origins + directions * (mu + (2.0 * mu * hw ** 2.0) / (3.0 * mu ** 2.0 + hw ** 2.0))
+    dir_variance = (hw ** 2) / 3 - (4 / 15) * ((hw ** 4 * (12 * mu ** 2 - hw ** 2)) / (3 * mu ** 2 + hw ** 2) ** 2)
+    radius_variance = radius ** 2 * ((mu ** 2) / 4 + (5 / 12) * hw ** 2 - 4 / 15 * (hw ** 4) / (3 * mu ** 2 + hw ** 2))
     return compute_3d_gaussian(directions, means, dir_variance, radius_variance)
 
 
@@ -211,11 +212,11 @@ def expected_sin(x_means: torch.Tensor, x_vars: torch.Tensor) -> torch.Tensor:
 
 @torch.jit.script
 def _intersect_aabb(
-    origins: torch.Tensor,
-    directions: torch.Tensor,
-    aabb: torch.Tensor,
-    max_bound: float = 1e10,
-    invalid_value: float = 1e10,
+        origins: torch.Tensor,
+        directions: torch.Tensor,
+        aabb: torch.Tensor,
+        max_bound: float = 1e10,
+        invalid_value: float = 1e10,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Implementation of ray intersection with AABB box
@@ -251,9 +252,9 @@ def _intersect_aabb(
 
 
 def intersect_aabb(
-    origins: TensorType["N", 3],
-    directions: TensorType["N", 3],
-    aabb: TensorType[6],
+        origins: TensorType["N", 3],
+        directions: TensorType["N", 3],
+        aabb: TensorType[6],
 ) -> Tuple[TensorType["N"], TensorType["N"]]:
     """
     Implementation of ray intersection with AABB box
@@ -285,8 +286,8 @@ def intersect_aabb(
 
 
 def safe_normalize(
-    vectors: TensorType["batch_dim":..., "N"],
-    eps: float = 1e-10,
+        vectors: TensorType["batch_dim":..., "N"],
+        eps: float = 1e-10,
 ) -> TensorType["batch_dim":..., "N"]:
     """Normalizes vectors.
 
@@ -301,7 +302,8 @@ def safe_normalize(
 
 
 def masked_reduction(
-    input_tensor: TensorType[1, 32, "mult"], mask: TensorType[1, 32, "mult"], reduction_type: Literal["image", "batch"]
+        input_tensor: TensorType[1, 32, "mult"], mask: TensorType[1, 32, "mult"],
+        reduction_type: Literal["image", "batch"]
 ):
     """
     Whether to consolidate the input_tensor across the batch or across the image
@@ -323,3 +325,18 @@ def masked_reduction(
         input_tensor[valid] = input_tensor[valid] / mask[valid]
         input_tensor = torch.mean(input_tensor)
     return input_tensor
+
+
+def contract_points(points: torch.Tensor,
+                    contraction_type: ContractionType,
+                    aabb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    if contraction_type == ContractionType.AABB:
+        points = (points - aabb[0]) / (aabb[1] - aabb[0])
+    elif contraction_type == ContractionType.UN_BOUNDED_SPHERE:
+        mag = torch.linalg.norm(points, ord=2, dim=-1)[..., None]
+        points = torch.where(mag < 1, points, (2 - (1 / mag)) * (points / mag))
+    elif contraction_type == ContractionType.UN_BOUNDED_TANH:
+        points = 0.5 * (
+                torch.tanh((points - aabb[0]) / (aabb[1] - aabb[0]) - 0.5) + 1)
+
+    return points

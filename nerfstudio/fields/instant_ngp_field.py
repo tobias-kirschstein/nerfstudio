@@ -17,6 +17,7 @@ from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.hash_encoding import HashEncodingEnsemble, TCNNHashEncodingConfig, \
     HashEnsembleMixingType, BlendFieldConfig, MultiDeformConfig, MultiDeformSE3Config
 from nerfstudio.fields.base_field import Field
+from nerfstudio.utils.math import contract_points
 from nerfstudio.utils.torch import disable_gradients_for
 from torch.nn import init
 from torch.nn.parameter import Parameter
@@ -361,7 +362,8 @@ class TCNNInstantNGPField(Field):
                 positions_flat = torch.stack([(positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0]),
                                               positions_flat[:, 3:]], dim=-1)
             else:
-                positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+                positions_flat = contract_points(positions_flat, self.contraction_type, aabb=self.aabb)
+                # positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
             timesteps_chunk = None
             if timesteps is not None:

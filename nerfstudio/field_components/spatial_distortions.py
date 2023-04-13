@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Space distortions."""
-
+from abc import abstractmethod
 from typing import Optional, Union
 
 import torch
@@ -28,7 +28,7 @@ class SpatialDistortion(nn.Module):
     """Apply spatial distortions"""
 
     def forward(
-        self, positions: Union[TensorType["bs":..., 3], Gaussians]
+            self, positions: Union[TensorType["bs":..., 3], Gaussians]
     ) -> Union[TensorType["bs":..., 3], Gaussians]:
         """
         Args:
@@ -72,7 +72,7 @@ class SceneContraction(SpatialDistortion):
             means = contract(positions.mean.clone())
 
             contract = lambda x: (2 - (1 / torch.linalg.norm(x, ord=self.order, dim=-1, keepdim=True))) * (
-                x / torch.linalg.norm(x, ord=self.order, dim=-1, keepdim=True)
+                    x / torch.linalg.norm(x, ord=self.order, dim=-1, keepdim=True)
             )
             jc_means = vmap(jacrev(contract))(positions.mean.view(-1, positions.mean.shape[-1]))
             jc_means = jc_means.view(list(positions.mean.shape) + [positions.mean.shape[-1]])
@@ -86,3 +86,26 @@ class SceneContraction(SpatialDistortion):
             return Gaussians(mean=means, cov=cov)
 
         return contract(positions)
+
+#     def invert(self, positions: Union[TensorType["bs":..., 3], Gaussians]):
+#         assert not isinstance(positions, Gaussians), "Can not yet invert gaussians"
+#
+#         z = positions
+#
+#         mag = torch.linalg.norm(z, ord=self.order, dim=-1)[..., None]
+#         return torch.where(mag < 1, z, z / (2 * mag - mag * mag))
+#
+#
+# class AABBContraction(SpatialDistortion):
+#
+#     def __init__(self, aabb: torch.Tensor):
+#         super(AABBContraction, self).__init__()
+#         self._aabb = aabb
+#
+#     def forward(
+#             self, positions: Union[TensorType["bs":..., 3], Gaussians]
+#     ) -> Union[TensorType["bs":..., 3], Gaussians]:
+#         return (positions - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
+#
+#     def invert(self, positions: Union[TensorType["bs":..., 3], Gaussians]) -> Union[TensorType["bs":..., 3], Gaussians]:
+#         return positions * (self.aabb[1] - self.aabb[0]) + self.aabb[0]
