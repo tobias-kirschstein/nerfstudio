@@ -53,6 +53,7 @@ def apply_depth_colormap(
         far_plane: Optional[float] = None,
         cmap="turbo",
         acc_threshold: float = 1e-1,
+        invert_cmap: bool = False
 ) -> TensorType["bs":..., "rgb":3]:
     """Converts a depth image to color for easier analysis.
 
@@ -81,6 +82,9 @@ def apply_depth_colormap(
     depth = (depth - near_plane) / (far_plane - near_plane + 1e-10)
     depth = torch.clip(depth, 0, 1)
     # depth = torch.nan_to_num(depth, nan=0.0) # TODO(ethan): remove this
+
+    if invert_cmap:
+        depth = 1 - depth
 
     colored_image = apply_colormap(depth, cmap=cmap)
 
@@ -171,7 +175,8 @@ def apply_offset_colormap(
     barycentric_coordinates_clipped = torch.clip(barycentric_coordinates, min=0, max=1)
     barycentric_coordinates_clipped /= barycentric_coordinates_clipped.sum(dim=1).view(-1, 1)
 
-    interpolated_colors = torch.bmm(barycentric_coordinates_clipped.view(-1, 1, 4), colors[idx_sorted[:, :4]]).squeeze(1)
+    interpolated_colors = torch.bmm(barycentric_coordinates_clipped.view(-1, 1, 4), colors[idx_sorted[:, :4]]).squeeze(
+        1)
     interpolated_colors = torch.clip(interpolated_colors, min=0, max=1)
 
     # It can happen that the barycentric coordinates are nan. This is the case if an offset is exactly 0.

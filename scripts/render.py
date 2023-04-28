@@ -46,18 +46,20 @@ CONSOLE = Console(width=120)
 
 
 def _render_trajectory_video(
-    pipeline: Pipeline,
-    cameras: Cameras,
-    output_filename: Path,
-    rendered_output_names: List[str],
-    crop_data: Optional[CropData] = None,
-    rendered_resolution_scaling_factor: float = 1.0,
-    seconds: float = 5.0,
-    output_format: Literal["images", "video"] = "video",
-    camera_type: CameraType = CameraType.PERSPECTIVE,
-    use_depth_culling: bool = False,
-    use_occupancy_grid_filtering: bool = False,
-    debug_occupancy_grid_filtering: bool = False
+        pipeline: Pipeline,
+        cameras: Cameras,
+        output_filename: Path,
+        rendered_output_names: List[str],
+        crop_data: Optional[CropData] = None,
+        rendered_resolution_scaling_factor: float = 1.0,
+        seconds: float = 5.0,
+        output_format: Literal["images", "video"] = "video",
+        camera_type: CameraType = CameraType.PERSPECTIVE,
+        use_depth_culling: bool = False,
+        use_occupancy_grid_filtering: bool = False,
+        debug_occupancy_grid_filtering: bool = False,
+        depth_near_plane: Optional[float] = None,
+        depth_far_plane: Optional[float] = None
 ) -> None:
     """Helper function to create a video of the spiral trajectory.
 
@@ -80,6 +82,11 @@ def _render_trajectory_video(
     cameras.scale_coordinate_system(scale_factor)
     n_timesteps = pipeline.datamanager.config.dataparser.n_timesteps
 
+    if depth_near_plane is not None:
+        depth_near_plane *= scale_factor
+    if depth_far_plane is not None:
+        depth_far_plane *= scale_factor
+
     # If the camera trajectory to render does not specify any times but the model is temporal, then just assume
     # that we want to render the full temporal sequence [0., 1.]
     if hasattr(pipeline.model, "temporal_distortion") \
@@ -90,7 +97,7 @@ def _render_trajectory_video(
         cameras.times = times
 
     if use_occupancy_grid_filtering:
-        occupancy_grid : OccupancyGrid = pipeline.model.occupancy_grid
+        occupancy_grid: OccupancyGrid = pipeline.model.occupancy_grid
 
         if debug_occupancy_grid_filtering:
             np.save(f"occupancy_grid_densities_{Path(output_filename).stem}.npy", occupancy_grid.occs.cpu().numpy())
@@ -165,7 +172,8 @@ def _render_trajectory_video(
                 idx_inside_grid = idx_inside_grid.all(dim=2)
                 idx_before_depth = distance < depth_map.squeeze(2)  # [H, W]
                 idx_enough_accumulation = accumulation.squeeze(2) > 0.1  # [H, W]
-                valid_grid_indices = grid_indices[idx_inside_grid & idx_before_depth & idx_enough_accumulation]  # [?, 3]
+                valid_grid_indices = grid_indices[
+                    idx_inside_grid & idx_before_depth & idx_enough_accumulation]  # [?, 3]
 
                 if distance > depth_map.mean() and not valid_grid_indices.any():
                     break
@@ -178,9 +186,12 @@ def _render_trajectory_video(
 
         from famudy.env import FAMUDY_ANALYSES_PATH
         np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/depth_culling_grid_timestep_0", depth_culling_grid.cpu().numpy())
-        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/depth_maps_timestep_0", torch.concat(depth_maps, dim=-1).permute(2, 0, 1).cpu().numpy())
-        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/accumulations_timestep_0", torch.concat(accumulations, dim=-1).permute(2, 0, 1).cpu().numpy())
-        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/rgb_timestep_0", torch.concat(rendered_images, dim=-1).permute(2, 0, 1).cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/depth_maps_timestep_0",
+                torch.concat(depth_maps, dim=-1).permute(2, 0, 1).cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/accumulations_timestep_0",
+                torch.concat(accumulations, dim=-1).permute(2, 0, 1).cpu().numpy())
+        np.save(f"{FAMUDY_ANALYSES_PATH}/depth_culling/rgb_timestep_0",
+                torch.concat(rendered_images, dim=-1).permute(2, 0, 1).cpu().numpy())
 
     progress = Progress(
         TextColumn(":movie_camera: Rendering :movie_camera:"),
@@ -218,11 +229,12 @@ def _render_trajectory_video(
                 #   e.g., nerface requires a conditioning code as input during inference
                 #   should probably be fetched via pipeline datamanager
                 timestep = int(camera_idx / cameras.size * n_timesteps)
-                camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx, aabb_box=aabb_box, timesteps=timestep)
+                camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx, aabb_box=aabb_box,
+                                                          timesteps=timestep)
 
                 if crop_data is not None:
                     with renderers.background_color_override_context(
-                        crop_data.background_color.to(pipeline.device)
+                            crop_data.background_color.to(pipeline.device)
                     ), torch.no_grad():
                         outputs = pipeline.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
                 else:
@@ -234,12 +246,21 @@ def _render_trajectory_video(
                     if rendered_output_name not in outputs:
                         CONSOLE.rule("Error", style="red")
                         CONSOLE.print(f"Could not find {rendered_output_name} in the model outputs", justify="center")
-                        CONSOLE.print(f"Please set --rendered_output_name to one of: {outputs.keys()}", justify="center")
+                        CONSOLE.print(f"Please set --rendered_output_name to one of: {outputs.keys()}",
+                                      justify="center")
                         sys.exit(1)
                     output_image = outputs[rendered_output_name].cpu().numpy()
 
                     if rendered_output_name == "depth":
-                        output_image = apply_depth_colormap(torch.from_numpy(output_image)).numpy()
+                        output_image = apply_depth_colormap(
+                            torch.from_numpy(output_image),
+                            invert_cmap=True,
+                            near_plane=depth_near_plane,
+                            far_plane=depth_far_plane).numpy()
+
+                        if "accumulation" in outputs:
+                            # Discard depth estimates in regions with little accumulation
+                            output_image = output_image * outputs["accumulation"].cpu().numpy()
 
                     if output_image.shape[-1] == 1:
                         output_image = np.concatenate((output_image,) * 3, axis=-1)
@@ -266,7 +287,7 @@ def _render_trajectory_video(
 
 
 def insert_spherical_metadata_into_file(
-    output_filename: Path,
+        output_filename: Path,
 ) -> None:
     """Inserts spherical metadata into MP4 video file in-place.
     Args:
@@ -397,6 +418,8 @@ class RenderTrajectory:
     use_depth_culling: bool = False
     use_occupancy_grid_filtering: bool = False  # If true, the occupancy grid will be filtered to only contain the largest connected compoment (gets rid of isolated floaters)
     debug_occupancy_grid_filtering: bool = False  # If true the occupancy grid densities will be written out to disk in the current working directory
+    depth_near_plane: Optional[float] = None  # where the depth colormap gradient starts
+    depth_far_plane: Optional[float] = None  # where the depth colormap gradient stops
 
     def main(self) -> None:
         """Main function."""
@@ -458,7 +481,9 @@ class RenderTrajectory:
             camera_type=camera_type,
             use_depth_culling=self.use_depth_culling,
             use_occupancy_grid_filtering=self.use_occupancy_grid_filtering,
-            debug_occupancy_grid_filtering=self.debug_occupancy_grid_filtering
+            debug_occupancy_grid_filtering=self.debug_occupancy_grid_filtering,
+            depth_near_plane=self.depth_near_plane,
+            depth_far_plane=self.depth_far_plane,
         )
 
 

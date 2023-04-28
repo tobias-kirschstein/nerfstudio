@@ -329,12 +329,16 @@ def masked_reduction(
 
 def contract_points(points: torch.Tensor,
                     contraction_type: ContractionType,
-                    aabb: Optional[torch.Tensor] = None) -> torch.Tensor:
+                    aabb: Optional[torch.Tensor] = None,
+                    ord=2) -> torch.Tensor:
     if contraction_type == ContractionType.AABB:
         points = (points - aabb[0]) / (aabb[1] - aabb[0])
     elif contraction_type == ContractionType.UN_BOUNDED_SPHERE:
-        mag = torch.linalg.norm(points, ord=2, dim=-1)[..., None]
+        points = (points - aabb[0]) / (aabb[1] - aabb[0])  # inf -> [0, 1]^3
+        points = points * 2 - 1  # [0, 1]^3 - > [-1, 1]^3
+        mag = torch.linalg.norm(points, ord=ord, dim=-1)[..., None]
         points = torch.where(mag < 1, points, (2 - (1 / mag)) * (points / mag))
+        points = points * 0.25 + 0.5 # [-1, 1]^3 -> [0.25, 0.75]
     elif contraction_type == ContractionType.UN_BOUNDED_TANH:
         points = 0.5 * (
                 torch.tanh((points - aabb[0]) / (aabb[1] - aabb[0]) - 0.5) + 1)

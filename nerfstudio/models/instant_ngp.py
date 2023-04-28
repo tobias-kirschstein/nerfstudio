@@ -737,6 +737,10 @@ class NGPModel(Model):
                 alpha_thre=self.config.alpha_thre,
             )
 
+        # If Pose Optimizer is used, uncomment these lines. Otherwise gradients are not propagated to ray origins/directions
+        # ray_samples.frustums.origins = ray_bundle[ray_indices].origins
+        # ray_samples.frustums.directions = ray_bundle[ray_indices].directions
+
         ray_samples.ray_indices = ray_indices.unsqueeze(1)  # [S, 1]
         ray_samples, time_codes_deform = self.warp_ray_samples(ray_samples)
 

@@ -362,7 +362,7 @@ class TCNNInstantNGPField(Field):
                 positions_flat = torch.stack([(positions_flat[:, :3] - self.aabb[0]) / (self.aabb[1] - self.aabb[0]),
                                               positions_flat[:, 3:]], dim=-1)
             else:
-                positions_flat = contract_points(positions_flat, self.contraction_type, aabb=self.aabb)
+                positions_flat = contract_points(positions_flat, self.contraction_type, aabb=self.aabb, ord=float('inf'))
                 # positions_flat = (positions_flat - self.aabb[0]) / (self.aabb[1] - self.aabb[0])
 
             timesteps_chunk = None
