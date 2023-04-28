@@ -258,7 +258,7 @@ def _render_trajectory_video(
                     if rendered_output_name == "depth":
                         output_image = apply_depth_colormap(
                             torch.from_numpy(output_image),
-                            invert_cmap=False,
+                            invert_cmap=True,
                             near_plane=depth_near_plane,
                             far_plane=depth_far_plane).numpy()
 
