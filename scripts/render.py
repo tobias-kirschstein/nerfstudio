@@ -104,7 +104,11 @@ def _render_trajectory_video(
             print("Exiting rendering as debug_occupancy_grid_filtering was set")
             exit(0)
 
-        filter_occupancy_grid(occupancy_grid, threshold=0.1)
+        occupancy_grid_filtering_threshold: float = 0.05,
+        occupancy_grid_filtering_sigma_erosion: int = 7,
+        filter_occupancy_grid(occupancy_grid,
+                              threshold=occupancy_grid_filtering_threshold,
+                              sigma_erosion=occupancy_grid_filtering_sigma_erosion)
 
         # resolution = occupancy_grid.resolution
         # try:
